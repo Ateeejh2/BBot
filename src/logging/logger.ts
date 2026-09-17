@@ -15,8 +15,11 @@ export class Logger {
       botId: fields.botId ?? null, accountLabel: fields.accountLabel ?? null,
       instance: fields.instance ?? null, state: fields.state ?? null,
       eventId: fields.eventId ?? null, jobId: fields.jobId ?? null
-    }, (key, value: unknown) => /password|token|secret|username|email|authorization/i.test(key) ? '[REDACTED]' : value);
-    for (const secret of this.secrets) if (secret) line = line.split(secret).join('[REDACTED]');
+    }, (key, value: unknown) => {
+      if (/password|token|secret|username|email|authorization/i.test(key)) return '[REDACTED]';
+      if (typeof value === 'string') for (const secret of this.secrets) if (secret) value = (value as string).split(secret).join('[REDACTED]');
+      return value;
+    });
     line += '\n';
     process.stdout.write(line);
     if (this.file) {

@@ -27,6 +27,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (lobbyCommand && (!/^\/[a-z\d _-]{1,80}$/i.test(lobbyCommand) || /^\/server\b/i.test(lobbyCommand))) throw new Error('Invalid LOBBY_COMMAND');
   const distributionEnabled = bool('DISTRIBUTION_ENABLED', false);
   if (mode === 'live' && distributionEnabled && !lobbyCommand) throw new Error('Distribution requires a verified LOBBY_COMMAND');
+  const suspectMs = integer('INSTANCE_SUSPECT_MS', 300000, 1000, 86400000);
+  const inactiveMs = integer('INSTANCE_INACTIVE_MS', 1800000, suspectMs + 1, 604800000);
   let accounts: Account[];
   if (mode === 'mock') accounts = Array.from({ length: count }, (_, i) => ({ label: `bot-${i + 1}`, username: `mock-${i + 1}`, auth: 'offline' }));
   else {
@@ -52,8 +54,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     jobRetryMs: integer('JOB_RETRY_MS', 5000, 100, 600000),
     maxJobs: integer('MAX_JOBS', 2000, 20, 100000),
     maxInstances: integer('MAX_INSTANCES', 1000, 20, 100000),
-    suspectMs: integer('INSTANCE_SUSPECT_MS', 300000, 1000, 86400000),
-    inactiveMs: integer('INSTANCE_INACTIVE_MS', 1800000, 1000, 604800000),
+    suspectMs, inactiveMs,
     distributionEnabled, lobbyCommand,
     rerollMaxAttempts: integer('REROLL_MAX_ATTEMPTS', 3, 1, 100),
     rerollCooldownMs: integer('REROLL_COOLDOWN_MS', 60000, 1000, 3600000),
