@@ -1,0 +1,109 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { parseInstance } from '../src/instances/parser.js';
+import { StateMachine, Generation } from '../src/core/state.js';
+import { InstanceRegistry } from '../src/instances/registry.js';
+import { DistributionManager } from '../src/instances/distribution.js';
+import { Scheduler } from '../src/scheduler/scheduler.js';
+import { backoff } from '../src/recovery/backoff.js';
+import { MockEventProvider } from '../src/events/provider.js';
+import { loadConfig } from '../src/config/index.js';
+import { UnknownReturnClassifier, type BotView, type GameEvent } from '../src/core/types.js';
+const event = (id = 'e1'): GameEvent => ({ id, instanceId: 'mega10c', target: { x: 1, y: 64, z: 2 }, type: 'mock', expiresAt: 100000 });
+const bot = (id: string, x = 0): BotView => ({ id, accountLabel: id, state: 'IN_PIT_IDLE', instanceId: 'mega10c', generation: 0, position: { x, y: 64, z: 2 } });
+test('transfer parser accepts case/format variations and arbitrary instance prefixes', () => {
+  for (const [text, expected] of [
+    ['SERVER FOUND! Sending to mega10c!', 'mega10c'],
+    ['server found! sending to MINI-2.A!', 'mini-2.a'],
+    [' §aSERVER FOUND! §rSending to zone_ABC! ', 'zone_abc'],
+    ['SERVER  FOUND!\tSending to NewInstance99!', 'newinstance99']
+  ]) assert.equal(parseInstance(text!), expected);
+});
+test('transfer parser rejects chat spoofing, partial/malformed messages', () => {
+  for (const value of ['<player> SERVER FOUND! Sending to mega10c!', 'Sending to mega10c!', 'SERVER FOUND! Sending to !', 'SERVER FOUND! Sending to mega10c', 'SERVER FOUND! Sending to a! extra', `SERVER FOUND! Sending to ${'a'.repeat(129)}!`]) assert.equal(parseInstance(value), undefined);
+});
+test('state machine rejects invalid transitions, accepts full job/recovery lifecycle', () => {
+  const machine = new StateMachine();
+  assert.throws(() => machine.transition('WORKING'));
+  for (const state of ['CONNECTING', 'LOBBY', 'JOINING_PIT', 'IN_PIT_IDLE', 'PATHFINDING', 'WORKING', 'RECOVERING', 'JOINING_PIT', 'DISCONNECTED'] as const) machine.transition(state);
+  assert.equal(machine.state, 'DISCONNECTED');
+});
+test('generation invalidates stale callbacks', () => { const g = new Generation(); const token = g.current; g.invalidate(); assert.equal(g.isCurrent(token), false); });
+test('registry discovers, ages, reactivates and keeps firstSeen', () => {
+  const r = new InstanceRegistry(); r.join('NEW-1', 'b1', 10); r.leave('b1', 20, 'AFK');
+  r.maintain(200, 100, 1000); assert.equal(r.records.get('new-1')?.status, 'SUSPECT');
+  r.maintain(2000, 100, 1000); assert.equal(r.records.get('new-1')?.status, 'INACTIVE');
+  r.join('new-1', 'b2', 3000); assert.equal(r.records.get('new-1')?.firstSeen, 10); assert.equal(r.records.get('new-1')?.status, 'ACTIVE');
+});
+test('single abnormal return is not an instance crash; distinct correlated bots mark suspect', () => {
+  const r = new InstanceRegistry(); r.join('a', 'b1', 0); r.join('a', 'b2', 0);
+  r.leave('b1', 100, 'UNKNOWN_RETURN'); assert.equal(r.records.get('a')?.status, 'ACTIVE');
+  r.leave('b2', 200, 'UNKNOWN_RETURN'); assert.equal(r.records.get('a')?.status, 'SUSPECT');
+  r.heartbeat('a', 300); assert.equal(r.records.get('a')?.status, 'SUSPECT');
+});
+test('AFK and planned departures do not contribute to crash correlation', () => {
+  const r = new InstanceRegistry(); r.join('a', 'b1', 0); r.join('a', 'b2', 0);
+  r.leave('b1', 1, 'AFK'); r.leave('b2', 2, 'PLANNED'); assert.equal(r.records.get('a')?.status, 'ACTIVE');
+  assert.equal(new UnknownReturnClassifier().classify('any guessed AFK text'), undefined);
+});
+test('registry memory cap evicts only inactive empty records', () => {
+  const r = new InstanceRegistry(2); r.observe('a', 0); r.join('b', 'bot', 0);
+  assert.throws(() => r.observe('c', 1)); r.maintain(100, 10, 20); r.observe('c', 101);
+  assert.equal(r.records.size, 2); assert.ok(r.records.has('b')); assert.ok(!r.records.has('a'));
+});
+test('distribution chooses crowded idle bot and stops at bounded attempt budget', () => {
+  const r = new InstanceRegistry(); const bots = [bot('b1'), bot('b2'), bot('b3')];
+  for (const b of bots) r.join('mega10c', b.id, 0); r.observe('empty', 0);
+  const d = new DistributionManager(1, 100);
+  assert.equal(d.choose(bots, r, 0)?.id, 'b1'); d.recordAttempt('b1', 0);
+  assert.equal(d.choose(bots, r, 100000)?.id, 'b2');
+  d.recordAttempt('b2', 0); d.recordAttempt('b3', 0); assert.equal(d.choose(bots, r, 100000), undefined);
+});
+test('more instances than bots is valid; balanced assignment causes no reroll', () => {
+  const r = new InstanceRegistry(); r.join('mega10c', 'b1', 0);
+  for (let i = 0; i < 100; i++) r.observe(`new${i}`, 0);
+  assert.equal(new DistributionManager(2, 10).choose([bot('b1')], r, 0), undefined);
+});
+test('scheduler chooses nearest eligible same-instance bot without double assignment', () => {
+  const s = new Scheduler(); s.enqueue(event(), 0); s.enqueue(event('e2'), 0);
+  const busy = { ...bot('busy', 1), state: 'WORKING' as const };
+  const wrong = { ...bot('wrong', 1), instanceId: 'other' };
+  const assigned = s.assign([bot('far', 20), bot('near', 1), busy, wrong], 1);
+  assert.deepEqual(assigned.map(a => a.bot.id), ['near', 'far']); assert.equal(s.assign([bot('near')], 2).length, 0);
+});
+test('job return uses lease token; stale completion cannot finish reassigned job', () => {
+  const s = new Scheduler(3, 100, 10); s.enqueue(event(), 0);
+  const a = s.assign([bot('a')], 1)[0]!; const lease = a.job.lease;
+  assert.ok(s.release('e1', 'a', lease, 2)); assert.equal(s.assign([bot('b')], 3).length, 0);
+  const b = s.assign([bot('b')], 12)[0]!;
+  assert.equal(s.complete('e1', 'a', lease, 13), false);
+  assert.ok(s.complete('e1', 'b', b.job.lease, 14)); assert.equal(s.jobs.get('e1')?.state, 'COMPLETED');
+  assert.equal(s.enqueue(event(), 15), false);
+});
+test('job attempts are bounded and events expire even while running', () => {
+  const s = new Scheduler(1); s.enqueue(event(), 0); const a = s.assign([bot('a')], 1)[0]!;
+  s.release('e1', 'a', a.job.lease, 2); assert.equal(s.jobs.get('e1')?.state, 'FAILED');
+  s.enqueue(event('e2'), 0); s.assign([bot('a')], 1); assert.equal(s.expire(100001).length, 1);
+  assert.equal(s.jobs.get('e2')?.state, 'EXPIRED');
+});
+test('snapshot restoration requeues interrupted jobs with a new lease', () => {
+  const s = new Scheduler(); s.enqueue(event(), 0); s.assign([bot('a')], 1);
+  const restored = new Scheduler(); restored.restore(s.snapshot(), 10);
+  assert.equal(restored.jobs.get('e1')?.state, 'QUEUED'); assert.equal(restored.jobs.get('e1')?.botId, undefined);
+  assert.equal(restored.jobs.get('e1')?.lease, 2);
+});
+test('backoff grows, caps and distributes attempts with jitter', () => {
+  const c = { baseMs: 1000, maxMs: 8000, jitter: 0.5 };
+  assert.equal(backoff(0, c, () => 0), 500); assert.equal(backoff(1, c, () => 1), 2000);
+  assert.equal(backoff(10000, c, () => 1), 8000); assert.equal(backoff(10000, c, () => 0), 4000);
+});
+test('MockEventProvider filters expiry and does not share mutable results', async () => {
+  const provider = new MockEventProvider([event(), { ...event('old'), expiresAt: 1 }], () => 2);
+  const first = await provider.fetchEvents(); assert.equal(first.length, 1); first[0]!.target.x = 999;
+  assert.equal((await provider.fetchEvents())[0]!.target.x, 1);
+  await assert.rejects(provider.fetchEvents(AbortSignal.abort()));
+});
+test('configuration defaults are safe and malformed values fail closed', () => {
+  assert.equal(loadConfig({}).mode, 'mock'); assert.equal(loadConfig({}).count, 1); assert.equal(loadConfig({}).pathConcurrency, 2);
+  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }]) assert.throws(() => loadConfig(env));
+});

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+accounts.json
+.auth/
+data/
+logs/
+*.log
+coverage/
+*.tsbuildinfo
