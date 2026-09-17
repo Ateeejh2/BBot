@@ -62,21 +62,22 @@ notepad .env
 
 `accounts.json`の`username`を自分の認証用識別子に置き換えます。通常は`auth: "microsoft"`です。`label`は秘密情報ではない識別名（例`test-01`）にしてください。`offline`は管理者が明示的にoffline認証を許可したテストサーバー専用です。アカウント共有や認証回避は行いません。
 
-`.env`を次のように変更します。host/versionは実環境に合わせて入力してください。
+`.env`を次のように変更します。hostは実環境に合わせて入力してください。テスト対象versionは`1.8.9`です。
 
 ```dotenv
 MODE=live
 BOT_COUNT=1
 SERVER_HOST=YOUR_AUTHORIZED_ENTRY_HOST
 SERVER_PORT=25565
-MC_VERSION=
+MC_VERSION=1.8.9
+TRANSFER_MESSAGE_CHANNEL=system
 ACCOUNTS_FILE=accounts.json
 DEBUG=true
 LOG_DIR=logs
 DISTRIBUTION_ENABLED=false
 ```
 
-`MC_VERSION`が空ならMineflayerの自動検出を使います。互換性確認後は確認したMinecraftバージョンを明示してください。特定バージョン・ネットワークでの動作は未検証です。
+`MC_VERSION`の既定値は`1.8.9`です。空欄にしても`1.8.9`になります。実機テストでは自動検出に頼らず、入口へこのversionを明示して接続します。特定ネットワーク上での動作は未検証です。
 
 ```powershell
 npm.cmd run build
@@ -87,7 +88,7 @@ npm.cmd start
 
 spawn後、cooldownを待って`/play pit`を送信します。`/server`は使いません。既定で送信されるコマンドは`/play pit`だけです。実モードでは外部Event APIは未設定で、Mockイベントも自動発行しません。接続・所属検出・復旧を先に検証するためです。
 
-**到着判定の制約:** server systemチャットの`SERVER FOUND! Sending to <INSTANCE>!`を受信し、その後のspawnを確認した場合だけ所属を確定します。通知だけでは移動を開始しません。通知より先にspawnが来る環境や、通知がsystemチャットとして届かない環境では確定せずtimeoutになります。この場合、推測で待ち時間を追加せず、実際の通知・イベント順序に合わせてadapterを修正する必要があります。
+**到着判定の制約:** 初期設定ではserver systemチャットの`SERVER FOUND! Sending to <INSTANCE>!`を受信し、その後のspawnを確認した場合だけ所属を確定します。通知だけでは移動を開始しません。通知より先にspawnが来る環境や、通知がsystemチャットとして届かない環境では確定せずtimeoutになります。`DEBUG=true`時の`transfer text observed`には、内容や認証情報を記録せず受信channel・送信者の有無・判定可能性を記録します。1.8.9でchat channelに届くことを実測で確認した場合だけ`TRANSFER_MESSAGE_CHANNEL=chat`へ切り替えて再試験してください。chat channelには送信元を認証できない場合があるため、完全一致のプレイヤー文をサーバー通知と誤認するリスクがあります。通知・イベントの順序が異なる場合は、実際の観測結果に合わせてadapterを修正してください。
 
 ## Debugログと復旧確認
 
@@ -97,7 +98,7 @@ spawn後、cooldownを待って`/play pit`を送信します。`/server`は使�
 Get-Content .\logs\bbot.jsonl -Tail 50 -Wait
 ```
 
-JSONログにtimestamp、botId、accountLabel、instance、state、eventId/jobIdを含みます。該当しない欄はnullです。`runtime metrics`は60秒ごとにRSS/heap/CPU、Job数、確認済みinstance数、探索数を出します。`DEBUG=true`でイベント取得の診断情報を追加します。生チャット・認証応答・例外全文は記録しません。
+JSONログにtimestamp、botId、accountLabel、instance、state、eventId/jobIdを含みます。該当しない欄はnullです。`runtime metrics`は60秒ごとにRSS/heap/CPU、Job数、確認済みinstance数、探索数を出します。`DEBUG=true`でイベント取得、spawn/respawn、転送通知候補のchannel、window open/close、inventory slot数の診断情報を追加します。内容そのものやslotのアイテムは記録しません。生チャット・認証応答・例外全文は記録しません。
 
 起動中のBBotコンソールで使える操作:
 
@@ -135,7 +136,7 @@ npm.cmd run test:soak
 Remove-Item Env:SOAK_SECONDS
 ```
 
-[Windows確認表](docs/windows-checklist.md)へ結果を記入してください。GitHub ActionsにはWindows runnerのUnit/Mockテストを用意しています。CI合格もWindows 10/11実機やMinecraft接続の確認済みを意味しません。
+[1.8.9 Windows確認表](docs/windows-checklist.md)へ結果を記入してください。GitHub ActionsにはWindows runnerのUnit/Mockテストを用意しています。CI合格もWindows 10/11実機やMinecraft接続の確認済みを意味しません。
 
 ## 主な設定
 
@@ -144,7 +145,8 @@ Remove-Item Env:SOAK_SECONDS
 | 設定 | 既定値・用途 |
 | --- | --- |
 | `MODE`, `BOT_COUNT` | `mock`, `1`。台数は1〜20 |
-| `SERVER_HOST`, `SERVER_PORT`, `MC_VERSION` | 入口host、25565、空=自動検出 |
+| `SERVER_HOST`, `SERVER_PORT`, `MC_VERSION` | 入口host、25565、1.8.9（空欄も1.8.9） |
+| `TRANSFER_MESSAGE_CHANNEL` | system。1.8.9の実測結果に応じて明示的にchatへ変更可能 |
 | `RECONNECT_BASE_MS`, `RECONNECT_MAX_MS`, `RECONNECT_JITTER_PERCENT` | 5000、120000、50%。指数backoffとばらつき |
 | `CONNECTION_SPACING_MS`, `CONNECT_TIMEOUT_MS` | 3000、60000。全体の接続間隔とspawn待機上限 |
 | `PLAY_COOLDOWN_MS`, `JOIN_TIMEOUT_MS`, `JOIN_MAX_ATTEMPTS` | 15000、30000、5 |

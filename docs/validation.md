@@ -5,11 +5,12 @@
 | 検証 | 結果 |
 | --- | --- |
 | TypeScript strict build | 成功 |
-| Node組込みrunnerの自動テスト | 38件成功 |
+| Node組込みrunnerの自動テスト | 40件成功（ローカルLinux） |
 | CLIのMock起動→イベント完了→quit→snapshot確認 | 成功（自動テスト内） |
 | 20 Mockクライアント、10秒の合成負荷 | 成功 |
 | 200回の経路キャンセル後のabort listener | 残存0（Unit対象） |
 | Gitへの秘密ファイル混入 | 除外設定・tracked file一覧を確認 |
+| 1.8.9オフラインprotocol 47とserializer/deserializer、plugin API export | 追加テスト実施（接続保証ではない） |
 | Windows 10/11実機 | 未実施 |
 | Microsoft認証 / Minecraft接続 / 実pathfinder移動 | 未実施 |
 | 20実Bot・24/7運転・実Mineflayer listener長期挙動 | 未実施 |
@@ -30,6 +31,12 @@
 `npm audit --omit=dev --json`の実行時、**moderate 6件、high/critical 0件**。uuid `<11.1.1`のbuffer bounds指摘 [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq) と、`@azure/msal-node` / `yggdrasil` / `prismarine-auth` / `minecraft-protocol` / `mineflayer`への依存伝播です。6つの独立した脆弱性を意味するものではありません。
 
 npmが提示した自動修正はMineflayer 1.4.0への大幅変更で、現在のAPI互換性を壊す可能性があるため実行していません。認証依存のmajor overrideも実認証未検証のまま追加していません。依存更新を追跡し、実機安定運用の前に再評価してください。この指摘を解決済みとは扱いません。
+
+## 1.8.9互換性の境界
+
+[Mineflayer公式README](https://github.com/PrismarineJS/mineflayer)はMinecraft 1.8系列を対象にし、`version: "1.8.9"`を指定例に挙げる。[node-minecraft-protocol公式README](https://github.com/PrismarineJS/node-minecraft-protocol)は対応一覧に1.8.8を掲げ、1.8.9をversion指定例に挙げる。lockfileの`minecraft-data`は1.8.9指定をプロトコル47/1.8.8系データへ解決する。導入済みライブラリのserializer/deserializerとpathfinder exportをオフラインで確認した。プロトコル番号の整合だけで1.8.9実サーバーの挙動は保証しない。[mineflayer-pathfinder公式README](https://github.com/PrismarineJS/mineflayer-pathfinder)にも、1.8.9固有の全機能の動作確認結果は示されていない。
+
+spawn/respawn、chat/system message、`/play pit`後の通知、backend切替、block/movement physics、pathfinder、inventory/window、disconnect/reconnectはすべて1.8.9実機テスト待ち。最新版向けの挙動を1.8.9へそのまま当てはめていない。
 
 ## 残っている検証・仕様
 

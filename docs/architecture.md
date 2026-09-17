@@ -12,7 +12,7 @@ Schedulerの移動コストは現在位置からの3D直線距離。全候補の
 
 独立parserは色コードと大小文字を許容し、文全体の構造に一致した場合だけinstance IDを小文字へ正規化する。mini/megaを固定しない。instance IDは英数字・underscore・dot・hyphen、最大128文字を現在の明示的な形式制約とする。別形式が実測されたらparserとテストを変更する。
 
-Mineflayer adapterはsystem messageのみをparserへ渡し、プレイヤーチャットやTitleを使わない。通知受信で「確認済みinstance」を登録するが、Bot所属はその後のspawnで確定する。転送先の通知と到着の区別を保つ。この順序は安全側の初期実装であり、実ネットワークの保証ではない。サーバーがsystem扱いでプレイヤー文章を送る場合は、構造一致だけでは送信元を認証できない。
+Mineflayer adapterは既定でsystem messageだけをparserへ渡す。1.8.9ではchat positionにサーバー通知が届くか未確認のため、debug時は通知形式の候補をchannel別に記録し、ユーザーが実測して`TRANSFER_MESSAGE_CHANNEL=chat`を明示したときだけ送信者情報なしのchatも扱う。chatは送信元認証の証拠ではなく、完全一致文章のspoofリスクがある。Titleは使わない。通知受信で「確認済みinstance」を登録するが、Bot所属はその後のspawnで確定する。転送先の通知と到着の区別を保つ。この順序は安全側の初期実装であり、実ネットワークの保証ではない。サーバーがsystem扱いでプレイヤー文章を送る場合は、構造一致だけでは送信元を認証できない。
 
 respawnはPit→Lobbyの証拠にはならない。未知のワールド変更はUNKNOWN_RETURNとして再同期する。AFK判定は`ReturnClassifier`の未実装placeholderであり、`UnknownReturnClassifier`は常に未判定。正しいAFKメッセージが判明後、parserを追加してBotManagerへ注入する。Titleで推定しない。verified lobby detectorは`notifyLobbyReturn`を呼べる。respawnも既知通知もない無言の復帰は自動検出できない。
 
@@ -45,5 +45,7 @@ Mineflayer adapterのmovementではdigging、ブロック設置用scaffolding、
 JSON snapshotは単一writer、temp/flush/renameとbackupを使用。電源断に対するtransactional exactly-onceを提供するものではない。プラットフォーム固有のrename失敗・ウイルス対策ソフトによるロックはログに残し、次回保存を再試行する。破損はbackup復旧、両方破損なら起動を停止する。
 
 現在の同一プロセスのメリットは共有Fetcher/キューとWindowsでのデバッグ容易性。将来worker化する場合もScheduler/Registryを中央に置き、BotTransportのメッセージへconnection generation/job leaseを含める。今回worker分割、クラウド運用、サーバー側変更は含めない。
+
+1.8.9の静的な対応確認: lockfileのmineflayer 4.39.0、mineflayer-pathfinder 2.4.5、minecraft-protocol 1.68.0、minecraft-data 3.116.0を確認。mineflayerの公式READMEはMinecraft 1.8系列を対応対象に挙げ、version指定例に1.8.9を示している。minecraft-protocolの代表サポート一覧は1.8.8であり、導入済みminecraft-dataは1.8.9指定に対して1.8.8系データ/プロトコル47を解決する。serializer/deserializerとpathfinder API exportのオフラインスモークテストを行う。これらは1.8.9実ネットワークでの互換性を保証しない。pathfinder READMEに1.8.9の個別動作保証は見当たらず、移動・physics・server切替・inventoryは実機検証待ち。
 
 参照: [Mineflayer API](https://github.com/PrismarineJS/mineflayer/blob/master/docs/api.md)、[mineflayer-pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder)。実装時にはlockfileで導入したライブラリの型定義とコードも確認した。

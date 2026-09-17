@@ -105,5 +105,8 @@ test('MockEventProvider filters expiry and does not share mutable results', asyn
 });
 test('configuration defaults are safe and malformed values fail closed', () => {
   assert.equal(loadConfig({}).mode, 'mock'); assert.equal(loadConfig({}).count, 1); assert.equal(loadConfig({}).pathConcurrency, 2);
-  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }]) assert.throws(() => loadConfig(env));
+  assert.equal(loadConfig({}).version, '1.8.9'); assert.equal(loadConfig({ MC_VERSION: '' }).version, '1.8.9');
+  assert.equal(loadConfig({ MC_VERSION: '1.16.5' }).version, '1.16.5');
+  assert.equal(loadConfig({}).transferMessageChannel, 'system');
+  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }, { TRANSFER_MESSAGE_CHANNEL: 'title' }]) assert.throws(() => loadConfig(env));
 });

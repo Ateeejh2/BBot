@@ -88,6 +88,11 @@ export class BotManager {
       b.transport = this.factory(index, {
         spawn: guard(() => this.spawn(b)), worldReset: guard(() => this.worldReset(b)),
         message: text => { if (!this.stopped && b.connection === connection) this.message(b, text); },
+        diagnostic: (name, fields) => {
+          if (this.stopped || b.connection !== connection) return;
+          this.logger.log('debug', name, { botId: b.id, accountLabel: b.accountLabel,
+            instance: b.instanceId, state: b.machine.state, ...fields });
+        },
         end: guard(() => this.disconnected(b)), error: guard(() => { this.log(b, 'transport error (details withheld)'); this.disconnected(b); })
       });
     } catch { this.disconnected(b); }

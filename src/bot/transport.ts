@@ -1,6 +1,7 @@
 import type { Position } from '../core/types.js';
 export interface TransportEvents {
   spawn(): void; worldReset(): void; message(text: string): void; end(): void; error(): void;
+  diagnostic?(name: string, fields?: Record<string, unknown>): void;
 }
 export interface BotTransport {
   position(): Position | undefined;

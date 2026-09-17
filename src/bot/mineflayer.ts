@@ -1,6 +1,8 @@
 import { createBot } from 'mineflayer';
 import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
 import { join } from 'node:path';
+import { parseInstance } from '../instances/parser.js';
+import { eligibleTransferChannel } from './message-source.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 /** The only module allowed to import Mineflayer. */
@@ -22,18 +24,26 @@ export function createMineflayerTransport(config: Config, index: number, events:
     bot.pathfinder.setMovements(movements);
     bot.pathfinder.tickTimeout = 10;
     bot.pathfinder.thinkTimeout = config.pathTimeoutMs;
+    events.diagnostic?.('spawn observed', { inventorySlots: bot.inventory?.slots.length ?? null });
     events.spawn();
   };
-  const reset = () => events.worldReset();
+  const reset = () => { events.diagnostic?.('respawn observed'); events.worldReset(); };
+  const windowOpen = () => events.diagnostic?.('window opened');
+  const windowClose = () => events.diagnostic?.('window closed');
   const message = (text: string, position: string, _json: unknown, sender?: string | null) => {
-    // Player chat and action-bar messages are not authoritative server notifications.
-    if (position !== 'system' || (sender && sender !== '00000000-0000-0000-0000-000000000000')) return;
+    // On legacy protocol, the network may deliver server text in chat (unverified).
+    // Observe both channels without recording message contents. Chat requires explicit opt-in.
+    const candidate = parseInstance(text);
+    const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel);
+    if (candidate) events.diagnostic?.('transfer text observed', { channel: position, senderPresent: Boolean(sender), eligible });
+    if (!eligible) return;
     events.message(text);
   };
   const end = () => { if (!closed) events.end(); };
   const error = () => { if (!closed) events.error(); };
   bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('end', end); bot.on('error', error);
+  if (config.level === 'debug') { bot.on('windowOpen', windowOpen); bot.on('windowClose', windowClose); }
   return {
     position: () => bot.entity?.position ? { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z } : undefined,
     chat: command => { if (closed) throw new Error('Transport closed'); bot.chat(command); },
@@ -53,7 +63,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       if (closed) return; closed = true;
       stopPath();
       bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
-      bot.removeListener('end', end);
+      bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
       // Keep the guarded error listener until transport GC to absorb late socket errors.
       bot.end('BBot stopped');
     }

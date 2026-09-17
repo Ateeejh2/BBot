@@ -19,12 +19,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const count = integer('BOT_COUNT', 1, 1, 20);
   const host = env.SERVER_HOST ?? 'localhost';
   if (!/^[a-z\d.:_-]+$/i.test(host)) throw new Error('Invalid SERVER_HOST');
-  const version = env.MC_VERSION || undefined;
-  if (version && !/^\d+\.\d+(\.\d+)?$/.test(version)) throw new Error('Invalid MC_VERSION');
+  const version = env.MC_VERSION?.trim() || '1.8.9';
+  if (!/^\d+\.\d+(\.\d+)?$/.test(version)) throw new Error('Invalid MC_VERSION');
   const reconnectBaseMs = integer('RECONNECT_BASE_MS', 5000, 100, 3_600_000);
   const reconnectMaxMs = integer('RECONNECT_MAX_MS', 120000, reconnectBaseMs, 3_600_000);
   const lobbyCommand = env.LOBBY_COMMAND || undefined;
   if (lobbyCommand && (!/^\/[a-z\d _-]{1,80}$/i.test(lobbyCommand) || /^\/server\b/i.test(lobbyCommand))) throw new Error('Invalid LOBBY_COMMAND');
+  const transferMessageChannel = env.TRANSFER_MESSAGE_CHANNEL ?? 'system';
+  if (!['system', 'chat'].includes(transferMessageChannel)) throw new Error('Invalid TRANSFER_MESSAGE_CHANNEL');
   const distributionEnabled = bool('DISTRIBUTION_ENABLED', false);
   if (mode === 'live' && distributionEnabled && !lobbyCommand) throw new Error('Distribution requires a verified LOBBY_COMMAND');
   const suspectMs = integer('INSTANCE_SUSPECT_MS', 300000, 1000, 86400000);
@@ -55,7 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     maxJobs: integer('MAX_JOBS', 2000, 20, 100000),
     maxInstances: integer('MAX_INSTANCES', 1000, 20, 100000),
     suspectMs, inactiveMs,
-    distributionEnabled, lobbyCommand,
+    distributionEnabled, lobbyCommand, transferMessageChannel: transferMessageChannel as 'system' | 'chat',
     rerollMaxAttempts: integer('REROLL_MAX_ATTEMPTS', 3, 1, 100),
     rerollCooldownMs: integer('REROLL_COOLDOWN_MS', 60000, 1000, 3600000),
     dataDir: resolve(env.DATA_DIR ?? 'data'), authDir: resolve('.auth'),
