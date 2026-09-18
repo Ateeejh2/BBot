@@ -173,7 +173,7 @@ export class BotManager {
         end: guard(() => { this.checkSessionAfterConnectFailure(b); this.disconnected(b); }),
         error: guard(() => { this.log(b, 'transport error (details withheld)'); this.checkSessionAfterConnectFailure(b); this.disconnected(b); })
       });
-    } catch { this.disconnected(b); }
+    } catch { this.checkSessionAfterConnectFailure(b); this.disconnected(b); }
   }
   private spawn(b: ManagedBot): void {
     b.ready = true;
