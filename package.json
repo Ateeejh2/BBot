@@ -10,7 +10,8 @@
     "start:mock": "node dist/src/index.js --mock",
     "test:soak": "npm run build && node dist/scripts/soak.js",
     "setup:live": "node scripts/setup-live-test.mjs",
-    "setup:viewer": "node scripts/setup-viewer.mjs"
+    "setup:viewer": "node scripts/setup-viewer.mjs",
+    "viewer:tunnel": "node scripts/viewer-tunnel.mjs"
   },
   "repository": {
     "type": "git",
