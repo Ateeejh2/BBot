@@ -33,10 +33,27 @@ export function createMineflayerTransport(config: Config, index: number, events:
   const windowClose = () => events.diagnostic?.('window closed');
   const message = (text: string, position: string, _json: unknown, sender?: string | null) => {
     // On legacy protocol, the network may deliver server text in chat (unverified).
-    // Observe both channels without recording message contents. Chat requires explicit opt-in.
+    // Observe likely transfer messages without recording their contents. Chat requires explicit opt-in.
+    const clean = text.replace(/§[0-9a-fk-or]/gi, '').trim();
+    const lower = clean.toLowerCase();
     const candidate = parseInstance(text);
     const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel);
-    if (candidate) events.diagnostic?.('transfer text observed', { channel: position, senderPresent: Boolean(sender), eligible });
+    const looksTransferRelated =
+      candidate !== undefined ||
+      lower.includes('server found') ||
+      lower.includes('sending to') ||
+      (lower.includes('server') && lower.includes('sending'));
+    if (looksTransferRelated) {
+      events.diagnostic?.('transfer-like text observed', {
+        channel: position,
+        senderPresent: Boolean(sender),
+        selectedChannel: config.transferMessageChannel,
+        eligible,
+        exactPatternMatch: candidate !== undefined,
+        hasServerFound: lower.includes('server found'),
+        hasSendingTo: lower.includes('sending to')
+      });
+    }
     if (!eligible) return;
     events.message(text);
   };
