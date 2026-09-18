@@ -199,7 +199,7 @@ export class ControlStore {
     if (!this.manager) throw Error('CONFLICT');
     const started: string[] = [], skipped: Array<{ botId: string; reason: string }> = [];
     for (const bot of this.manager.views()) {
-      if (bot.state !== 'DISCONNECTED') { skipped.push({ botId: bot.id, reason: 'NOT_DISCONNECTED' }); continue; }
+      if (bot.state !== 'DISCONNECTED' || bot.startQueued) { skipped.push({ botId: bot.id, reason: bot.startQueued ? 'ALREADY_QUEUED' : 'NOT_DISCONNECTED' }); continue; }
       if (!bot.accountId) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
       const account = this.entries.find(a => a.id === bot.accountId);
       if (!account || account.assignedBot !== bot.id) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
@@ -221,9 +221,9 @@ export class ControlStore {
   }
   saveServer(body: unknown): Promise<ServerConnection> {
     const valid = validateConnection(body);
-    if (!this.manager?.allDisconnected()) throw Error('INVALID_STATE');
+    if (!this.manager?.allStopped()) throw Error('INVALID_STATE');
     return this.exclusive(async () => {
-      return this.manager!.withConfigurationLock(() => this.manager!.allDisconnected(), async () => {
+      return this.manager!.withConfigurationLock(() => this.manager!.allStopped(), async () => {
         const next = { ...valid, revision: this.server.revision + 1 };
         await atomicJson(join(this.config.dataDir, 'server-connection.json'), next);
         this.server = next; this.config.host = next.host; this.config.port = next.port;
@@ -260,7 +260,7 @@ export class ControlStore {
       try {
         await this.manager!.withConfigurationLock(() => true, async () => {
           const shouldAssign = this.config.count === 1 && !this.entries.some(a => a.assignedBot || a.status === 'READY') &&
-            this.manager!.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED';
+            this.manager!.isBotStopped('bot-1');
           if (shouldAssign) entry.assignedBot = 'bot-1';
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
           this.entries.push(entry);
@@ -283,13 +283,13 @@ export class ControlStore {
       if (botId) {
         const bot = this.manager?.views().find(b => b.id === botId);
         if (!bot) throw Error('UNKNOWN_BOT');
-        if (bot.state !== 'DISCONNECTED') throw Error('INVALID_STATE');
+        if (!this.manager!.isBotStopped(botId)) throw Error('INVALID_STATE');
       }
       const previous = readSessionCredential(this.config.authDir, id);
       const next = await this.resolveSession(accessToken);
       if (next.selectedProfile.id !== previous.selectedProfile.id) throw Error('PROFILE_MISMATCH');
       return this.manager!.withConfigurationLock(
-        () => !botId || this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED',
+        () => !botId || this.manager!.isBotStopped(botId),
         async () => {
           await saveSessionCredential(this.config.authDir, id, next);
           try {
@@ -333,10 +333,10 @@ export class ControlStore {
       if (!account || account.kind !== 'MICROSOFT') return;
       const autoAssign = status === 'READY' && this.config.count === 1 &&
         !this.entries.some(a => a.assignedBot || (a.id !== id && a.status === 'READY')) &&
-        this.manager?.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED';
+        this.manager?.isBotStopped('bot-1');
       if (autoAssign) {
         await this.manager!.withConfigurationLock(
-          () => this.manager!.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED',
+          () => this.manager!.isBotStopped('bot-1'),
           async () => {
             const updated = this.entries.map(a => a.id === id ? {
               ...a, status, ...(cleanName ? { minecraftName: cleanName } : {}), assignedBot: 'bot-1'
@@ -362,9 +362,9 @@ export class ControlStore {
     return this.exclusive(async () => {
       const bot = this.manager?.views().find(b => b.id === botId);
       if (!bot) throw Error('UNKNOWN_BOT');
-      if (bot.state !== 'DISCONNECTED') throw Error('INVALID_STATE');
+      if (!this.manager!.isBotStopped(botId)) throw Error('INVALID_STATE');
       if (accountId === null) {
-        return this.manager!.withConfigurationLock(() => this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED', async () => {
+        return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId), async () => {
           const updated = this.entries.map(a => a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
           this.entries = updated;
@@ -375,7 +375,7 @@ export class ControlStore {
       const account = this.entries.find(a => a.id === accountId);
       if (!account) throw Error('UNKNOWN_ACCOUNT');
       if (account.status !== 'READY' || this.entries.some(a => a.id === accountId && a.assignedBot && a.assignedBot !== botId)) throw Error('CONFLICT');
-      return this.manager!.withConfigurationLock(() => this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED', async () => {
+      return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId), async () => {
         const updated = this.entries.map(a => a.id === accountId ? { ...a, assignedBot: botId } :
           a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
@@ -393,10 +393,10 @@ export class ControlStore {
       if (botId) {
         const bot = this.manager?.views().find(b => b.id === botId);
         if (!bot) throw Error('UNKNOWN_BOT');
-        if (bot.state !== 'DISCONNECTED') throw Error('INVALID_STATE');
+        if (!this.manager!.isBotStopped(botId)) throw Error('INVALID_STATE');
       }
       return this.manager!.withConfigurationLock(
-        () => !botId || this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED',
+        () => !botId || this.manager!.isBotStopped(botId),
         async () => {
           const updated = this.entries.filter(a => a.id !== id);
           if (account.kind === 'SESSION') await deleteSessionCredential(this.config.authDir, id);
