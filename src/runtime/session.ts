@@ -22,6 +22,13 @@ export function validateSessionInput(body: unknown): { label: string; accessToke
   return { label: b.label, accessToken: b.accessToken };
 }
 
+export function validateSessionTokenInput(body: unknown): string {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
+  const b = body as Record<string, unknown>;
+  if (Object.keys(b).join(',') !== 'accessToken' || !opaque(b.accessToken, 2048)) throw Error('INVALID_INPUT');
+  return b.accessToken;
+}
+
 export async function resolveSessionCredential(accessToken: string, fetchImpl: typeof fetch = fetch): Promise<SessionCredential> {
   if (!opaque(accessToken, 2048)) throw Error('INVALID_SESSION_TOKEN');
   try {
