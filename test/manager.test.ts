@@ -20,9 +20,9 @@ class ControlledTransport implements BotTransport {
   stopPath() { this.stopped++; }
   close() { this.closed = true; }
 }
-function fixture(count = 1, task: TaskHandler = new MockTaskHandler()) {
+function fixture(count = 1, task: TaskHandler = new MockTaskHandler(), apiEnabled = false) {
   let now = 0; const connections: ControlledTransport[] = [];
-  const config = loadConfig({ BOT_COUNT: String(count), CONNECTION_SPACING_MS: '100', PLAY_COOLDOWN_MS: '1000', JOIN_TIMEOUT_MS: '1000', RECONNECT_BASE_MS: '100', RECONNECT_MAX_MS: '1000', JOB_RETRY_MS: '100', TASK_TIMEOUT_MS: '100' });
+  const config = loadConfig({ BOT_COUNT: String(count), CONNECTION_SPACING_MS: '100', PLAY_COOLDOWN_MS: '1000', JOIN_TIMEOUT_MS: '1000', RECONNECT_BASE_MS: '100', RECONNECT_MAX_MS: '1000', JOB_RETRY_MS: '100', TASK_TIMEOUT_MS: '100', ...(apiEnabled ? { API_ENABLED: 'true', API_ORIGIN: 'http://localhost:5173' } : {}) });
   const scheduler = new Scheduler(3, 100, 100); const paths = new PathfindingController(2, 1000);
   const registry = new InstanceRegistry();
   const manager = new BotManager(config, (_i, events) => { const t = new ControlledTransport(events); connections.push(t); return t; }, registry, scheduler, paths, task, new Logger('error'), () => now, () => 1);
@@ -37,6 +37,17 @@ test('first connection waits for spawn and cooldown; notification alone does not
   assert.deepEqual(t.commands, ['/play pit']); t.events.message('SERVER FOUND! Sending to New-9!');
   assert.equal(f.manager.views()[0]?.instanceId, undefined);
   t.events.worldReset(); t.events.spawn(); assert.equal(f.manager.views()[0]?.instanceId, 'new-9'); f.manager.stop();
+});
+test('web Start automatically continues from lobby into Pit after cooldown', () => {
+  const f = fixture(1, new MockTaskHandler(), true);
+  f.tick(0); assert.equal(f.connections.length, 0); assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
+  f.manager.connectBot('bot-1'); const t = f.connections[0]!;
+  assert.equal(f.manager.views()[0]?.state, 'CONNECTING');
+  t.events.spawn(); assert.equal(f.manager.views()[0]?.state, 'LOBBY');
+  f.tick(999); assert.deepEqual(t.commands, []);
+  f.tick(1000); assert.deepEqual(t.commands, ['/play pit']); assert.equal(f.manager.views()[0]?.state, 'JOINING_PIT');
+  f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
+  f.manager.stop();
 });
 test('notification after spawn remains unconfirmed and cannot schedule a job', () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000);
