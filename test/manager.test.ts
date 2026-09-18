@@ -47,6 +47,27 @@ test('kick reason is retained on the individual bot view', () => {
   assert.equal(view.kickedAt, 0);
   f.manager.stop();
 });
+test('invalid Session auth after connection failure pauses automatic reconnect', async () => {
+  const f = fixture(1, new MockTaskHandler(), true);
+  f.config.mode = 'live';
+  const account = { label:'Session', username:'SessionMC', auth:'mojang' as const, kind:'SESSION' as const, accountId:'11111111-1111-4111-8111-111111111111' };
+  f.manager.assignAccount('bot-1', account.accountId, account, 'SessionMC');
+  let checked = 0;
+  f.manager.setSessionFailureHandler(async (botId, accountId) => {
+    checked++;
+    assert.equal(botId,'bot-1'); assert.equal(accountId,account.accountId);
+    return true;
+  });
+  f.manager.connectBot('bot-1');
+  const t = f.connections[0]!;
+  t.events.error();
+  await delay(0);
+  assert.equal(checked,1);
+  assert.equal(f.manager.views()[0]?.state,'DISCONNECTED');
+  f.tick(1000);
+  assert.equal(f.connections.length,1);
+  f.manager.stop();
+});
 test('web Start automatically continues from lobby into Pit after cooldown', () => {
   const f = fixture(1, new MockTaskHandler(), true);
   f.tick(0); assert.equal(f.connections.length, 0); assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
