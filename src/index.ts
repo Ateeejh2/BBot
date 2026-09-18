@@ -41,7 +41,18 @@ async function main(): Promise<void> {
     else if (command === 'status') logger.log('info', 'status', { bots: manager.views() });
     else if (command === 'recover' && botId) manager.notifyLobbyReturn(botId);
   });
-  try { await app.start(); } catch { input.close(); manager.stop(); throw new Error('Startup failed; check local config/state'); }
+  try { await app.start(); } catch (error) { input.close(); manager.stop(); throw error; }
   logger.log('info', 'BBot started', { mode: config.mode, botCount: config.count, pathConcurrency: config.pathConcurrency });
 }
-void main().catch(() => { process.stderr.write('BBot startup failed. Check configuration, accounts file and local state. No credentials were logged.\n'); process.exitCode = 1; });
+function safeStartupError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : 'Unknown startup error';
+  return raw
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]')
+    .replace(/(token|password|secret|authorization)\s*[:=]\s*\S+/gi, '$1=[REDACTED]')
+    .replace(/[\r\n]+/g, ' ')
+    .slice(0, 1000);
+}
+void main().catch(error => {
+  process.stderr.write(`BBot startup failed: ${safeStartupError(error)}\nNo credentials were logged.\n`);
+  process.exitCode = 1;
+});
