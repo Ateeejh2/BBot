@@ -10,3 +10,4 @@ logs/
 *.log
 coverage/
 *.tsbuildinfo
+.tools/
