@@ -195,6 +195,30 @@ export class ControlStore {
       return false;
     }
   }
+  async startAssignedBots(): Promise<{ started: string[]; skipped: Array<{ botId: string; reason: string }> }> {
+    if (!this.manager) throw Error('CONFLICT');
+    const started: string[] = [], skipped: Array<{ botId: string; reason: string }> = [];
+    for (const bot of this.manager.views()) {
+      if (bot.state !== 'DISCONNECTED') { skipped.push({ botId: bot.id, reason: 'NOT_DISCONNECTED' }); continue; }
+      if (!bot.accountId) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
+      const account = this.entries.find(a => a.id === bot.accountId);
+      if (!account || account.assignedBot !== bot.id) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
+      if (account.status !== 'READY') { skipped.push({ botId: bot.id, reason: 'ACCOUNT_NOT_READY' }); continue; }
+      try {
+        await this.prepareBotStart(bot.id);
+        this.manager.connectBot(bot.id);
+        started.push(bot.id);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'START_FAILED';
+        skipped.push({ botId: bot.id, reason: ['SESSION_AUTH_REQUIRED','INVALID_STATE','CONFLICT'].includes(code) ? code : 'START_FAILED' });
+      }
+    }
+    return { started, skipped };
+  }
+  stopAllBots(): { stopped: string[] } {
+    if (!this.manager) throw Error('CONFLICT');
+    return { stopped: this.manager.stopAllBots() };
+  }
   saveServer(body: unknown): Promise<ServerConnection> {
     const valid = validateConnection(body);
     if (!this.manager?.allDisconnected()) throw Error('INVALID_STATE');
