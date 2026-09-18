@@ -65,6 +65,11 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     if (req.method === 'GET' && req.url === '/api/v1/status') { send(res, 200, snapshot()); return; }
     if (controls && req.method === 'GET' && req.url === '/api/v1/settings/server') { send(res, 200, controls.getServer()); return; }
     if (controls && req.method === 'GET' && req.url === '/api/v1/accounts') { send(res, 200, { accounts: controls.listAccounts() }); return; }
+    const authChallenge = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/auth-challenge$/.exec(req.url ?? '');
+    if (controls && req.method === 'GET' && authChallenge) {
+      send(res, 200, { challenge: controls.getAuthChallenge(authChallenge[1]!) ?? null });
+      return;
+    }
     const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
