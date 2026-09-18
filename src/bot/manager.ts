@@ -82,7 +82,10 @@ export class BotManager {
   }
   disconnectBot(id: string): void {
     const b = this.controlled(id);
-    if (b.machine.state === 'DISCONNECTED') throw new Error('INVALID_STATE');
+    if (b.machine.state === 'DISCONNECTED') {
+      if (!b.paused) { b.paused = true; b.authCheckPending = false; return; }
+      throw new Error('INVALID_STATE');
+    }
     b.paused = true; this.disconnected(b);
   }
   assignAccount(botId: string, accountId: string, account: Config['accounts'][number], minecraftName?: string): void {
@@ -97,12 +100,17 @@ export class BotManager {
     b.accountId = undefined; b.accountLabel = b.id; b.minecraftName = undefined; b.authCheckPending = false;
   }
   allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
+  isBotStopped(id: string): boolean {
+    const b = this.controlled(id);
+    return b.machine.state === 'DISCONNECTED' && b.paused && !b.authCheckPending;
+  }
+  allStopped(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED' && b.paused && !b.authCheckPending); }
   async withConfigurationLock<T>(allowed: () => boolean, operation: () => Promise<T>): Promise<T> {
     if (this.configurationLocked || !allowed()) throw Error('INVALID_STATE');
     this.configurationLocked = true;
     try { return await operation(); } finally { this.configurationLocked = false; }
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
