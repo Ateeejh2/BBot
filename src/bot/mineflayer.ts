@@ -6,6 +6,9 @@ import { parseInstance } from '../instances/parser.js';
 import { eligibleTransferChannel } from './message-source.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
+type ViewerStarter = (bot: ReturnType<typeof createBot>, options: { port: number; firstPerson: boolean; viewDistance: number }) => void;
+type ViewerModule = { mineflayer?: ViewerStarter; default?: { mineflayer?: ViewerStarter } };
+type ViewerBot = ReturnType<typeof createBot> & { viewer?: { close(): void } };
 /** The only module allowed to import Mineflayer. */
 export function createMineflayerTransport(config: Config, index: number, events: TransportEvents): BotTransport {
   const account = config.accounts[index]!;
@@ -17,7 +20,33 @@ export function createMineflayerTransport(config: Config, index: number, events:
   });
   bot.loadPlugin(pathfinder);
   let closed = false;
+  let viewerStarted = false;
+  let viewerStarting = false;
   const stopPath = () => { bot.pathfinder.setGoal(null); bot.clearControlStates(); };
+  const startViewer = async () => {
+    const botId = `bot-${index + 1}`;
+    if (!config.viewer.enabled || config.viewer.botId !== botId || viewerStarted || viewerStarting || closed) return;
+    viewerStarting = true;
+    try {
+      // Keep prismarine-viewer optional so normal BBot installs and CI do not pull a renderer stack.
+      const moduleName = 'prismarine-viewer';
+      const loaded = await import(moduleName) as ViewerModule;
+      const mineflayerViewer = loaded.mineflayer ?? loaded.default?.mineflayer;
+      if (typeof mineflayerViewer !== 'function') throw new Error('mineflayer viewer export missing');
+      mineflayerViewer(bot, {
+        port: config.viewer.port,
+        firstPerson: config.viewer.firstPerson,
+        viewDistance: config.viewer.viewDistance
+      });
+      viewerStarted = true;
+      events.diagnostic?.('viewer started', { botId, port: config.viewer.port, firstPerson: config.viewer.firstPerson, viewDistance: config.viewer.viewDistance });
+    } catch {
+      process.stderr.write(`[${account.label}] Viewer could not start. Run "npm run setup:viewer" and restart BBot.\n`);
+      events.diagnostic?.('viewer start failed', { botId, port: config.viewer.port });
+    } finally {
+      viewerStarting = false;
+    }
+  };
   const spawn = () => {
     const movements = new Movements(bot);
     movements.canDig = false; movements.allow1by1towers = false; movements.allowParkour = false;
@@ -26,6 +55,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     bot.pathfinder.tickTimeout = 10;
     bot.pathfinder.thinkTimeout = config.pathTimeoutMs;
     events.diagnostic?.('spawn observed', { inventorySlots: bot.inventory?.slots.length ?? null });
+    void startViewer();
     events.spawn();
   };
   const reset = () => { events.diagnostic?.('respawn observed'); events.worldReset(); };
@@ -96,6 +126,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
       bot.removeListener('kicked', kicked); bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
+      try { (bot as ViewerBot).viewer?.close(); } catch { /* Viewer shutdown must not block bot shutdown. */ }
+      viewerStarted = false;
       // Keep the guarded error listener until transport GC to absorb late socket errors.
       bot.end('BBot stopped');
     }
