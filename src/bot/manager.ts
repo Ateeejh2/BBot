@@ -93,6 +93,12 @@ export class BotManager {
           this.logger.log('debug', name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...fields });
         },
+        kicked: (reason, loggedIn) => {
+          if (this.stopped || b.connection !== connection) return;
+          this.logger.log('warn', 'bot kicked', { botId: b.id, accountLabel: b.accountLabel,
+            instance: b.instanceId, state: b.machine.state, kickReason: reason, loggedIn: loggedIn ?? null });
+          this.disconnected(b);
+        },
         end: guard(() => this.disconnected(b)), error: guard(() => { this.log(b, 'transport error (details withheld)'); this.disconnected(b); })
       });
     } catch { this.disconnected(b); }
