@@ -2,12 +2,14 @@ import { createBot } from 'mineflayer';
 import pathfinderModule from 'mineflayer-pathfinder';
 const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import { parseInstance } from '../instances/parser.js';
 import { eligibleTransferChannel } from './message-source.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 type ViewerStarter = (bot: ReturnType<typeof createBot>, options: { port: number; firstPerson: boolean; viewDistance: number }) => void;
-type ViewerModule = { mineflayer?: ViewerStarter; default?: { mineflayer?: ViewerStarter } };
+type ViewerModule = { mineflayer?: ViewerStarter };
+const require = createRequire(import.meta.url);
 type ViewerBot = ReturnType<typeof createBot> & { viewer?: { close(): void } };
 /** The only module allowed to import Mineflayer. */
 export function createMineflayerTransport(config: Config, index: number, events: TransportEvents): BotTransport {
@@ -28,10 +30,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
     if (!config.viewer.enabled || config.viewer.botId !== botId || viewerStarted || viewerStarting || closed) return;
     viewerStarting = true;
     try {
-      // Keep prismarine-viewer optional so normal BBot installs and CI do not pull a renderer stack.
-      const moduleName = 'prismarine-viewer';
-      const loaded = await import(moduleName) as ViewerModule;
-      const mineflayerViewer = loaded.mineflayer ?? loaded.default?.mineflayer;
+      // prismarine-viewer is CommonJS. createRequire avoids Node ESM interop differences.
+      // Keep it optional so normal BBot installs and CI do not pull a renderer stack.
+      const loaded = require('prismarine-viewer') as ViewerModule;
+      const mineflayerViewer = loaded.mineflayer;
       if (typeof mineflayerViewer !== 'function') throw new Error('mineflayer viewer export missing');
       mineflayerViewer(bot, {
         port: config.viewer.port,
@@ -40,9 +42,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
       });
       viewerStarted = true;
       events.diagnostic?.('viewer started', { botId, port: config.viewer.port, firstPerson: config.viewer.firstPerson, viewDistance: config.viewer.viewDistance });
-    } catch {
-      process.stderr.write(`[${account.label}] Viewer could not start. Run "npm run setup:viewer" and restart BBot.\n`);
-      events.diagnostic?.('viewer start failed', { botId, port: config.viewer.port });
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, ' ').slice(0, 500);
+      process.stderr.write(`[${account.label}] Viewer could not start: ${reason}\n`);
+      events.diagnostic?.('viewer start failed', { botId, port: config.viewer.port, reason });
     } finally {
       viewerStarting = false;
     }
