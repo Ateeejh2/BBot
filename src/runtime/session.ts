@@ -5,23 +5,44 @@ import { join } from 'node:path';
 
 export interface SessionCredential {
   accessToken: string;
-  clientToken: string;
+  clientToken?: string;
   selectedProfile: { name: string; id: string };
 }
-const uuid = /^[0-9a-f]{32}$|^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const opaque = (value: unknown, max: number): value is string => typeof value === 'string' &&
   value.length >= 1 && value.length <= max && /^[\x21-\x7e]+$/.test(value);
 const profileName = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(value);
+const profileId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value);
 
-export function validateSessionInput(body: unknown): { label: string; credential: SessionCredential } {
+export function validateSessionInput(body: unknown): { label: string; accessToken: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
   const b = body as Record<string, unknown>;
-  if (Object.keys(b).sort().join(',') !== 'accessToken,clientToken,kind,label,profileId,profileName' ||
+  if (Object.keys(b).sort().join(',') !== 'accessToken,kind,label' ||
       b.kind !== 'SESSION' || typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label) ||
-      !opaque(b.accessToken, 2048) || !opaque(b.clientToken, 256) ||
-      !profileName(b.profileName) || typeof b.profileId !== 'string' || !uuid.test(b.profileId)) throw Error('INVALID_INPUT');
-  return { label: b.label, credential: { accessToken: b.accessToken, clientToken: b.clientToken,
-    selectedProfile: { name: b.profileName, id: b.profileId.replace(/-/g, '').toLowerCase() } } };
+      !opaque(b.accessToken, 2048)) throw Error('INVALID_INPUT');
+  return { label: b.label, accessToken: b.accessToken };
+}
+
+export async function resolveSessionCredential(accessToken: string, fetchImpl: typeof fetch = fetch): Promise<SessionCredential> {
+  if (!opaque(accessToken, 2048)) throw Error('INVALID_SESSION_TOKEN');
+  try {
+    const response = await fetchImpl('https://api.minecraftservices.com/minecraft/profile', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!response.ok) throw Error('INVALID_SESSION_TOKEN');
+    const raw: unknown = await response.json();
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('INVALID_SESSION_TOKEN');
+    const profile = raw as Record<string, unknown>;
+    if (!profileName(profile.name) || !profileId(profile.id)) throw Error('INVALID_SESSION_TOKEN');
+    return {
+      accessToken,
+      selectedProfile: { name: profile.name, id: profile.id.toLowerCase() }
+    };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'INVALID_SESSION_TOKEN') throw error;
+    throw Error('INVALID_SESSION_TOKEN');
+  }
 }
 
 export function sessionCredentialPath(authDir: string, id: string): string {
@@ -36,10 +57,13 @@ export function readSessionCredential(authDir: string, id: string): SessionCrede
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('INVALID_SESSION_CREDENTIAL');
     const c = raw as Record<string, unknown>;
     const p = c.selectedProfile;
-    if (Object.keys(c).sort().join(',') !== 'accessToken,clientToken,selectedProfile' ||
-        !opaque(c.accessToken, 2048) || !opaque(c.clientToken, 256) || !p || typeof p !== 'object' || Array.isArray(p) ||
+    const keys = Object.keys(c).sort().join(',');
+    if (!['accessToken,selectedProfile','accessToken,clientToken,selectedProfile'].includes(keys) ||
+        !opaque(c.accessToken, 2048) ||
+        (c.clientToken !== undefined && !opaque(c.clientToken, 256)) ||
+        !p || typeof p !== 'object' || Array.isArray(p) ||
         Object.keys(p).sort().join(',') !== 'id,name' || !profileName((p as Record<string, unknown>).name) ||
-        typeof (p as Record<string, unknown>).id !== 'string' || !/^[0-9a-f]{32}$/.test((p as Record<string, unknown>).id as string)) throw Error('INVALID_SESSION_CREDENTIAL');
+        !profileId((p as Record<string, unknown>).id)) throw Error('INVALID_SESSION_CREDENTIAL');
     return c as unknown as SessionCredential;
   } catch { throw Error('INVALID_SESSION_CREDENTIAL'); }
 }
