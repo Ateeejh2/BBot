@@ -25,6 +25,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let viewerStarted = false;
   let viewerStarting = false;
   const stopPath = () => { bot.pathfinder.setGoal(null); bot.clearControlStates(); };
+  const reportIdentity = () => {
+    const username = bot.username;
+    if (typeof username === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(username)) events.identity?.(username);
+  };
   const startViewer = async () => {
     const botId = `bot-${index + 1}`;
     if (!config.viewer.enabled || config.viewer.botId !== botId || viewerStarted || viewerStarting || closed) return;
@@ -58,6 +62,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     bot.pathfinder.tickTimeout = 10;
     bot.pathfinder.thinkTimeout = config.pathTimeoutMs;
     events.diagnostic?.('spawn observed', { inventorySlots: bot.inventory?.slots.length ?? null });
+    reportIdentity();
     void startViewer();
     events.spawn();
   };
@@ -106,7 +111,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   };
   const end = () => { if (!closed) events.end(); };
   const error = () => { if (!closed) events.error(); };
-  bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
+  bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('kicked', kicked); bot.on('end', end); bot.on('error', error);
   if (config.level === 'debug') { bot.on('windowOpen', windowOpen); bot.on('windowClose', windowClose); }
   return {
@@ -127,7 +132,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     close: () => {
       if (closed) return; closed = true;
       stopPath();
-      bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
+      bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
       bot.removeListener('kicked', kicked); bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
       try { (bot as ViewerBot).viewer?.close(); } catch { /* Viewer shutdown must not block bot shutdown. */ }
       viewerStarted = false;
