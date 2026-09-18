@@ -110,7 +110,7 @@ export class ControlStore {
         (a.authError === undefined || a.authError === 'SESSION_TOKEN_INVALID') &&
         (a.minecraftName === undefined || (typeof a.minecraftName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(a.minecraftName))) &&
         (a.kind === 'MICROSOFT' ? typeof a.cacheKey === 'string' && a.cacheKey.length <= 256 && /^[\w-]{1,40}$/.test(a.folder) :
-          a.status === 'READY' && typeof a.minecraftName === 'string' && a.cacheKey === undefined && a.folder === undefined) &&
+          ['READY', 'ERROR'].includes(a.status) && typeof a.minecraftName === 'string' && a.cacheKey === undefined && a.folder === undefined) &&
         Number.isSafeInteger(a.createdAt) && (a.assignedBot === undefined || /^bot-[1-9]\d*$/.test(a.assignedBot)))) throw Error('INVALID_RUNTIME_ACCOUNTS');
       this.entries = raw.map(a => ({ ...a, status: a.status === 'WAITING_FOR_LOGIN' ? 'ERROR' : a.status }));
       for (const a of this.entries) if (a.kind === 'SESSION') readSessionCredential(this.config.authDir, a.id);
