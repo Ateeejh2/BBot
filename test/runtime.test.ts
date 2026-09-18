@@ -24,12 +24,16 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
   config.authDir = join(dir,'.auth');
   const authSecret = 'SECRET_REFRESH_TOKEN_987654321';
   const sessionSecret = 'TEST_SESSION_ACCESS_24680';
+  const replacementSecret = 'TEST_SESSION_ACCESS_REPLACED_86420';
+  const otherProfileSecret = 'TEST_OTHER_PROFILE_11223';
   const controls = new ControlStore(config, async account => {
     if (account.label === 'Failure') throw Error(authSecret);
     return account.label === 'Scout' ? { minecraftName: 'RealScout' } : {};
   }, async token => {
-    if (token !== sessionSecret) throw Error('INVALID_SESSION_TOKEN');
-    return { accessToken: token, selectedProfile: { name: 'SessionMC', id: '12345678123412341234123456789abc' } };
+    if (token === sessionSecret) return { accessToken: token, selectedProfile: { name: 'SessionMC', id: '12345678123412341234123456789abc' } };
+    if (token === replacementSecret) return { accessToken: token, selectedProfile: { name: 'SessionMC2', id: '12345678123412341234123456789abc' } };
+    if (token === otherProfileSecret) return { accessToken: token, selectedProfile: { name: 'OtherMC', id: 'abcdefabcdefabcdefabcdefabcdefab' } };
+    throw Error('INVALID_SESSION_TOKEN');
   });
   await controls.load();
   const captured: Array<{host:string;port:number;username:string;label:string}> = [];
@@ -128,13 +132,24 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     sessionWs.close();assert.equal(sessionPacket.includes(sessionSecret),false);
     assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:account.id})).status,200);
     assert.equal(manager.views()[0]?.minecraftName,'SessionMC');
+    assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:otherProfileSecret})).status,409);
+    assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:'BAD_TOKEN'})).status,422);
+    assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:replacementSecret,extra:true})).status,400);
+    assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:replacementSecret})).status,200);
+    assert.equal(manager.views()[0]?.minecraftName,'SessionMC2');
+    const replacedFile=await readFile(file,'utf8');
+    assert.equal(replacedFile.includes(replacementSecret),true);
+    assert.equal(replacedFile.includes(sessionSecret),false);
+    assert.equal((await (await get('/api/v1/status')).text()).includes(replacementSecret),false);
     const options=createBotOptions(config,0);
     assert.equal(options.auth,'mojang');assert.equal(options.skipValidation,true);
     assert.equal(options.profilesFolder,false);assert.equal(options.onMsaCode,undefined);
-    assert.equal(options.session?.accessToken,sessionSecret);
+    assert.equal(options.session?.accessToken,replacementSecret);
     assert.equal(options.session?.selectedProfile.id,'12345678123412341234123456789abc');
+    assert.equal(options.session?.selectedProfile.name,'SessionMC2');
     assert.equal(options.session?.clientToken,undefined);
     assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
+    assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:sessionSecret})).status,409);
     assert.equal(captured.at(-1)?.username,'SessionMC');
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,409);
     assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
