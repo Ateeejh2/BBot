@@ -38,6 +38,7 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
   const get = (path:string)=>fetch(base+path,{headers:{Origin:'http://localhost:5173'}});
   const write=(path:string,method:'POST'|'PUT',body:unknown)=>fetch(base+path,{method,
     headers:{Origin:'http://localhost:5173','Content-Type':'application/json'},body:JSON.stringify(body)});
+  const del=(path:string)=>fetch(base+path,{method:'DELETE',headers:{Origin:'http://localhost:5173'}});
   try {
     assert.equal((await (await get('/api/v1/settings/server')).json() as {host:string}).host,'fallback.example');
     assert.equal((await (await get('/api/v1/accounts')).json() as {accounts:unknown[]}).accounts.length,0);
@@ -62,7 +63,18 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     assert.deepEqual(captured[0],{host:'play.example.com',port:25566,username:'Scout',label:'Scout'});
     assert.equal((await write('/api/v1/settings/server','PUT',{host:'other.example',port:25565,version:'1.8.9'})).status,409);
     assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:created.id})).status,409);
+    assert.equal((await del(`/api/v1/accounts/${created.id}`)).status,409);
     assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
+    assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:null})).status,200);
+    assert.equal(manager.views()[0]?.accountId,undefined);
+    assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:created.id})).status,200);
+    const disposable = await (await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'DeleteMe'})).json() as {id:string};
+    await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:disposable.id})).status,200);
+    assert.equal((await del(`/api/v1/accounts/${disposable.id}`)).status,200);
+    assert.equal(manager.views()[0]?.accountId,undefined);
+    assert.equal((await (await get('/api/v1/accounts')).text()).includes(disposable.id),false);
+    assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:created.id})).status,200);
     const ws = new WebSocket(base.replace('http:','ws:')+'/api/v1/events',{origin:'http://localhost:5173'});
     const packet=await new Promise<string>((resolve,reject)=>{ws.once('message',d=>resolve(d.toString()));ws.once('error',reject)});
     ws.close();
