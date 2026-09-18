@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-export interface Account { label: string; username: string; auth: 'microsoft' | 'offline' }
+export type Account =
+  | { label: string; username: string; auth: 'microsoft' | 'offline'; kind?: 'MICROSOFT' }
+  | { label: string; username: string; auth: 'mojang'; kind: 'SESSION'; accountId: string };
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const integer = (key: string, fallback: number, min: number, max: number) => {
     const value = env[key] === undefined ? fallback : Number(env[key]);

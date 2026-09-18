@@ -1,4 +1,4 @@
-import { createBot } from 'mineflayer';
+import { createBot, type BotOptions } from 'mineflayer';
 import pathfinderModule from 'mineflayer-pathfinder';
 const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
@@ -7,19 +7,25 @@ import { parseInstance } from '../instances/parser.js';
 import { eligibleTransferChannel } from './message-source.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
+import { readSessionCredential } from '../runtime/session.js';
 type ViewerStarter = (bot: ReturnType<typeof createBot>, options: { port: number; firstPerson: boolean; viewDistance: number }) => void;
 type ViewerModule = { mineflayer?: ViewerStarter };
 const require = createRequire(import.meta.url);
 type ViewerBot = ReturnType<typeof createBot> & { viewer?: { close(): void } };
 /** The only module allowed to import Mineflayer. */
+export function createBotOptions(config: Config, index: number): BotOptions {
+  const account = config.accounts[index]!;
+  const common = { host: config.host, port: config.port, version: config.version, hideErrors: true, logErrors: false };
+  if (account.kind === 'SESSION') return { ...common, username: account.username,
+    auth: 'mojang', session: readSessionCredential(config.authDir, account.accountId),
+    skipValidation: true, profilesFolder: false };
+  return { ...common, username: account.username, auth: account.auth,
+    profilesFolder: join(config.authDir, account.label),
+    onMsaCode: data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`) };
+}
 export function createMineflayerTransport(config: Config, index: number, events: TransportEvents): BotTransport {
   const account = config.accounts[index]!;
-  const bot = createBot({ host: config.host, port: config.port, username: account.username,
-    auth: account.auth, version: config.version, profilesFolder: join(config.authDir, account.label),
-    hideErrors: true, logErrors: false,
-    // Auth code is interactive console output only, never structured/file logs.
-    onMsaCode: data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`)
-  });
+  const bot = createBot(createBotOptions(config, index));
   bot.loadPlugin(pathfinder);
   let closed = false;
   let viewerStarted = false;

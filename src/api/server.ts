@@ -91,9 +91,10 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
-    req.on('data', chunk => { size += chunk.length; if (size <= 1024) body += chunk.toString(); });
+    const bodyLimit = accountWrite ? 8192 : 1024;
+    req.on('data', chunk => { size += chunk.length; if (size <= bodyLimit) body += chunk.toString(); });
     req.on('end', () => { void (async () => {
-      if (size > 1024) { send(res, 413, { error: 'INVALID_BODY' }); return; }
+      if (size > bodyLimit) { send(res, 413, { error: 'INVALID_BODY' }); return; }
       try {
         let data: unknown;
         try { data = JSON.parse(body); } catch { throw Error('INVALID_INPUT'); }

@@ -3,13 +3,21 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Config } from '../config/index.js';
 import type { BotManager } from '../bot/manager.js';
+import type { Account } from '../config/index.js';
+import { validateSessionInput, saveSessionCredential, readSessionCredential, deleteSessionCredential } from './session.js';
 
 export interface ServerConnection { host: string; port: number; version: '1.8.9'; revision: number }
 export interface PublicAccount {
-  id: string; label: string; kind: 'MICROSOFT'; status: 'WAITING_FOR_LOGIN' | 'READY' | 'ERROR';
+  id: string; label: string; kind: 'MICROSOFT' | 'SESSION'; status: 'WAITING_FOR_LOGIN' | 'READY' | 'ERROR';
   minecraftName?: string; assignedBot?: string; createdAt: number;
 }
-interface StoredAccount extends PublicAccount { cacheKey: string; folder: string }
+type StoredAccount = (PublicAccount & { kind: 'MICROSOFT'; cacheKey: string; folder: string }) |
+  (PublicAccount & { kind: 'SESSION'; minecraftName: string });
+function transportAccount(account: StoredAccount): Account {
+  return account.kind === 'SESSION'
+    ? { label: account.label, username: account.minecraftName, auth: 'mojang', kind: 'SESSION', accountId: account.id }
+    : { label: account.label, username: account.cacheKey, auth: 'microsoft' };
+}
 export interface PublicAuthChallenge { verificationUri: string; userCode: string; expiresAt: number }
 interface AuthChallengeInput { verificationUri: string; userCode: string; expiresIn: number }
 type StartAuth = (
@@ -95,12 +103,14 @@ export class ControlStore {
     try {
       const raw: unknown = JSON.parse(await readFile(join(this.config.dataDir, 'accounts-runtime.json'), 'utf8'));
       if (!Array.isArray(raw) || raw.length > 20 || !raw.every(a => a &&
-        /^[0-9a-f-]{36}$/.test(a.id) && /^[\w-]{1,40}$/.test(a.label) && a.kind === 'MICROSOFT' &&
+        /^[0-9a-f-]{36}$/.test(a.id) && /^[\w-]{1,40}$/.test(a.label) && ['MICROSOFT', 'SESSION'].includes(a.kind) &&
         ['WAITING_FOR_LOGIN', 'READY', 'ERROR'].includes(a.status) &&
         (a.minecraftName === undefined || (typeof a.minecraftName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(a.minecraftName))) &&
-        typeof a.cacheKey === 'string' && a.cacheKey.length <= 256 && /^[\w-]{1,40}$/.test(a.folder) &&
+        (a.kind === 'MICROSOFT' ? typeof a.cacheKey === 'string' && a.cacheKey.length <= 256 && /^[\w-]{1,40}$/.test(a.folder) :
+          a.status === 'READY' && typeof a.minecraftName === 'string' && a.cacheKey === undefined && a.folder === undefined) &&
         Number.isSafeInteger(a.createdAt) && (a.assignedBot === undefined || /^bot-[1-9]\d*$/.test(a.assignedBot)))) throw Error('INVALID_RUNTIME_ACCOUNTS');
       this.entries = raw.map(a => ({ ...a, status: a.status === 'WAITING_FOR_LOGIN' ? 'ERROR' : a.status }));
+      for (const a of this.entries) if (a.kind === 'SESSION') readSessionCredential(this.config.authDir, a.id);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw Error('INVALID_RUNTIME_ACCOUNTS');
       if (this.config.legacyAccountsPresent) this.entries = this.config.accounts.flatMap((a, i) => a.auth === 'microsoft' ? [{
@@ -114,7 +124,7 @@ export class ControlStore {
   async bind(manager: BotManager): Promise<void> {
     this.manager = manager;
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
-      { label: a.label, username: a.cacheKey, auth: 'microsoft' }, a.minecraftName);
+      transportAccount(a), a.minecraftName);
     if (this.config.count === 1 && !this.entries.some(a => a.assignedBot)) {
       const ready = this.entries.filter(a => a.status === 'READY');
       if (ready.length === 1) {
@@ -123,7 +133,7 @@ export class ControlStore {
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
         this.entries = updated;
         manager.assignAccount('bot-1', account.id,
-          { label: account.label, username: account.cacheKey, auth: 'microsoft' }, account.minecraftName);
+          transportAccount(account), account.minecraftName);
       }
     }
   }
@@ -148,7 +158,7 @@ export class ControlStore {
   addAccount(body: unknown): Promise<PublicAccount> {
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
     const b = body as Record<string, unknown>;
-    if (b.kind === 'SESSION') throw Error('UNSUPPORTED_AUTH');
+    if (b.kind === 'SESSION') return this.addSession(body);
     if (Object.keys(b).sort().join(',') !== 'kind,label' || b.kind !== 'MICROSOFT' ||
       typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label)) throw Error('INVALID_INPUT');
     const label = b.label;
@@ -163,11 +173,34 @@ export class ControlStore {
       return this.listAccounts().find(a => a.id === entry.id)!;
     });
   }
+  private addSession(body: unknown): Promise<PublicAccount> {
+    const { label, credential } = validateSessionInput(body);
+    return this.exclusive(async () => {
+      if (this.entries.length >= 20 || this.entries.some(a => a.label.toLowerCase() === label.toLowerCase())) throw Error('CONFLICT');
+      const entry: StoredAccount = { id: randomUUID(), label, kind: 'SESSION', status: 'READY',
+        minecraftName: credential.selectedProfile.name, createdAt: Date.now() };
+      await saveSessionCredential(this.config.authDir, entry.id, credential);
+      try {
+        await this.manager!.withConfigurationLock(() => true, async () => {
+          const shouldAssign = this.config.count === 1 && !this.entries.some(a => a.assignedBot || a.status === 'READY') &&
+            this.manager!.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED';
+          if (shouldAssign) entry.assignedBot = 'bot-1';
+          await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
+          this.entries.push(entry);
+          if (shouldAssign) this.manager!.assignAccount('bot-1', entry.id, transportAccount(entry), entry.minecraftName);
+        });
+      } catch {
+        await deleteSessionCredential(this.config.authDir, entry.id);
+        throw Error('SESSION_SAVE_FAILED');
+      }
+      return this.listAccounts().find(a => a.id === entry.id)!;
+    });
+  }
   retryAccount(id: string): Promise<PublicAccount> {
     return this.exclusive(async () => {
       const account = this.entries.find(a => a.id === id);
       if (!account) throw Error('UNKNOWN_ACCOUNT');
-      if (account.status !== 'ERROR') throw Error('CONFLICT');
+      if (account.kind !== 'MICROSOFT' || account.status !== 'ERROR') throw Error('CONFLICT');
       const updated = this.entries.map(a => a.id === id ? { ...a, status: 'WAITING_FOR_LOGIN' as const } : a);
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
       this.entries = updated;
@@ -182,9 +215,9 @@ export class ControlStore {
     try { await this.exclusive(async () => {
       const cleanName = minecraftName && /^[A-Za-z0-9_]{1,16}$/.test(minecraftName) ? minecraftName : undefined;
       const account = this.entries.find(a => a.id === id);
-      if (!account) return;
+      if (!account || account.kind !== 'MICROSOFT') return;
       const autoAssign = status === 'READY' && this.config.count === 1 &&
-        !this.entries.some(a => a.assignedBot) &&
+        !this.entries.some(a => a.assignedBot || (a.id !== id && a.status === 'READY')) &&
         this.manager?.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED';
       if (autoAssign) {
         await this.manager!.withConfigurationLock(
@@ -196,7 +229,7 @@ export class ControlStore {
             await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
             this.entries = updated;
             this.manager!.assignAccount('bot-1', id,
-              { label: account.label, username: account.cacheKey, auth: 'microsoft' }, cleanName);
+              transportAccount(account), cleanName);
           }
         );
         return;
@@ -232,7 +265,7 @@ export class ControlStore {
           a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
         this.entries = updated;
-        this.manager!.assignAccount(botId, accountId, { label: account.label, username: account.cacheKey, auth: 'microsoft' }, account.minecraftName);
+        this.manager!.assignAccount(botId, accountId, transportAccount(account), account.minecraftName);
         return this.listAccounts().find(a => a.id === accountId)!;
       });
     });
@@ -251,6 +284,7 @@ export class ControlStore {
         () => !botId || this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED',
         async () => {
           const updated = this.entries.filter(a => a.id !== id);
+          if (account.kind === 'SESSION') await deleteSessionCredential(this.config.authDir, id);
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
           this.challenges.delete(id);
           this.entries = updated;

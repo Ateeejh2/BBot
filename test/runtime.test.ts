@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { loadConfig } from '../src/config/index.js';
@@ -13,12 +13,14 @@ import { MockTaskHandler } from '../src/events/task.js';
 import { Logger } from '../src/logging/logger.js';
 import { ControlStore } from '../src/runtime/control.js';
 import { createManagementApi } from '../src/api/server.js';
+import { createBotOptions } from '../src/bot/mineflayer.js';
 
 test('runtime settings and accounts stay scoped, persisted and secret-free', async () => {
   const dir = await mkdtemp(join(process.cwd(), '.test-control-'));
   const config = loadConfig({ MODE:'live', API_ENABLED:'true', API_ORIGIN:'http://localhost:5173',
     ACCOUNTS_FILE:join(dir,'missing.json'), DATA_DIR:dir, SERVER_HOST:'fallback.example', SERVER_PORT:'25565' });
   config.api.port = 0;
+  config.authDir = join(dir,'.auth');
   const authSecret = 'SECRET_REFRESH_TOKEN_987654321';
   const controls = new ControlStore(config, async account => {
     if (account.label === 'Failure') throw Error(authSecret);
@@ -50,7 +52,7 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
       assert.equal((await write('/api/v1/settings/server','PUT',{host:'play.example.com',port,version:'1.8.9'})).status,400);
     assert.equal((await write('/api/v1/settings/server','PUT',{host:'play.example.com',port:25566,version:'1.8.9',url:'http://other'})).status,400);
     assert.equal((await write('/api/v1/settings/server','PUT',{host:'play.example.com',port:25566,version:'1.8.9'})).status,200);
-    assert.equal((await write('/api/v1/accounts','POST',{kind:'SESSION',label:'Legacy',credential:authSecret})).status,422);
+    assert.equal((await write('/api/v1/accounts','POST',{kind:'SESSION',label:'Legacy',credential:authSecret})).status,400);
     assert.equal((await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'../bad'})).status,400);
     assert.equal((await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'Scout',token:authSecret})).status,400);
     const created = await (await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'Scout'})).json() as {id:string};
@@ -100,5 +102,58 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     await persisted.load();
     assert.equal(persisted.getServer().host,'play.example.com');
     assert.equal(persisted.listAccounts().find(a=>a.id===created.id)?.assignedBot,'bot-1');
+    const sessionSecret='TEST_SESSION_ACCESS_24680';
+    const input={kind:'SESSION',label:'SessionOne',profileName:'SessionMC',
+      profileId:'12345678-1234-1234-1234-123456789abc',accessToken:sessionSecret,clientToken:'TEST_CLIENT_13579'};
+    for(const invalid of [ {...input,profileId:'bad'}, {...input,profileName:'invalid name'},
+      {...input,accessToken:''}, {...input,clientToken:''}, {...input,extra:'unwanted'} ])
+      assert.equal((await write('/api/v1/accounts','POST',invalid)).status,400);
+    const sessionResponse=await write('/api/v1/accounts','POST',input);
+    assert.equal(sessionResponse.status,201);
+    const account=await sessionResponse.json() as {id:string;kind:string;status:string;assignedBot?:string};
+    assert.equal(account.kind,'SESSION');assert.equal(account.status,'READY');
+    assert.equal(JSON.stringify(account).includes(sessionSecret),false);
+    const file=join(config.authDir,'session',`${account.id}.json`);
+    assert.equal((await readFile(file,'utf8')).includes(sessionSecret),true);
+    if(process.platform!=='win32')assert.equal((await stat(file)).mode&0o777,0o600);
+    assert.equal((await readFile(join(dir,'accounts-runtime.json'),'utf8')).includes(sessionSecret),false);
+    assert.equal((await (await get('/api/v1/accounts')).text()).includes(sessionSecret),false);
+    assert.equal((await (await get('/api/v1/status')).text()).includes(sessionSecret),false);
+    const sessionWs=new WebSocket(base.replace('http:','ws:')+'/api/v1/events',{origin:'http://localhost:5173'});
+    const sessionPacket=await new Promise<string>((resolve,reject)=>{sessionWs.once('message',d=>resolve(d.toString()));sessionWs.once('error',reject)});
+    sessionWs.close();assert.equal(sessionPacket.includes(sessionSecret),false);
+    assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:account.id})).status,200);
+    assert.equal(manager.views()[0]?.minecraftName,'SessionMC');
+    const options=createBotOptions(config,0);
+    assert.equal(options.auth,'mojang');assert.equal(options.skipValidation,true);
+    assert.equal(options.profilesFolder,false);assert.equal(options.onMsaCode,undefined);
+    assert.equal(options.session?.accessToken,sessionSecret);
+    assert.equal(options.session?.selectedProfile.id,'12345678123412341234123456789abc');
+    assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
+    assert.equal(captured.at(-1)?.username,'SessionMC');
+    assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,409);
+    assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
+    assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,200);
+    await assert.rejects(stat(file),{code:'ENOENT'});
+    assert.equal(manager.views()[0]?.accountId,undefined);
   } finally { manager.stop();await api.close();await rm(dir,{recursive:true,force:true}); }
+});
+
+test('one READY Session account auto assigns and stays credential-free on restart', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-session-auto-'));
+  const config=loadConfig({MODE:'live',API_ENABLED:'true',API_ORIGIN:'http://localhost:5173',ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir});
+  config.authDir=join(dir,'.auth');
+  const controls=new ControlStore(config,async()=>{});
+  const logger=new Logger('error');
+  const manager=new BotManager(config,(_index,events)=>new MockTransport(events,()=> 'mega'),
+    new InstanceRegistry(),new Scheduler(3,100,100),new PathfindingController(1,1000),new MockTaskHandler(),logger);
+  try {
+    await controls.load();await controls.bind(manager);
+    const account=await controls.addAccount({kind:'SESSION',label:'SessionOnly',profileName:'MCName',
+      profileId:'12345678123412341234123456789abc',accessToken:'TEST_ACCESS',clientToken:'TEST_CLIENT'});
+    assert.equal(account.assignedBot,'bot-1');assert.equal(manager.views()[0]?.accountId,account.id);
+    const next=new ControlStore(config,async()=>{});await next.load();
+    assert.equal(next.listAccounts()[0]?.assignedBot,'bot-1');
+    assert.equal(JSON.stringify(next.listAccounts()).includes('TEST_ACCESS'),false);
+  } finally {manager.stop();await rm(dir,{recursive:true,force:true});}
 });
