@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const scheduler = new Scheduler(config.jobMaxAttempts, config.maxJobs, config.jobRetryMs);
   const paths = new PathfindingController(config.pathConcurrency, config.pathTimeoutMs);
   const manager = new BotManager(config, factory, registry, scheduler, paths, new MockTaskHandler(), logger);
-  if (config.api.enabled && config.mode === 'live') controls.bind(manager);
+  if (config.api.enabled && config.mode === 'live') await controls.bind(manager);
   // No actual API and no movement-producing mock events in live mode.
   const provider = new MockEventProvider(config.mode === 'mock' ? [1, 2, 3].map(n => ({
     id: `demo-${Date.now()}-${n}`, instanceId: `mock-pit-${n}`, target: { x: n * 5, y: 64, z: 5 }, type: 'mock', expiresAt: Date.now() + 300000
