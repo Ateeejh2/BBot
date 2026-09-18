@@ -2,7 +2,13 @@ import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } f
 import { join } from 'node:path';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export function safeKickReason(raw: unknown): string | undefined {
-  return typeof raw === 'string' ? raw.replace(/https?:\/\/\S+|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b[A-Z0-9]{6,}\b/gi, '[redacted]').replace(/[\r\n]/g, ' ').slice(0, 160) : undefined;
+  if (typeof raw !== 'string') return undefined;
+  return raw
+    .replace(/https?:\/\/\S+|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted]')
+    .replace(/\b(?=[A-Z0-9._-]{8,}\b)(?=[A-Z0-9._-]*[A-Z])(?=[A-Z0-9._-]*\d)[A-Z0-9._-]+\b/g, '[redacted]')
+    .replace(/\b[A-Za-z0-9._-]{24,}\b/g, '[redacted]')
+    .replace(/[\r\n]/g, ' ')
+    .slice(0, 160);
 }
 export interface LogFields { botId?: string; accountLabel?: string; instance?: string; state?: string; jobId?: string; eventId?: string; [key: string]: unknown }
 const levels = { debug: 10, info: 20, warn: 30, error: 40 };
