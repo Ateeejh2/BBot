@@ -1,6 +1,6 @@
 # One-bot Web control
 
-Set `MODE=live`, `BOT_COUNT=1`, `TRANSFER_MESSAGE_CHANNEL=chat`, `API_ENABLED=true`, `API_ORIGIN` to the exact BBot-Web browser origin, and keep `API_HOST=127.0.0.1` in the local `.env`. `API_PORT` defaults to 3008. With the API enabled, the bot starts disconnected until Connect is pressed. On the first spawn it enters LOBBY; Join Pit sends only `/play pit`. The transfer notification and a later spawn confirm `IN_PIT_IDLE`. Disconnect stops reconnects for that bot until Connect is pressed again.
+Set `MODE=live`, `BOT_COUNT=1`, `TRANSFER_MESSAGE_CHANNEL=chat`, `API_ENABLED=true`, `API_ORIGIN` to the exact BBot-Web browser origin, and keep `API_HOST=127.0.0.1` in the local `.env`. `API_PORT` defaults to 3008. With the API enabled, the bot starts disconnected until Start is pressed. Start begins the full run loop: connect, wait for the first spawn and `LOBBY`, respect `PLAY_COOLDOWN_MS`, then automatically send only `/play pit`. The transfer notification and a later spawn confirm `IN_PIT_IDLE`. Stop disables the loop and prevents reconnects until Start is pressed again. The dedicated Join Pit endpoint remains only for diagnostics/backward compatibility and is not required by the normal UI.
 
 BBot-Web's Vite development server proxies `/api/v1` (including WebSocket) to `127.0.0.1:3008`. Set `VITE_BBOT_MODE=remote` when starting the Web server; omit it for the original Mock UI. Browser calls use the Web origin and do not store authentication material. Keep the forwarded Web port private. For a public deployment, put both the Web app and its `/api/v1` proxy behind Cloudflare Access or equivalent identity enforcement; the Origin check alone is not authentication. Never expose port 3008 directly through a tunnel. A production reverse proxy must forward WebSocket upgrades and the original Origin header.
 
@@ -17,4 +17,4 @@ VITE_BBOT_MODE=remote npm run dev -- --host 0.0.0.0
 npm run viewer:tunnel
 ```
 
-Open the private forwarded Web port, then Connect, Join Pit after LOBBY, and verify `IN_PIT_IDLE`, instance, coordinates, logs, and Live View. Disconnect and verify `DISCONNECTED`. A Microsoft sign-in prompt remains in the BBot terminal only; never paste its code or token into the browser or chat.
+Open the private forwarded Web port, press Start once, and verify the automatic `CONNECTING -> LOBBY -> JOINING_PIT -> IN_PIT_IDLE` flow, instance, coordinates, logs, and Live View. Press Stop and verify `DISCONNECTED`. A Microsoft sign-in prompt remains in the BBot terminal only; never paste its code or token into the browser or chat.
