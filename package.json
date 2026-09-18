@@ -9,7 +9,8 @@
     "start": "node dist/src/index.js",
     "start:mock": "node dist/src/index.js --mock",
     "test:soak": "npm run build && node dist/scripts/soak.js",
-    "setup:live": "node scripts/setup-live-test.mjs"
+    "setup:live": "node scripts/setup-live-test.mjs",
+    "setup:viewer": "npm install --no-save --package-lock=false prismarine-viewer@1.33.0"
   },
   "repository": {
     "type": "git",
