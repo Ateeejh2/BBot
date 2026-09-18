@@ -33,11 +33,32 @@ export class BotManager {
       const bot: ManagedBot = { id: `bot-${i + 1}`, accountLabel: a.label,
         machine: new StateMachine((_from, to) => this.log(bot, 'state changed', { state: to })),
         generation: new Generation(), connection: 0, ready: false, dueAt: 0, deadline: 0,
-        reconnectAttempts: 0, joinAttempts: 0, paused: false };
+        reconnectAttempts: 0, joinAttempts: 0, paused: config.api.enabled };
       return bot;
     });
   }
   views(): BotView[] { return this.bots.map(b => this.view(b)); }
+  private controlled(id: string): ManagedBot {
+    const bot = this.bots.find(b => b.id === id);
+    if (!bot) throw new Error('UNKNOWN_BOT');
+    return bot;
+  }
+  connectBot(id: string): void {
+    const b = this.controlled(id);
+    if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    b.paused = false; b.dueAt = 0;
+    this.connect(b, this.bots.indexOf(b));
+  }
+  joinPit(id: string): void {
+    const b = this.controlled(id);
+    if (b.machine.state !== 'LOBBY' || !b.ready) throw new Error('INVALID_STATE');
+    this.join(b);
+  }
+  disconnectBot(id: string): void {
+    const b = this.controlled(id);
+    if (b.machine.state === 'DISCONNECTED') throw new Error('INVALID_STATE');
+    b.paused = true; this.disconnected(b);
+  }
   private view(b: ManagedBot): BotView { return { id: b.id, accountLabel: b.accountLabel, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position() }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
@@ -60,7 +81,7 @@ export class BotManager {
         this.log(b, 'join timed out; no confirmed instance');
       }
       if (b.machine.state === 'RECOVERING' && !b.ready && now >= b.deadline) { this.disconnected(b); continue; }
-      if (['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
+      if ((!this.config.api.enabled || b.machine.state === 'RECOVERING') && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
     }

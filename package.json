@@ -27,10 +27,12 @@
   "dependencies": {
     "dotenv": "17.4.2",
     "mineflayer": "4.39.0",
-    "mineflayer-pathfinder": "2.4.5"
+    "mineflayer-pathfinder": "2.4.5",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "22.20.3",
+    "@types/ws": "^8.18.1",
     "typescript": "7.0.2"
   },
   "private": true,

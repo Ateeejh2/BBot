@@ -11,6 +11,7 @@ import { MockEventProvider } from './events/provider.js';
 import { MockTaskHandler } from './events/task.js';
 import { JsonStore } from './core/store.js';
 import { Application } from './core/application.js';
+import { createManagementApi } from './api/server.js';
 import type { TransportFactory } from './bot/transport.js';
 async function main(): Promise<void> {
   const config = loadConfig({ ...process.env, ...(process.argv.includes('--mock') ? { MODE: 'mock' } : {}) });
@@ -31,9 +32,10 @@ async function main(): Promise<void> {
     id: `demo-${Date.now()}-${n}`, instanceId: `mock-pit-${n}`, target: { x: n * 5, y: 64, z: 5 }, type: 'mock', expiresAt: Date.now() + 300000
   })) : []);
   const app = new Application(manager, provider, new JsonStore(config.dataDir, config.mode), logger, config);
+  const api = config.api.enabled ? createManagementApi(manager, config, logger) : undefined;
   const input = createInterface({ input: process.stdin, terminal: false });
   let stopping = false;
-  const stop = async () => { if (stopping) return; stopping = true; input.close(); await app.stop(); setTimeout(() => process.exit(process.exitCode ?? 0), 10000).unref(); };
+  const stop = async () => { if (stopping) return; stopping = true; input.close(); await api?.close(); await app.stop(); setTimeout(() => process.exit(process.exitCode ?? 0), 10000).unref(); };
   process.once('SIGINT', () => { void stop(); }); process.once('SIGTERM', () => { void stop(); });
   input.on('line', line => {
     const [command, botId] = line.trim().split(/\s+/);
@@ -41,7 +43,7 @@ async function main(): Promise<void> {
     else if (command === 'status') logger.log('info', 'status', { bots: manager.views() });
     else if (command === 'recover' && botId) manager.notifyLobbyReturn(botId);
   });
-  try { await app.start(); } catch (error) { input.close(); manager.stop(); throw error; }
+  try { await api?.listen(); await app.start(); } catch (error) { input.close(); manager.stop(); await api?.close(); throw error; }
   logger.log('info', 'BBot started', { mode: config.mode, botCount: config.count, pathConcurrency: config.pathConcurrency });
 }
 function safeStartupError(error: unknown): string {
