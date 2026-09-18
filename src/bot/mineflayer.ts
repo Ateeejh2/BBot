@@ -1,5 +1,6 @@
 import { createBot } from 'mineflayer';
-import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
+import pathfinderModule from 'mineflayer-pathfinder';
+const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
 import { parseInstance } from '../instances/parser.js';
 import { eligibleTransferChannel } from './message-source.js';
