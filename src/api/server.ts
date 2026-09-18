@@ -71,6 +71,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       return;
     }
     const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect)$/.exec(req.url ?? '');
+    const fleetAction = /^\/api\/v1\/fleet\/actions\/(start-assigned|stop-all)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
     const sessionToken = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/session-token$/.exec(req.url ?? '');
@@ -90,7 +91,8 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       });
       return;
     }
-    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
+    const fleetWrite = !!controls && req.method === 'POST' && !!fleetAction;
+    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
     const bodyLimit = accountWrite || sessionTokenWrite ? 8192 : 1024;
@@ -105,6 +107,12 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         if (assignmentWrite) { const result = await controls!.assign(assignment![1]!, data); broadcast(); send(res, 200, result); return; }
         if (sessionTokenWrite) { const result = await controls!.replaceSessionToken(sessionToken![1]!, data); broadcast(); send(res, 200, result); return; }
         if (retryWrite) { if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT'); const result = await controls!.retryAccount(retry![1]!); broadcast(); send(res, 200, result); return; }
+        if (fleetWrite) {
+          if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT');
+          if (controls!.busy) throw Error('CONFLICT');
+          const result = fleetAction![1] === 'start-assigned' ? await controls!.startAssignedBots() : controls!.stopAllBots();
+          broadcast(); send(res, 200, result); return;
+        }
         if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT');
         if (controls?.busy) throw Error('CONFLICT');
         const [, id, action] = match!;
