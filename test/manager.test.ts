@@ -86,6 +86,26 @@ test('explicit multi-bot starts honor global connection spacing', () => {
   assert.ok(f.manager.views().every(b=>b.state==='DISCONNECTED'));
   f.manager.stop();
 });
+test('queued bot rejects duplicate start and account changes until cancelled', () => {
+  const f = fixture(2, new MockTaskHandler(), true);
+  f.config.mode = 'live';
+  const accountA = { label:'A', username:'A', auth:'offline' as const };
+  const accountB = { label:'B', username:'B', auth:'offline' as const };
+  f.manager.assignAccount('bot-1','11111111-1111-4111-8111-111111111111',accountA,'A');
+  f.manager.assignAccount('bot-2','22222222-2222-4222-8222-222222222222',accountB,'B');
+  f.manager.connectBot('bot-1');
+  f.manager.connectBot('bot-2');
+  assert.equal(f.manager.views()[1]?.startQueued, true);
+  assert.throws(() => f.manager.connectBot('bot-2'), { message:'INVALID_STATE' });
+  assert.throws(() => f.manager.assignAccount('bot-2','33333333-3333-4333-8333-333333333333',accountB,'B'), { message:'INVALID_STATE' });
+  assert.throws(() => f.manager.unassignAccount('bot-2'), { message:'INVALID_STATE' });
+  f.manager.disconnectBot('bot-2');
+  assert.equal(f.manager.views()[1]?.startQueued, false);
+  assert.equal(f.manager.isBotStopped('bot-2'), true);
+  f.manager.unassignAccount('bot-2');
+  assert.equal(f.manager.views()[1]?.accountId, undefined);
+  f.manager.stop();
+});
 test('web Start automatically continues from lobby into Pit after cooldown', () => {
   const f = fixture(1, new MockTaskHandler(), true);
   f.tick(0); assert.equal(f.connections.length, 0); assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
