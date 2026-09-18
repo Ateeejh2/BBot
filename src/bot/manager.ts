@@ -55,7 +55,7 @@ export class BotManager {
   connectBot(id: string): void {
     const b = this.controlled(id);
     if (this.configurationLocked) throw new Error('CONFLICT');
-    if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending) throw new Error('INVALID_STATE');
     if (this.config.mode === 'live' && this.config.api.enabled && !b.accountId) throw new Error('ACCOUNT_REQUIRED');
     b.paused = false; b.dueAt = 0;
     const now = this.now();
@@ -90,13 +90,13 @@ export class BotManager {
   }
   assignAccount(botId: string, accountId: string, account: Config['accounts'][number], minecraftName?: string): void {
     const b = this.controlled(botId);
-    if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending) throw new Error('INVALID_STATE');
     this.config.accounts[this.bots.indexOf(b)] = account;
     b.accountId = accountId; b.accountLabel = account.label; b.minecraftName = minecraftName; b.authCheckPending = false;
   }
   unassignAccount(botId: string): void {
     const b = this.controlled(botId);
-    if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending) throw new Error('INVALID_STATE');
     b.accountId = undefined; b.accountLabel = b.id; b.minecraftName = undefined; b.authCheckPending = false;
   }
   allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
