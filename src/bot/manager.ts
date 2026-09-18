@@ -68,6 +68,11 @@ export class BotManager {
     this.config.accounts[this.bots.indexOf(b)] = account;
     b.accountId = accountId; b.accountLabel = account.label;
   }
+  unassignAccount(botId: string): void {
+    const b = this.controlled(botId);
+    if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    b.accountId = undefined; b.accountLabel = b.id;
+  }
   allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
   async withConfigurationLock<T>(allowed: () => boolean, operation: () => Promise<T>): Promise<T> {
     if (this.configurationLocked || !allowed()) throw Error('INVALID_STATE');
