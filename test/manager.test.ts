@@ -117,11 +117,15 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
   f.manager.stop();
 });
-test('notification after spawn remains unconfirmed and cannot schedule a job', () => {
+test('spawn before transfer notification still confirms the same join attempt', () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000);
-  t.events.spawn(); t.events.message('SERVER FOUND! Sending to a!');
-  assert.equal(f.manager.views()[0]?.state, 'JOINING_PIT'); f.tick(2000);
-  assert.equal(f.manager.views()[0]?.state, 'RECOVERING'); f.manager.stop();
+  t.events.worldReset(); t.events.spawn();
+  assert.equal(f.manager.views()[0]?.state, 'JOINING_PIT');
+  assert.equal(f.manager.views()[0]?.instanceId, undefined);
+  t.events.message('SERVER FOUND! Sending to a!');
+  assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE');
+  assert.equal(f.manager.views()[0]?.instanceId, 'a');
+  f.manager.stop();
 });
 test('connections and reconnects are globally staggered and old transport callbacks ignored', () => {
   const f = fixture(2); f.tick(0); assert.equal(f.connections.length, 1);
