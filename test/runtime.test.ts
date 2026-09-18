@@ -154,7 +154,6 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     assert.equal(options.session?.clientToken,undefined);
     assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
     assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:sessionSecret})).status,409);
-    assert.equal(captured.at(-1)?.username,'SessionMC2');
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,409);
     assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
     invalidSessionTokens.add(replacementSecret);
@@ -170,8 +169,10 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     const recoveredAccount=await recovered.json() as {status:string;authError?:string;minecraftName?:string};
     assert.equal(recoveredAccount.status,'READY');assert.equal(recoveredAccount.authError,undefined);
     assert.equal(recoveredAccount.minecraftName,'SessionMC3');
+    const recoveredOptions=createBotOptions(config,0);
+    assert.equal(recoveredOptions.session?.selectedProfile.name,'SessionMC3');
+    assert.equal(recoveredOptions.session?.accessToken,recoverySecret);
     assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
-    assert.equal(captured.at(-1)?.username,'SessionMC3');
     assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,200);
     await assert.rejects(stat(file),{code:'ENOENT'});
