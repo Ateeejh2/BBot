@@ -22,11 +22,13 @@ test('offline dependency smoke: pinned 1.8.9 resolves protocol 47 and plugin exp
   assert.equal(typeof pathfinder.goals.GoalNear, 'function');
 });
 import { eligibleTransferChannel } from '../src/bot/message-source.js';
-test('legacy chat is opt-in and sender-marked/player/title content stays ineligible', () => {
+test('legacy chat is opt-in; sender metadata is accepted only for an exact transfer match', () => {
   assert.equal(eligibleTransferChannel('system', null, 'system'), true);
   assert.equal(eligibleTransferChannel('chat', null, 'system'), false);
   assert.equal(eligibleTransferChannel('chat', null, 'chat'), true);
   assert.equal(eligibleTransferChannel('chat', 'player-uuid', 'chat'), false);
-  assert.equal(eligibleTransferChannel('game_info', null, 'chat'), false);
-  assert.equal(eligibleTransferChannel('title', null, 'system'), false);
+  assert.equal(eligibleTransferChannel('chat', 'player-uuid', 'chat', true), true);
+  assert.equal(eligibleTransferChannel('system', 'sender', 'system', true), false);
+  assert.equal(eligibleTransferChannel('game_info', null, 'chat', true), false);
+  assert.equal(eligibleTransferChannel('title', null, 'system', true), false);
 });
