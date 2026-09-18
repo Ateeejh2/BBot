@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   if (config.inactiveMs <= config.suspectMs) throw new Error('INSTANCE_INACTIVE_MS must exceed INSTANCE_SUSPECT_MS');
   const controls = new ControlStore(config, async (account, settings) => {
     const auth = new Authflow(account.cacheKey, join(settings.authDir, account.folder),
-      { flow: 'live', authTitle: Titles.MinecraftNintendoSwitch },
+      { flow: 'live', authTitle: Titles.MinecraftNintendoSwitch, deviceType: 'Nintendo' },
       data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`));
     const result = await auth.getMinecraftJavaToken({ fetchProfile: true, fetchCertificates: false });
     if (!result.profile?.id) throw Error('AUTH_FAILED');
