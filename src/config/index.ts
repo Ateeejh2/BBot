@@ -55,10 +55,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       if (!apiEnabled || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       raw = [];
     }
-    if (apiEnabled && Array.isArray(raw) && raw.length === 0) raw = Array.from({ length: count }, (_, i) => ({ label: `unassigned-${i+1}`, username: `unassigned-${i+1}`, auth: 'offline' }));
-    if (!Array.isArray(raw) || raw.length < count || !raw.every(a => a && typeof a.label === 'string' && /^[\w-]{1,40}$/.test(a.label) && typeof a.username === 'string' && a.username.length > 0 && a.username.length <= 256 && ['microsoft', 'offline'].includes(a.auth))) throw new Error('Invalid accounts file');
-    accounts = (raw as Account[]).slice(0, count);
-    if (new Set(accounts.map(a => a.label)).size !== count || new Set(accounts.map(a => a.username.toLowerCase())).size !== count) throw new Error('Duplicate accounts');
+    if (!Array.isArray(raw) || (!apiEnabled && raw.length < count) ||
+        !raw.every(a => a && typeof a.label === 'string' && /^[\w-]{1,40}$/.test(a.label) &&
+          typeof a.username === 'string' && a.username.length > 0 && a.username.length <= 256 &&
+          ['microsoft', 'offline'].includes(a.auth))) throw new Error('Invalid accounts file');
+    const configured = (raw as Account[]).slice(0, count);
+    if (new Set(configured.map(a => a.label)).size !== configured.length ||
+        new Set(configured.map(a => a.username.toLowerCase())).size !== configured.length) throw new Error('Duplicate accounts');
+    accounts = apiEnabled
+      ? [...configured, ...Array.from({ length: Math.max(0, count - configured.length) }, (_, i) => {
+          const n = configured.length + i + 1;
+          return { label: `unassigned-${n}`, username: `unassigned-${n}`, auth: 'offline' as const };
+        })]
+      : configured;
   }
   return {
     mode: mode as 'mock' | 'live', count, host, version, accounts, legacyAccountsPresent, level: level as 'debug' | 'info' | 'warn' | 'error',
