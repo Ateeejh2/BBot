@@ -81,7 +81,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const clean = text.replace(/§[0-9a-fk-or]/gi, '').trim();
     const lower = clean.toLowerCase();
     const candidate = parseInstance(text);
-    const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel);
+    const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel, candidate !== undefined);
     const looksTransferRelated =
       candidate !== undefined ||
       lower.includes('server found') ||
