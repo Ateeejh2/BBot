@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Config } from '../config/index.js';
 import type { BotManager } from '../bot/manager.js';
 import type { Account } from '../config/index.js';
-import { validateSessionInput, resolveSessionCredential, saveSessionCredential, readSessionCredential, deleteSessionCredential, type SessionCredential } from './session.js';
+import { validateSessionInput, validateSessionTokenInput, resolveSessionCredential, saveSessionCredential, readSessionCredential, deleteSessionCredential, type SessionCredential } from './session.js';
 
 export interface ServerConnection { host: string; port: number; version: '1.8.9'; revision: number }
 export interface PublicAccount {
@@ -196,6 +196,42 @@ export class ControlStore {
         throw Error('SESSION_SAVE_FAILED');
       }
       return this.listAccounts().find(a => a.id === entry.id)!;
+    });
+  }
+  replaceSessionToken(id: string, body: unknown): Promise<PublicAccount> {
+    const accessToken = validateSessionTokenInput(body);
+    return this.exclusive(async () => {
+      const account = this.entries.find(a => a.id === id);
+      if (!account) throw Error('UNKNOWN_ACCOUNT');
+      if (account.kind !== 'SESSION') throw Error('CONFLICT');
+      const botId = account.assignedBot;
+      if (botId) {
+        const bot = this.manager?.views().find(b => b.id === botId);
+        if (!bot) throw Error('UNKNOWN_BOT');
+        if (bot.state !== 'DISCONNECTED') throw Error('INVALID_STATE');
+      }
+      const previous = readSessionCredential(this.config.authDir, id);
+      const next = await this.resolveSession(accessToken);
+      if (next.selectedProfile.id !== previous.selectedProfile.id) throw Error('PROFILE_MISMATCH');
+      return this.manager!.withConfigurationLock(
+        () => !botId || this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED',
+        async () => {
+          await saveSessionCredential(this.config.authDir, id, next);
+          try {
+            const updated = this.entries.map(a => a.id === id && a.kind === 'SESSION'
+              ? { ...a, minecraftName: next.selectedProfile.name, status: 'READY' as const }
+              : a);
+            await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+            this.entries = updated;
+            const current = this.entries.find(a => a.id === id)!;
+            if (botId) this.manager!.assignAccount(botId, id, transportAccount(current), current.minecraftName);
+            return this.listAccounts().find(a => a.id === id)!;
+          } catch (error) {
+            await saveSessionCredential(this.config.authDir, id, previous).catch(() => {});
+            throw error;
+          }
+        }
+      );
     });
   }
   retryAccount(id: string): Promise<PublicAccount> {
