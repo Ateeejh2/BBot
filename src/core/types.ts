@@ -12,7 +12,7 @@ export interface Job {
 }
 export interface BotView {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; state: BotState; instanceId?: string;
-  generation: number; position?: Position;
+  generation: number; position?: Position; kickReason?: string; kickedAt?: number;
 }
 export type ReturnReason = 'UNKNOWN_RETURN' | 'AFK' | 'PLANNED';
 export interface ReturnClassifier { classify(message: string): ReturnReason | undefined }
