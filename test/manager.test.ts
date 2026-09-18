@@ -68,6 +68,24 @@ test('invalid Session auth after connection failure pauses automatic reconnect',
   assert.equal(f.connections.length,1);
   f.manager.stop();
 });
+test('explicit multi-bot starts honor global connection spacing', () => {
+  const f = fixture(2, new MockTaskHandler(), true);
+  f.config.mode = 'live';
+  f.manager.assignAccount('bot-1','11111111-1111-4111-8111-111111111111',{label:'A',username:'A',auth:'offline'},'A');
+  f.manager.assignAccount('bot-2','22222222-2222-4222-8222-222222222222',{label:'B',username:'B',auth:'offline'},'B');
+  f.manager.connectBot('bot-1');
+  f.manager.connectBot('bot-2');
+  assert.equal(f.connections.length,1);
+  assert.equal(f.manager.views()[0]?.state,'CONNECTING');
+  assert.equal(f.manager.views()[1]?.state,'DISCONNECTED');
+  f.tick(99); assert.equal(f.connections.length,1);
+  f.tick(100); assert.equal(f.connections.length,2);
+  assert.equal(f.manager.views()[1]?.state,'CONNECTING');
+  const stopped=f.manager.stopAllBots();
+  assert.deepEqual(stopped.sort(),['bot-1','bot-2']);
+  assert.ok(f.manager.views().every(b=>b.state==='DISCONNECTED'));
+  f.manager.stop();
+});
 test('web Start automatically continues from lobby into Pit after cooldown', () => {
   const f = fixture(1, new MockTaskHandler(), true);
   f.tick(0); assert.equal(f.connections.length, 0); assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
