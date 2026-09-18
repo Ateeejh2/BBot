@@ -11,7 +11,8 @@
     "test:soak": "npm run build && node dist/scripts/soak.js",
     "setup:live": "node scripts/setup-live-test.mjs",
     "setup:viewer": "node scripts/setup-viewer.mjs",
-    "viewer:tunnel": "node scripts/viewer-tunnel.mjs"
+    "viewer:tunnel": "node scripts/viewer-tunnel.mjs",
+    "setup:web-control": "node scripts/setup-web-control.mjs"
   },
   "repository": {
     "type": "git",
