@@ -86,6 +86,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         const code = error instanceof Error ? error.message : '';
         const status = ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
           ['INVALID_STATE', 'CONFLICT'].includes(code) ? 409 : 500;
+        if (code === 'SESSION_AUTH_REQUIRED') broadcast();
         send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
       });
       return;
@@ -108,13 +109,16 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT');
         if (controls?.busy) throw Error('CONFLICT');
         const [, id, action] = match!;
-        if (action === 'connect') manager.connectBot(id!);
+        if (action === 'connect') {
+          await controls?.prepareBotStart(id!);
+          manager.connectBot(id!);
+        }
         else if (action === 'join-pit') manager.joinPit(id!);
         else manager.disconnectBot(id!);
         broadcast(); send(res, 200, snapshot());
       } catch (error) {
         const code = error instanceof Error ? error.message : '';
-        const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','INVALID_SESSION_TOKEN'].includes(code) ? 422 :
+        const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED'].includes(code) ? 422 :
           ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
           ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH'].includes(code) ? 409 : 500;
         send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
