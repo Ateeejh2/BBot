@@ -26,7 +26,10 @@ async function main(): Promise<void> {
       data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`));
     const result = await auth.getMinecraftJavaToken({ fetchProfile: true, fetchCertificates: false });
     if (!result.profile?.id) throw Error('AUTH_FAILED');
+    const profile = result.profile as { name?: unknown };
+    const minecraftName = typeof profile.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(profile.name) ? profile.name : undefined;
     // Access tokens stay inside prismarine-auth and its backend-only cache.
+    return { minecraftName };
   });
   if (config.api.enabled && config.mode === 'live') await controls.load();
   const logger = new Logger(config.level, config.logDir, config.logMaxBytes, config.logFiles, config.accounts.map(a => a.username));
