@@ -59,7 +59,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.origin !== origin && !(req.method === 'GET' && req.headers.origin === undefined && req.headers['x-bbot-ui'] === '1')) { res.writeHead(403); res.end(); return; }
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
+      res.writeHead(204, { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
         'access-control-allow-headers': 'Content-Type, X-BBot-UI', 'vary': 'Origin' }); res.end(); return;
     }
     if (req.method === 'GET' && req.url === '/api/v1/status') { send(res, 200, snapshot()); return; }
@@ -68,10 +68,21 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
+    const accountDelete = /^\/api\/v1\/accounts\/([0-9a-f-]{36})$/.exec(req.url ?? '');
     const settingsWrite = !!controls && req.method === 'PUT' && req.url === '/api/v1/settings/server';
     const accountWrite = !!controls && req.method === 'POST' && req.url === '/api/v1/accounts';
     const assignmentWrite = !!controls && req.method === 'PUT' && !!assignment;
     const retryWrite = !!controls && req.method === 'POST' && !!retry;
+    const deleteWrite = !!controls && req.method === 'DELETE' && !!accountDelete;
+    if (deleteWrite) {
+      void controls!.deleteAccount(accountDelete![1]!).then(result => { broadcast(); send(res, 200, result); }).catch(error => {
+        const code = error instanceof Error ? error.message : '';
+        const status = ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
+          ['INVALID_STATE', 'CONFLICT'].includes(code) ? 409 : 500;
+        send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
+      });
+      return;
+    }
     if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
