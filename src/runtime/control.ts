@@ -111,10 +111,21 @@ export class ControlStore {
     const assigned = this.entries.map(a => a.assignedBot).filter(Boolean);
     if (new Set(assigned).size !== assigned.length || assigned.some(id => Number(id!.slice(4)) > this.config.count)) throw Error('INVALID_RUNTIME_ACCOUNTS');
   }
-  bind(manager: BotManager): void {
+  async bind(manager: BotManager): Promise<void> {
     this.manager = manager;
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
       { label: a.label, username: a.cacheKey, auth: 'microsoft' }, a.minecraftName);
+    if (this.config.count === 1 && !this.entries.some(a => a.assignedBot)) {
+      const ready = this.entries.filter(a => a.status === 'READY');
+      if (ready.length === 1) {
+        const account = ready[0]!;
+        const updated = this.entries.map(a => a.id === account.id ? { ...a, assignedBot: 'bot-1' } : a);
+        await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+        this.entries = updated;
+        manager.assignAccount('bot-1', account.id,
+          { label: account.label, username: account.cacheKey, auth: 'microsoft' }, account.minecraftName);
+      }
+    }
   }
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     this.pending++;
