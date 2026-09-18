@@ -39,10 +39,24 @@ export function createMineflayerTransport(config: Config, index: number, events:
     if (!eligible) return;
     events.message(text);
   };
+  const normalizeKickReason = (reason: unknown): string => {
+    try {
+      if (typeof reason === 'string') return reason.replace(/[\r\n]+/g, ' ').slice(0, 1000);
+      const rendered = String(reason);
+      if (rendered && rendered !== '[object Object]') return rendered.replace(/[\r\n]+/g, ' ').slice(0, 1000);
+      return JSON.stringify(reason).replace(/[\r\n]+/g, ' ').slice(0, 1000);
+    } catch {
+      return 'Unknown kick reason';
+    }
+  };
+  const kicked = (reason: unknown, loggedIn?: boolean) => {
+    if (closed) return;
+    events.kicked?.(normalizeKickReason(reason), loggedIn);
+  };
   const end = () => { if (!closed) events.end(); };
   const error = () => { if (!closed) events.error(); };
   bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
-  bot.on('end', end); bot.on('error', error);
+  bot.on('kicked', kicked); bot.on('end', end); bot.on('error', error);
   if (config.level === 'debug') { bot.on('windowOpen', windowOpen); bot.on('windowClose', windowClose); }
   return {
     position: () => bot.entity?.position ? { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z } : undefined,
@@ -63,7 +77,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       if (closed) return; closed = true;
       stopPath();
       bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
-      bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
+      bot.removeListener('kicked', kicked); bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
       // Keep the guarded error listener until transport GC to absorb late socket errors.
       bot.end('BBot stopped');
     }
