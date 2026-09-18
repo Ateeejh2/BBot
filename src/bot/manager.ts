@@ -14,7 +14,7 @@ interface Execution { id: string; lease: number; generation: number; abort: Abor
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
-  ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number;
+  ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
 }
 export class BotManager {
@@ -35,7 +35,7 @@ export class BotManager {
       const bot: ManagedBot = { id: `bot-${i + 1}`, accountLabel: a.label,
         machine: new StateMachine((_from, to) => this.log(bot, 'state changed', { state: to })),
         generation: new Generation(), connection: 0, ready: false, dueAt: 0, deadline: 0,
-        reconnectAttempts: 0, joinAttempts: 0, paused: config.api.enabled };
+        reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, paused: config.api.enabled };
       return bot;
     });
   }
@@ -198,18 +198,24 @@ export class BotManager {
       });
     } catch { this.checkSessionAfterConnectFailure(b); this.disconnected(b); }
   }
+  private confirmJoinedInstance(b: ManagedBot): void {
+    if (b.machine.state !== 'JOINING_PIT' || !b.pendingInstance || !b.joinSpawnObserved) return;
+    try { this.registry.join(b.pendingInstance, b.id, this.now()); }
+    catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
+    b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false;
+    b.machine.transition('IN_PIT_IDLE'); b.stableSince = this.now();
+    this.log(b, 'instance confirmed after transfer signals');
+  }
   private spawn(b: ManagedBot): void {
     b.ready = true;
     if (b.machine.state === 'CONNECTING') {
       b.machine.transition('LOBBY'); b.dueAt = this.now() + this.config.playCooldownMs;
-    } else if (b.machine.state === 'JOINING_PIT' && b.pendingInstance) {
-      // Confirmation deliberately requires a spawn AFTER the server transfer notification.
-      try { this.registry.join(b.pendingInstance, b.id, this.now()); }
-      catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
-      b.instanceId = b.pendingInstance; b.pendingInstance = undefined;
-      b.machine.transition('IN_PIT_IDLE'); b.stableSince = this.now();
-      this.log(b, 'instance confirmed after transfer spawn');
-    } else if (b.machine.state !== 'JOINING_PIT' && b.machine.state !== 'RECOVERING' && b.machine.state !== 'LOBBY') {
+    } else if (b.machine.state === 'JOINING_PIT') {
+      // 1.8.9/Bungee event order is not assumed: require both an exact transfer notice and a spawn
+      // from the same join attempt, but accept either observation order.
+      b.joinSpawnObserved = true;
+      this.confirmJoinedInstance(b);
+    } else if (b.machine.state !== 'RECOVERING' && b.machine.state !== 'LOBBY') {
       this.recover(b, 'UNKNOWN_RETURN');
     }
   }
@@ -229,6 +235,7 @@ export class BotManager {
       b.pendingInstance = instance;
       try { this.registry.observe(instance, this.now()); } catch { this.log(b, 'registry capacity reached'); }
       this.log(b, 'transfer destination observed', { destination: instance });
+      this.confirmJoinedInstance(b);
     }
     const reason = this.classifier.classify(text);
     if (reason && b.machine.state !== 'DISCONNECTED' && b.machine.state !== 'CONNECTING') this.recover(b, reason);
@@ -237,7 +244,7 @@ export class BotManager {
     if (b.joinAttempts >= this.config.joinMaxAttempts) {
       b.paused = true; this.log(b, 'join attempt budget exhausted; inspect and restart after diagnosis'); return;
     }
-    b.joinAttempts++; b.pendingInstance = undefined;
+    b.joinAttempts++; b.pendingInstance = undefined; b.joinSpawnObserved = false;
     b.generation.invalidate(); b.machine.transition('JOINING_PIT');
     b.deadline = this.now() + this.config.joinTimeoutMs;
     try { b.transport?.chat('/play pit'); } catch { this.disconnected(b); }
@@ -245,7 +252,7 @@ export class BotManager {
   private recover(b: ManagedBot, reason: ReturnReason): void {
     this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
-    b.instanceId = undefined; b.pendingInstance = undefined; b.stableSince = undefined;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined;
     b.machine.transition('RECOVERING');
     b.dueAt = this.now() + backoff(Math.max(0, b.joinAttempts - 1), { baseMs: this.config.playCooldownMs, maxMs: Math.max(this.config.playCooldownMs, this.config.reconnect.maxMs), jitter: 0 });
     this.log(b, 'membership lost; recovering', { reason });
@@ -260,7 +267,7 @@ export class BotManager {
     if (b.machine.state === 'DISCONNECTED') return;
     this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
-    b.instanceId = undefined; b.pendingInstance = undefined; b.stableSince = undefined; b.ready = false;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false;
     const transport = b.transport; b.transport = undefined;
     b.machine.transition('DISCONNECTED');
     b.dueAt = this.now() + backoff(b.reconnectAttempts++, this.config.reconnect, this.random);
