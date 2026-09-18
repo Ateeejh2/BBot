@@ -9,7 +9,7 @@ import { validateSessionInput, validateSessionTokenInput, resolveSessionCredenti
 export interface ServerConnection { host: string; port: number; version: '1.8.9'; revision: number }
 export interface PublicAccount {
   id: string; label: string; kind: 'MICROSOFT' | 'SESSION'; status: 'WAITING_FOR_LOGIN' | 'READY' | 'ERROR';
-  minecraftName?: string; assignedBot?: string; createdAt: number;
+  minecraftName?: string; assignedBot?: string; createdAt: number; authError?: 'SESSION_TOKEN_INVALID';
 }
 type StoredAccount = (PublicAccount & { kind: 'MICROSOFT'; cacheKey: string; folder: string }) |
   (PublicAccount & { kind: 'SESSION'; minecraftName: string });
@@ -67,7 +67,8 @@ export class ControlStore {
   get busy(): boolean { return this.pending > 0; }
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
-    return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt }) => ({ id, label, kind, status, minecraftName, assignedBot, createdAt }));
+    return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError }) =>
+      ({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError }));
   }
   getAuthChallenge(id: string): PublicAuthChallenge | undefined {
     const challenge = this.challenges.get(id);
@@ -106,6 +107,7 @@ export class ControlStore {
       if (!Array.isArray(raw) || raw.length > 20 || !raw.every(a => a &&
         /^[0-9a-f-]{36}$/.test(a.id) && /^[\w-]{1,40}$/.test(a.label) && ['MICROSOFT', 'SESSION'].includes(a.kind) &&
         ['WAITING_FOR_LOGIN', 'READY', 'ERROR'].includes(a.status) &&
+        (a.authError === undefined || a.authError === 'SESSION_TOKEN_INVALID') &&
         (a.minecraftName === undefined || (typeof a.minecraftName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(a.minecraftName))) &&
         (a.kind === 'MICROSOFT' ? typeof a.cacheKey === 'string' && a.cacheKey.length <= 256 && /^[\w-]{1,40}$/.test(a.folder) :
           a.status === 'READY' && typeof a.minecraftName === 'string' && a.cacheKey === undefined && a.folder === undefined) &&
@@ -124,6 +126,7 @@ export class ControlStore {
   }
   async bind(manager: BotManager): Promise<void> {
     this.manager = manager;
+    manager.setSessionFailureHandler((botId, accountId) => this.revalidateSessionAfterConnectFailure(botId, accountId));
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
       transportAccount(a), a.minecraftName);
     if (this.config.count === 1 && !this.entries.some(a => a.assignedBot)) {
@@ -143,6 +146,54 @@ export class ControlStore {
     const result = this.queue.then(task);
     this.queue = result.catch(() => {}).finally(() => { this.pending--; });
     return result;
+  }
+  private async markSessionTokenInvalid(accountId: string): Promise<void> {
+    const account = this.entries.find(a => a.id === accountId);
+    if (!account || account.kind !== 'SESSION') return;
+    const updated = this.entries.map(a => a.id === accountId && a.kind === 'SESSION'
+      ? { ...a, status: 'ERROR' as const, authError: 'SESSION_TOKEN_INVALID' as const }
+      : a);
+    await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+    this.entries = updated;
+    if (account.assignedBot) this.manager?.pauseForAccountError(account.assignedBot);
+  }
+  private async verifyStoredSession(account: Extract<StoredAccount, { kind: 'SESSION' }>): Promise<boolean> {
+    try {
+      const stored = readSessionCredential(this.config.authDir, account.id);
+      const checked = await this.resolveSession(stored.accessToken);
+      return checked.selectedProfile.id === stored.selectedProfile.id;
+    } catch {
+      return false;
+    }
+  }
+  async prepareBotStart(botId: string): Promise<void> {
+    return this.exclusive(async () => {
+      const bot = this.manager?.views().find(b => b.id === botId);
+      if (!bot) throw Error('UNKNOWN_BOT');
+      if (!bot.accountId) return;
+      const account = this.entries.find(a => a.id === bot.accountId);
+      if (!account || account.kind !== 'SESSION') return;
+      if (account.status === 'ERROR') throw Error('SESSION_AUTH_REQUIRED');
+      if (!(await this.verifyStoredSession(account))) {
+        await this.markSessionTokenInvalid(account.id);
+        throw Error('SESSION_AUTH_REQUIRED');
+      }
+    });
+  }
+  private async revalidateSessionAfterConnectFailure(botId: string, accountId: string): Promise<boolean> {
+    try {
+      return await this.exclusive(async () => {
+        const account = this.entries.find(a => a.id === accountId);
+        const bot = this.manager?.views().find(b => b.id === botId);
+        if (!account || account.kind !== 'SESSION' || bot?.accountId !== accountId) return false;
+        if (account.status === 'ERROR') return true;
+        const invalid = !(await this.verifyStoredSession(account));
+        if (invalid) await this.markSessionTokenInvalid(account.id);
+        return invalid;
+      });
+    } catch {
+      return false;
+    }
   }
   saveServer(body: unknown): Promise<ServerConnection> {
     const valid = validateConnection(body);
@@ -218,9 +269,11 @@ export class ControlStore {
         async () => {
           await saveSessionCredential(this.config.authDir, id, next);
           try {
-            const updated = this.entries.map(a => a.id === id && a.kind === 'SESSION'
-              ? { ...a, minecraftName: next.selectedProfile.name, status: 'READY' as const }
-              : a);
+            const updated = this.entries.map(a => {
+              if (a.id !== id || a.kind !== 'SESSION') return a;
+              const { authError: _authError, ...rest } = a;
+              return { ...rest, minecraftName: next.selectedProfile.name, status: 'READY' as const };
+            });
             await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
             this.entries = updated;
             const current = this.entries.find(a => a.id === id)!;
