@@ -170,6 +170,26 @@ export class ControlStore {
     this.challenges.delete(id);
     try { await this.exclusive(async () => {
       const cleanName = minecraftName && /^[A-Za-z0-9_]{1,16}$/.test(minecraftName) ? minecraftName : undefined;
+      const account = this.entries.find(a => a.id === id);
+      if (!account) return;
+      const autoAssign = status === 'READY' && this.config.count === 1 &&
+        !this.entries.some(a => a.assignedBot) &&
+        this.manager?.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED';
+      if (autoAssign) {
+        await this.manager!.withConfigurationLock(
+          () => this.manager!.views().find(b => b.id === 'bot-1')?.state === 'DISCONNECTED',
+          async () => {
+            const updated = this.entries.map(a => a.id === id ? {
+              ...a, status, ...(cleanName ? { minecraftName: cleanName } : {}), assignedBot: 'bot-1'
+            } : a);
+            await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+            this.entries = updated;
+            this.manager!.assignAccount('bot-1', id,
+              { label: account.label, username: account.cacheKey, auth: 'microsoft' }, cleanName);
+          }
+        );
+        return;
+      }
       const updated = this.entries.map(a => a.id === id ? { ...a, status, ...(cleanName ? { minecraftName: cleanName } : {}) } : a);
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
       this.entries = updated;
