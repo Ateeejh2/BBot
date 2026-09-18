@@ -31,7 +31,7 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     captured.push({host:config.host,port:config.port,username:config.accounts[index]!.username,label:config.accounts[index]!.label});
     return new MockTransport(events, () => 'mega');
   }, new InstanceRegistry(), new Scheduler(3,100,100), new PathfindingController(1,1000), new MockTaskHandler(), logger);
-  controls.bind(manager);
+  await controls.bind(manager);
   const api = createManagementApi(manager, config, logger, controls);
   await api.listen();
   const address = api.address(); assert.ok(address && typeof address !== 'string');
