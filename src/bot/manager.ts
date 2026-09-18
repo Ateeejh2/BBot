@@ -12,7 +12,7 @@ import type { TaskHandler } from '../events/task.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
 interface ManagedBot {
-  id: string; accountLabel: string; accountId?: string; machine: StateMachine; generation: Generation;
+  id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number;
   stableSince?: number; paused: boolean; execution?: Execution;
@@ -62,16 +62,16 @@ export class BotManager {
     if (b.machine.state === 'DISCONNECTED') throw new Error('INVALID_STATE');
     b.paused = true; this.disconnected(b);
   }
-  assignAccount(botId: string, accountId: string, account: Config['accounts'][number]): void {
+  assignAccount(botId: string, accountId: string, account: Config['accounts'][number], minecraftName?: string): void {
     const b = this.controlled(botId);
     if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
     this.config.accounts[this.bots.indexOf(b)] = account;
-    b.accountId = accountId; b.accountLabel = account.label;
+    b.accountId = accountId; b.accountLabel = account.label; b.minecraftName = minecraftName;
   }
   unassignAccount(botId: string): void {
     const b = this.controlled(botId);
     if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
-    b.accountId = undefined; b.accountLabel = b.id;
+    b.accountId = undefined; b.accountLabel = b.id; b.minecraftName = undefined;
   }
   allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
   async withConfigurationLock<T>(allowed: () => boolean, operation: () => Promise<T>): Promise<T> {
@@ -79,7 +79,7 @@ export class BotManager {
     this.configurationLocked = true;
     try { return await operation(); } finally { this.configurationLocked = false; }
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position() }; }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position() }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
@@ -128,6 +128,10 @@ export class BotManager {
     try {
       b.transport = this.factory(index, {
         spawn: guard(() => this.spawn(b)), worldReset: guard(() => this.worldReset(b)),
+        identity: username => {
+          if (this.stopped || b.connection !== connection || !/^[A-Za-z0-9_]{1,16}$/.test(username)) return;
+          b.minecraftName = username;
+        },
         message: text => { if (!this.stopped && b.connection === connection) this.message(b, text); },
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
