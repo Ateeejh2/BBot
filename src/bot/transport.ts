@@ -1,6 +1,8 @@
 import type { Position } from '../core/types.js';
 export interface TransportEvents {
   spawn(): void; worldReset(): void; message(text: string): void; end(): void; error(): void;
+  /** Server-provided disconnect/kick reason, normalized by the transport for operator diagnostics. */
+  kicked?(reason: string, loggedIn?: boolean): void;
   diagnostic?(name: string, fields?: Record<string, unknown>): void;
 }
 export interface BotTransport {
