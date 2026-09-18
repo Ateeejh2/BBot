@@ -8,9 +8,9 @@ function setEnvLine(text, key, value) {
 }
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const result = spawnSync(npmCommand, ['install', '--no-save', '--package-lock=false', 'prismarine-viewer@1.33.0'], { stdio: 'inherit' });
+const result = spawnSync(npmCommand, ['install', '--no-save', '--package-lock=false', 'prismarine-viewer@1.33.0', 'canvas@3.1.0'], { stdio: 'inherit' });
 if (result.status !== 0) {
-  process.stderr.write('Viewer install failed. BBot files were not changed.\n');
+  process.stderr.write('Viewer install failed (prismarine-viewer/canvas). BBot files were not changed.\n');
   process.exit(result.status ?? 1);
 }
 
