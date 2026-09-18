@@ -180,6 +180,51 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
   } finally { manager.stop();await api.close();await rm(dir,{recursive:true,force:true}); }
 });
 
+test('two READY Microsoft accounts start assigned with spacing, enter separate instances, and stop all', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-fleet-two-'));
+  let now=0;
+  const config=loadConfig({MODE:'live',BOT_COUNT:'2',API_ENABLED:'true',API_ORIGIN:'http://localhost:5173',
+    ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir,CONNECTION_SPACING_MS:'100',PLAY_COOLDOWN_MS:'1000'});
+  config.authDir=join(dir,'.auth');
+  const controls=new ControlStore(config,async account=>({minecraftName:`${account.label}MC`}));
+  const logger=new Logger('error');
+  const transports:MockTransport[]=[];
+  const manager=new BotManager(config,(index,events)=>{
+    const transport=new MockTransport(events,()=>index===0?'mega-a':'mega-b');
+    transports.push(transport);
+    return transport;
+  },new InstanceRegistry(),new Scheduler(3,100,100),new PathfindingController(2,1000),new MockTaskHandler(),logger,()=>now,()=>1);
+  try {
+    await controls.load();await controls.bind(manager);
+    const first=await controls.addAccount({kind:'MICROSOFT',label:'First'});
+    const second=await controls.addAccount({kind:'MICROSOFT',label:'Second'});
+    await delay(10);
+    const accounts=controls.listAccounts();
+    assert.ok(accounts.every(a=>a.status==='READY'));
+    await controls.assign('bot-1',{accountId:first.id});
+    await controls.assign('bot-2',{accountId:second.id});
+    const started=await controls.startAssignedBots();
+    assert.deepEqual(started,{started:['bot-1','bot-2'],skipped:[]});
+    await delay(0);
+    assert.equal(transports.length,1);
+    assert.equal(manager.views()[0]?.state,'LOBBY');
+    assert.equal(manager.views()[1]?.startQueued,true);
+    now=99;manager.tick();assert.equal(transports.length,1);
+    now=100;manager.tick();await delay(0);
+    assert.equal(transports.length,2);
+    assert.equal(manager.views()[1]?.state,'LOBBY');
+    now=1000;manager.tick();
+    assert.equal(manager.views()[0]?.state,'IN_PIT_IDLE');
+    assert.equal(manager.views()[0]?.instanceId,'mega-a');
+    assert.equal(manager.views()[1]?.state,'LOBBY');
+    now=1100;manager.tick();
+    assert.equal(manager.views()[1]?.state,'IN_PIT_IDLE');
+    assert.equal(manager.views()[1]?.instanceId,'mega-b');
+    assert.deepEqual(controls.stopAllBots().stopped.sort(),['bot-1','bot-2']);
+    assert.ok(manager.views().every(bot=>bot.state==='DISCONNECTED'&&!bot.startQueued));
+  } finally {manager.stop();await rm(dir,{recursive:true,force:true});}
+});
+
 test('one READY Session account auto assigns and stays credential-free on restart', async () => {
   const dir=await mkdtemp(join(process.cwd(),'.test-session-auto-'));
   const config=loadConfig({MODE:'live',API_ENABLED:'true',API_ORIGIN:'http://localhost:5173',ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir});
