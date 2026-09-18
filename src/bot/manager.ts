@@ -58,7 +58,22 @@ export class BotManager {
     if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
     if (this.config.mode === 'live' && this.config.api.enabled && !b.accountId) throw new Error('ACCOUNT_REQUIRED');
     b.paused = false; b.dueAt = 0;
-    this.connect(b, this.bots.indexOf(b));
+    const now = this.now();
+    if (now >= this.nextConnectAt) {
+      this.nextConnectAt = now + this.config.connectionSpacingMs;
+      this.connect(b, this.bots.indexOf(b));
+    }
+  }
+  stopAllBots(): string[] {
+    const stopped: string[] = [];
+    for (const b of this.bots) {
+      const wasQueued = b.machine.state === 'DISCONNECTED' && !b.paused;
+      b.paused = true; b.authCheckPending = false;
+      if (b.machine.state !== 'DISCONNECTED') {
+        stopped.push(b.id); this.disconnected(b);
+      } else if (wasQueued) stopped.push(b.id);
+    }
+    return stopped;
   }
   joinPit(id: string): void {
     const b = this.controlled(id);
