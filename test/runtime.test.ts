@@ -14,6 +14,7 @@ import { Logger } from '../src/logging/logger.js';
 import { ControlStore } from '../src/runtime/control.js';
 import { createManagementApi } from '../src/api/server.js';
 import { createBotOptions } from '../src/bot/mineflayer.js';
+import { resolveSessionCredential } from '../src/runtime/session.js';
 
 test('runtime settings and accounts stay scoped, persisted and secret-free', async () => {
   const dir = await mkdtemp(join(process.cwd(), '.test-control-'));
@@ -22,9 +23,13 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
   config.api.port = 0;
   config.authDir = join(dir,'.auth');
   const authSecret = 'SECRET_REFRESH_TOKEN_987654321';
+  const sessionSecret = 'TEST_SESSION_ACCESS_24680';
   const controls = new ControlStore(config, async account => {
     if (account.label === 'Failure') throw Error(authSecret);
     return account.label === 'Scout' ? { minecraftName: 'RealScout' } : {};
+  }, async token => {
+    if (token !== sessionSecret) throw Error('INVALID_SESSION_TOKEN');
+    return { accessToken: token, selectedProfile: { name: 'SessionMC', id: '12345678123412341234123456789abc' } };
   });
   await controls.load();
   const captured: Array<{host:string;port:number;username:string;label:string}> = [];
@@ -102,12 +107,11 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     await persisted.load();
     assert.equal(persisted.getServer().host,'play.example.com');
     assert.equal(persisted.listAccounts().find(a=>a.id===created.id)?.assignedBot,'bot-1');
-    const sessionSecret='TEST_SESSION_ACCESS_24680';
-    const input={kind:'SESSION',label:'SessionOne',profileName:'SessionMC',
-      profileId:'12345678-1234-1234-1234-123456789abc',accessToken:sessionSecret,clientToken:'TEST_CLIENT_13579'};
-    for(const invalid of [ {...input,profileId:'bad'}, {...input,profileName:'invalid name'},
-      {...input,accessToken:''}, {...input,clientToken:''}, {...input,extra:'unwanted'} ])
+    const input={kind:'SESSION',label:'SessionOne',accessToken:sessionSecret};
+    for(const invalid of [ {...input,accessToken:''}, {...input,extra:'unwanted'},
+      {kind:'SESSION',label:'SessionOne',accessToken:sessionSecret,profileName:'should-not-be-sent'} ])
       assert.equal((await write('/api/v1/accounts','POST',invalid)).status,400);
+    assert.equal((await write('/api/v1/accounts','POST',{kind:'SESSION',label:'BadToken',accessToken:'BAD_TOKEN'})).status,422);
     const sessionResponse=await write('/api/v1/accounts','POST',input);
     assert.equal(sessionResponse.status,201);
     const account=await sessionResponse.json() as {id:string;kind:string;status:string;assignedBot?:string};
@@ -129,6 +133,7 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     assert.equal(options.profilesFolder,false);assert.equal(options.onMsaCode,undefined);
     assert.equal(options.session?.accessToken,sessionSecret);
     assert.equal(options.session?.selectedProfile.id,'12345678123412341234123456789abc');
+    assert.equal(options.session?.clientToken,undefined);
     assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
     assert.equal(captured.at(-1)?.username,'SessionMC');
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,409);
@@ -143,17 +148,35 @@ test('one READY Session account auto assigns and stays credential-free on restar
   const dir=await mkdtemp(join(process.cwd(),'.test-session-auto-'));
   const config=loadConfig({MODE:'live',API_ENABLED:'true',API_ORIGIN:'http://localhost:5173',ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir});
   config.authDir=join(dir,'.auth');
-  const controls=new ControlStore(config,async()=>{});
+  const controls=new ControlStore(config,async()=>{},async token=>({
+    accessToken:token,selectedProfile:{name:'MCName',id:'12345678123412341234123456789abc'}
+  }));
   const logger=new Logger('error');
   const manager=new BotManager(config,(_index,events)=>new MockTransport(events,()=> 'mega'),
     new InstanceRegistry(),new Scheduler(3,100,100),new PathfindingController(1,1000),new MockTaskHandler(),logger);
   try {
     await controls.load();await controls.bind(manager);
-    const account=await controls.addAccount({kind:'SESSION',label:'SessionOnly',profileName:'MCName',
-      profileId:'12345678123412341234123456789abc',accessToken:'TEST_ACCESS',clientToken:'TEST_CLIENT'});
+    const account=await controls.addAccount({kind:'SESSION',label:'SessionOnly',accessToken:'TEST_ACCESS'});
     assert.equal(account.assignedBot,'bot-1');assert.equal(manager.views()[0]?.accountId,account.id);
     const next=new ControlStore(config,async()=>{});await next.load();
     assert.equal(next.listAccounts()[0]?.assignedBot,'bot-1');
     assert.equal(JSON.stringify(next.listAccounts()).includes('TEST_ACCESS'),false);
   } finally {manager.stop();await rm(dir,{recursive:true,force:true});}
+});
+
+
+test('Minecraft access token resolves MCID and UUID without client token', async () => {
+  let authorization='';
+  const credential=await resolveSessionCredential('MC_ACCESS_TOKEN', async (_input,init) => {
+    authorization=String((init?.headers as Record<string,string>)?.Authorization??'');
+    return new Response(JSON.stringify({id:'abcdefabcdefabcdefabcdefabcdefab',name:'TokenUser'}), {
+      status:200,headers:{'content-type':'application/json'}
+    });
+  });
+  assert.equal(authorization,'Bearer MC_ACCESS_TOKEN');
+  assert.deepEqual(credential,{
+    accessToken:'MC_ACCESS_TOKEN',
+    selectedProfile:{id:'abcdefabcdefabcdefabcdefabcdefab',name:'TokenUser'}
+  });
+  assert.equal(credential.clientToken,undefined);
 });
