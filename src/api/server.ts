@@ -1,8 +1,23 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { BotManager } from '../bot/manager.js';
 import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
+
+function runtimeViewerUrl(config: Config): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(config.dataDir, 'viewer-public-url.json'), 'utf8')) as { url?: unknown };
+    if (typeof raw.url !== 'string') return undefined;
+    const url = new URL(raw.url);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.port || url.pathname !== '/') return undefined;
+    if (!/^[a-z0-9-]+\.trycloudflare\.com$/i.test(url.hostname)) return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
 
 // Only fixed, operator-facing fields cross the API boundary. Never serialize transports or config.
 export function createManagementApi(manager: BotManager, config: Config, logger: Logger) {
@@ -17,10 +32,13 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     if (logs.length > 100) logs.shift();
     broadcast();
   });
-  const snapshot = () => ({ version: 1, bots: manager.views(),
-    instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
-    logs: [...logs], viewer: config.viewer.enabled && config.viewer.publicUrl
-      ? { botId: config.viewer.botId, url: config.viewer.publicUrl } : null });
+  const snapshot = () => {
+    const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
+    return { version: 1, bots: manager.views(),
+      instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
+      logs: [...logs], viewer: config.viewer.enabled && viewerUrl
+        ? { botId: config.viewer.botId, url: viewerUrl } : null };
+  };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   let previous = '';
   function broadcast() {
