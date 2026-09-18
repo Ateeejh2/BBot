@@ -15,7 +15,7 @@ interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number;
-  stableSince?: number; paused: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
+  stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -23,6 +23,7 @@ export class BotManager {
   private configurationLocked = false;
   private nextConnectAt = 0;
   private nextRerollAt = 0;
+  private sessionFailureHandler?: (botId: string, accountId: string) => Promise<boolean>;
   readonly distribution: DistributionManager;
   constructor(readonly config: Config, private factory: TransportFactory,
     readonly registry: InstanceRegistry, readonly scheduler: Scheduler,
@@ -39,6 +40,13 @@ export class BotManager {
     });
   }
   views(): BotView[] { return this.bots.map(b => this.view(b)); }
+  setSessionFailureHandler(handler: (botId: string, accountId: string) => Promise<boolean>): void {
+    this.sessionFailureHandler = handler;
+  }
+  pauseForAccountError(botId: string): void {
+    const b = this.controlled(botId);
+    b.paused = true; b.authCheckPending = false;
+  }
   private controlled(id: string): ManagedBot {
     const bot = this.bots.find(b => b.id === id);
     if (!bot) throw new Error('UNKNOWN_BOT');
@@ -66,12 +74,12 @@ export class BotManager {
     const b = this.controlled(botId);
     if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
     this.config.accounts[this.bots.indexOf(b)] = account;
-    b.accountId = accountId; b.accountLabel = account.label; b.minecraftName = minecraftName;
+    b.accountId = accountId; b.accountLabel = account.label; b.minecraftName = minecraftName; b.authCheckPending = false;
   }
   unassignAccount(botId: string): void {
     const b = this.controlled(botId);
     if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
-    b.accountId = undefined; b.accountLabel = b.id; b.minecraftName = undefined;
+    b.accountId = undefined; b.accountLabel = b.id; b.minecraftName = undefined; b.authCheckPending = false;
   }
   allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
   async withConfigurationLock<T>(allowed: () => boolean, operation: () => Promise<T>): Promise<T> {
@@ -91,7 +99,7 @@ export class BotManager {
       if (bot?.execution?.id === expired.id) this.cancelExecution(bot, true);
     }
     for (const [index, b] of this.bots.entries()) {
-      if (b.paused) continue;
+      if (b.paused || b.authCheckPending) continue;
       if (!this.configurationLocked && b.machine.state === 'DISCONNECTED' && now >= b.dueAt && now >= this.nextConnectAt) {
         this.nextConnectAt = now + this.config.connectionSpacingMs; this.connect(b, index); continue;
       }
@@ -120,6 +128,21 @@ export class BotManager {
       }
     }
   }
+  private checkSessionAfterConnectFailure(b: ManagedBot): void {
+    const index = this.bots.indexOf(b);
+    const account = this.config.accounts[index];
+    const accountId = b.accountId;
+    if (b.machine.state !== 'CONNECTING' || account?.kind !== 'SESSION' || !accountId ||
+        !this.sessionFailureHandler || b.authCheckPending) return;
+    b.authCheckPending = true;
+    void this.sessionFailureHandler(b.id, accountId).then(invalid => {
+      if (b.accountId !== accountId) return;
+      b.authCheckPending = false;
+      if (invalid) b.paused = true;
+    }, () => {
+      if (b.accountId === accountId) b.authCheckPending = false;
+    });
+  }
   private connect(b: ManagedBot, index: number): void {
     b.machine.transition('CONNECTING'); b.ready = false;
     b.deadline = this.now() + this.config.connectTimeoutMs;
@@ -144,9 +167,11 @@ export class BotManager {
           b.lastKickReason = kickReason; b.lastKickedAt = this.now();
           this.logger.log('warn', 'bot kicked', { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, kickReason, loggedIn: loggedIn ?? null });
+          this.checkSessionAfterConnectFailure(b);
           this.disconnected(b);
         },
-        end: guard(() => this.disconnected(b)), error: guard(() => { this.log(b, 'transport error (details withheld)'); this.disconnected(b); })
+        end: guard(() => { this.checkSessionAfterConnectFailure(b); this.disconnected(b); }),
+        error: guard(() => { this.log(b, 'transport error (details withheld)'); this.checkSessionAfterConnectFailure(b); this.disconnected(b); })
       });
     } catch { this.disconnected(b); }
   }
