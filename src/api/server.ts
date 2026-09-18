@@ -73,11 +73,13 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
+    const sessionToken = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/session-token$/.exec(req.url ?? '');
     const accountDelete = /^\/api\/v1\/accounts\/([0-9a-f-]{36})$/.exec(req.url ?? '');
     const settingsWrite = !!controls && req.method === 'PUT' && req.url === '/api/v1/settings/server';
     const accountWrite = !!controls && req.method === 'POST' && req.url === '/api/v1/accounts';
     const assignmentWrite = !!controls && req.method === 'PUT' && !!assignment;
     const retryWrite = !!controls && req.method === 'POST' && !!retry;
+    const sessionTokenWrite = !!controls && req.method === 'PUT' && !!sessionToken;
     const deleteWrite = !!controls && req.method === 'DELETE' && !!accountDelete;
     if (deleteWrite) {
       void controls!.deleteAccount(accountDelete![1]!).then(result => { broadcast(); send(res, 200, result); }).catch(error => {
@@ -88,10 +90,10 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       });
       return;
     }
-    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
+    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
-    const bodyLimit = accountWrite ? 8192 : 1024;
+    const bodyLimit = accountWrite || sessionTokenWrite ? 8192 : 1024;
     req.on('data', chunk => { size += chunk.length; if (size <= bodyLimit) body += chunk.toString(); });
     req.on('end', () => { void (async () => {
       if (size > bodyLimit) { send(res, 413, { error: 'INVALID_BODY' }); return; }
@@ -101,6 +103,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         if (settingsWrite) { const result = await controls!.saveServer(data); broadcast(); send(res, 200, result); return; }
         if (accountWrite) { const result = await controls!.addAccount(data); broadcast(); send(res, 201, result); return; }
         if (assignmentWrite) { const result = await controls!.assign(assignment![1]!, data); broadcast(); send(res, 200, result); return; }
+        if (sessionTokenWrite) { const result = await controls!.replaceSessionToken(sessionToken![1]!, data); broadcast(); send(res, 200, result); return; }
         if (retryWrite) { if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT'); const result = await controls!.retryAccount(retry![1]!); broadcast(); send(res, 200, result); return; }
         if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT');
         if (controls?.busy) throw Error('CONFLICT');
@@ -113,7 +116,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         const code = error instanceof Error ? error.message : '';
         const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','INVALID_SESSION_TOKEN'].includes(code) ? 422 :
           ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
-          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT'].includes(code) ? 409 : 500;
+          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH'].includes(code) ? 409 : 500;
         send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
       }
     })(); });
