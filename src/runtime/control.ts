@@ -141,15 +141,24 @@ export class ControlStore {
       this.entries = updated;
     }); } catch { /* The on-disk WAITING state becomes ERROR after restart. */ }
   }
-  assign(botId: string, body: unknown): Promise<PublicAccount> {
+  assign(botId: string, body: unknown): Promise<PublicAccount | { botId: string; accountId: null }> {
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
     const b = body as Record<string, unknown>;
-    if (Object.keys(b).join(',') !== 'accountId' || typeof b.accountId !== 'string') throw Error('INVALID_INPUT');
+    if (Object.keys(b).join(',') !== 'accountId' || (typeof b.accountId !== 'string' && b.accountId !== null)) throw Error('INVALID_INPUT');
     const accountId = b.accountId;
     return this.exclusive(async () => {
       const bot = this.manager?.views().find(b => b.id === botId);
       if (!bot) throw Error('UNKNOWN_BOT');
       if (bot.state !== 'DISCONNECTED') throw Error('INVALID_STATE');
+      if (accountId === null) {
+        return this.manager!.withConfigurationLock(() => this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED', async () => {
+          const updated = this.entries.map(a => a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
+          await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+          this.entries = updated;
+          this.manager!.unassignAccount(botId);
+          return { botId, accountId: null };
+        });
+      }
       const account = this.entries.find(a => a.id === accountId);
       if (!account) throw Error('UNKNOWN_ACCOUNT');
       if (account.status !== 'READY' || this.entries.some(a => a.id === accountId && a.assignedBot && a.assignedBot !== botId)) throw Error('CONFLICT');
@@ -161,6 +170,28 @@ export class ControlStore {
         this.manager!.assignAccount(botId, accountId, { label: account.label, username: account.cacheKey, auth: 'microsoft' });
         return this.listAccounts().find(a => a.id === accountId)!;
       });
+    });
+  }
+  deleteAccount(id: string): Promise<{ id: string }> {
+    return this.exclusive(async () => {
+      const account = this.entries.find(a => a.id === id);
+      if (!account) throw Error('UNKNOWN_ACCOUNT');
+      const botId = account.assignedBot;
+      if (botId) {
+        const bot = this.manager?.views().find(b => b.id === botId);
+        if (!bot) throw Error('UNKNOWN_BOT');
+        if (bot.state !== 'DISCONNECTED') throw Error('INVALID_STATE');
+      }
+      return this.manager!.withConfigurationLock(
+        () => !botId || this.manager!.views().find(b => b.id === botId)?.state === 'DISCONNECTED',
+        async () => {
+          const updated = this.entries.filter(a => a.id !== id);
+          await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+          this.entries = updated;
+          if (botId) this.manager!.unassignAccount(botId);
+          return { id };
+        }
+      );
     });
   }
 }
