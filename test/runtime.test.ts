@@ -150,7 +150,7 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     assert.equal(options.session?.clientToken,undefined);
     assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
     assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:sessionSecret})).status,409);
-    assert.equal(captured.at(-1)?.username,'SessionMC');
+    assert.equal(captured.at(-1)?.username,'SessionMC2');
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,409);
     assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,200);
