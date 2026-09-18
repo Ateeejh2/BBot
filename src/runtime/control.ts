@@ -10,7 +10,13 @@ export interface PublicAccount {
   minecraftName?: string; assignedBot?: string; createdAt: number;
 }
 interface StoredAccount extends PublicAccount { cacheKey: string; folder: string }
-type StartAuth = (account: { label: string; cacheKey: string; folder: string }, config: Config) => Promise<{ minecraftName?: string } | void>;
+export interface PublicAuthChallenge { verificationUri: string; userCode: string; expiresAt: number }
+interface AuthChallengeInput { verificationUri: string; userCode: string; expiresIn: number }
+type StartAuth = (
+  account: { label: string; cacheKey: string; folder: string },
+  config: Config,
+  reportChallenge: (challenge: AuthChallengeInput) => void
+) => Promise<{ minecraftName?: string } | void>;
 
 export function validateConnection(body: unknown): Pick<ServerConnection, 'host' | 'port' | 'version'> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
@@ -45,6 +51,7 @@ export class ControlStore {
   private server!: ServerConnection;
   private entries: StoredAccount[] = [];
   private manager?: BotManager;
+  private challenges = new Map<string, PublicAuthChallenge>();
   private pending = 0;
   private queue: Promise<unknown> = Promise.resolve();
   constructor(private config: Config, private startAuth: StartAuth) {}
@@ -52,6 +59,27 @@ export class ControlStore {
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
     return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt }) => ({ id, label, kind, status, minecraftName, assignedBot, createdAt }));
+  }
+  getAuthChallenge(id: string): PublicAuthChallenge | undefined {
+    const challenge = this.challenges.get(id);
+    if (!challenge) return undefined;
+    if (challenge.expiresAt <= Date.now()) { this.challenges.delete(id); return undefined; }
+    return { ...challenge };
+  }
+  private reportAuthChallenge(id: string, input: AuthChallengeInput): void {
+    try {
+      const url = new URL(input.verificationUri);
+      const trustedHost = url.hostname === 'microsoft.com' || url.hostname.endsWith('.microsoft.com') ||
+        url.hostname === 'live.com' || url.hostname.endsWith('.live.com');
+      if (url.protocol !== 'https:' || !trustedHost || url.username || url.password || url.hash ||
+          !/^[A-Za-z0-9-]{4,20}$/.test(input.userCode) ||
+          !Number.isFinite(input.expiresIn) || input.expiresIn <= 0 || input.expiresIn > 3600) return;
+      this.challenges.set(id, {
+        verificationUri: url.toString(),
+        userCode: input.userCode,
+        expiresAt: Date.now() + Math.floor(input.expiresIn * 1000)
+      });
+    } catch { /* Ignore malformed upstream challenge data. */ }
   }
   async load(): Promise<void> {
     this.server = { host: this.config.host, port: this.config.port, version: '1.8.9', revision: 0 };
@@ -119,7 +147,8 @@ export class ControlStore {
         createdAt: Date.now(), cacheKey: label, folder: label };
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
       this.entries.push(entry);
-      void this.startAuth(entry, this.config).then(result => this.authResult(entry.id, 'READY', result?.minecraftName), () => this.authResult(entry.id, 'ERROR'));
+      void this.startAuth(entry, this.config, challenge => this.reportAuthChallenge(entry.id, challenge))
+        .then(result => this.authResult(entry.id, 'READY', result?.minecraftName), () => this.authResult(entry.id, 'ERROR'));
       return this.listAccounts().find(a => a.id === entry.id)!;
     });
   }
@@ -131,11 +160,14 @@ export class ControlStore {
       const updated = this.entries.map(a => a.id === id ? { ...a, status: 'WAITING_FOR_LOGIN' as const } : a);
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
       this.entries = updated;
-      void this.startAuth(account, this.config).then(result => this.authResult(id, 'READY', result?.minecraftName), () => this.authResult(id, 'ERROR'));
+      this.challenges.delete(id);
+      void this.startAuth(account, this.config, challenge => this.reportAuthChallenge(id, challenge))
+        .then(result => this.authResult(id, 'READY', result?.minecraftName), () => this.authResult(id, 'ERROR'));
       return this.listAccounts().find(a => a.id === id)!;
     });
   }
   private async authResult(id: string, status: 'READY' | 'ERROR', minecraftName?: string): Promise<void> {
+    this.challenges.delete(id);
     try { await this.exclusive(async () => {
       const cleanName = minecraftName && /^[A-Za-z0-9_]{1,16}$/.test(minecraftName) ? minecraftName : undefined;
       const updated = this.entries.map(a => a.id === id ? { ...a, status, ...(cleanName ? { minecraftName: cleanName } : {}) } : a);
@@ -189,6 +221,7 @@ export class ControlStore {
         async () => {
           const updated = this.entries.filter(a => a.id !== id);
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+          this.challenges.delete(id);
           this.entries = updated;
           if (botId) this.manager!.unassignAccount(botId);
           return { id };
