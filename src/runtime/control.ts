@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Config } from '../config/index.js';
 import type { BotManager } from '../bot/manager.js';
 import type { Account } from '../config/index.js';
-import { validateSessionInput, saveSessionCredential, readSessionCredential, deleteSessionCredential } from './session.js';
+import { validateSessionInput, resolveSessionCredential, saveSessionCredential, readSessionCredential, deleteSessionCredential, type SessionCredential } from './session.js';
 
 export interface ServerConnection { host: string; port: number; version: '1.8.9'; revision: number }
 export interface PublicAccount {
@@ -62,7 +62,8 @@ export class ControlStore {
   private challenges = new Map<string, PublicAuthChallenge>();
   private pending = 0;
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(private config: Config, private startAuth: StartAuth) {}
+  constructor(private config: Config, private startAuth: StartAuth,
+    private resolveSession: (accessToken: string) => Promise<SessionCredential> = resolveSessionCredential) {}
   get busy(): boolean { return this.pending > 0; }
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
@@ -174,9 +175,10 @@ export class ControlStore {
     });
   }
   private addSession(body: unknown): Promise<PublicAccount> {
-    const { label, credential } = validateSessionInput(body);
+    const { label, accessToken } = validateSessionInput(body);
     return this.exclusive(async () => {
       if (this.entries.length >= 20 || this.entries.some(a => a.label.toLowerCase() === label.toLowerCase())) throw Error('CONFLICT');
+      const credential = await this.resolveSession(accessToken);
       const entry: StoredAccount = { id: randomUUID(), label, kind: 'SESSION', status: 'READY',
         minecraftName: credential.selectedProfile.name, createdAt: Date.now() };
       await saveSessionCredential(this.config.authDir, entry.id, credential);
