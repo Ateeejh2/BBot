@@ -22,6 +22,7 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
   const authSecret = 'SECRET_REFRESH_TOKEN_987654321';
   const controls = new ControlStore(config, async account => {
     if (account.label === 'Failure') throw Error(authSecret);
+    return account.label === 'Scout' ? { minecraftName: 'RealScout' } : {};
   });
   await controls.load();
   const captured: Array<{host:string;port:number;username:string;label:string}> = [];
@@ -54,7 +55,10 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     assert.equal((await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'Scout',token:authSecret})).status,400);
     const created = await (await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'Scout'})).json() as {id:string};
     await new Promise(resolve=>setTimeout(resolve,10));
+    const publicAccounts = await (await get('/api/v1/accounts')).json() as {accounts:Array<{id:string;minecraftName?:string}>};
+    assert.equal(publicAccounts.accounts.find(a=>a.id===created.id)?.minecraftName,'RealScout');
     assert.equal((await write('/api/v1/bots/bot-1/account','PUT',{accountId:created.id})).status,200);
+    assert.equal(manager.views()[0]?.minecraftName,'RealScout');
     await manager.withConfigurationLock(() => manager.allDisconnected(), async () => {
       assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,409);
       manager.tick(); assert.equal(manager.views()[0]?.state,'DISCONNECTED');
