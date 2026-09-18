@@ -81,7 +81,7 @@ export class BotManager {
         this.log(b, 'join timed out; no confirmed instance');
       }
       if (b.machine.state === 'RECOVERING' && !b.ready && now >= b.deadline) { this.disconnected(b); continue; }
-      if ((!this.config.api.enabled || b.machine.state === 'RECOVERING') && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
+      if (['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
     }
