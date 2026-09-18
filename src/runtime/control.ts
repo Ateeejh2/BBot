@@ -7,10 +7,10 @@ import type { BotManager } from '../bot/manager.js';
 export interface ServerConnection { host: string; port: number; version: '1.8.9'; revision: number }
 export interface PublicAccount {
   id: string; label: string; kind: 'MICROSOFT'; status: 'WAITING_FOR_LOGIN' | 'READY' | 'ERROR';
-  assignedBot?: string; createdAt: number;
+  minecraftName?: string; assignedBot?: string; createdAt: number;
 }
 interface StoredAccount extends PublicAccount { cacheKey: string; folder: string }
-type StartAuth = (account: { label: string; cacheKey: string; folder: string }, config: Config) => Promise<void>;
+type StartAuth = (account: { label: string; cacheKey: string; folder: string }, config: Config) => Promise<{ minecraftName?: string } | void>;
 
 export function validateConnection(body: unknown): Pick<ServerConnection, 'host' | 'port' | 'version'> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
@@ -51,7 +51,7 @@ export class ControlStore {
   get busy(): boolean { return this.pending > 0; }
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
-    return this.entries.map(({ id, label, kind, status, assignedBot, createdAt }) => ({ id, label, kind, status, assignedBot, createdAt }));
+    return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt }) => ({ id, label, kind, status, minecraftName, assignedBot, createdAt }));
   }
   async load(): Promise<void> {
     this.server = { host: this.config.host, port: this.config.port, version: '1.8.9', revision: 0 };
@@ -69,6 +69,7 @@ export class ControlStore {
       if (!Array.isArray(raw) || raw.length > 20 || !raw.every(a => a &&
         /^[0-9a-f-]{36}$/.test(a.id) && /^[\w-]{1,40}$/.test(a.label) && a.kind === 'MICROSOFT' &&
         ['WAITING_FOR_LOGIN', 'READY', 'ERROR'].includes(a.status) &&
+        (a.minecraftName === undefined || (typeof a.minecraftName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(a.minecraftName))) &&
         typeof a.cacheKey === 'string' && a.cacheKey.length <= 256 && /^[\w-]{1,40}$/.test(a.folder) &&
         Number.isSafeInteger(a.createdAt) && (a.assignedBot === undefined || /^bot-[1-9]\d*$/.test(a.assignedBot)))) throw Error('INVALID_RUNTIME_ACCOUNTS');
       this.entries = raw.map(a => ({ ...a, status: a.status === 'WAITING_FOR_LOGIN' ? 'ERROR' : a.status }));
@@ -85,7 +86,7 @@ export class ControlStore {
   bind(manager: BotManager): void {
     this.manager = manager;
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
-      { label: a.label, username: a.cacheKey, auth: 'microsoft' });
+      { label: a.label, username: a.cacheKey, auth: 'microsoft' }, a.minecraftName);
   }
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     this.pending++;
@@ -118,7 +119,7 @@ export class ControlStore {
         createdAt: Date.now(), cacheKey: label, folder: label };
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
       this.entries.push(entry);
-      void this.startAuth(entry, this.config).then(() => this.authResult(entry.id, 'READY'), () => this.authResult(entry.id, 'ERROR'));
+      void this.startAuth(entry, this.config).then(result => this.authResult(entry.id, 'READY', result?.minecraftName), () => this.authResult(entry.id, 'ERROR'));
       return this.listAccounts().find(a => a.id === entry.id)!;
     });
   }
@@ -130,13 +131,14 @@ export class ControlStore {
       const updated = this.entries.map(a => a.id === id ? { ...a, status: 'WAITING_FOR_LOGIN' as const } : a);
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
       this.entries = updated;
-      void this.startAuth(account, this.config).then(() => this.authResult(id, 'READY'), () => this.authResult(id, 'ERROR'));
+      void this.startAuth(account, this.config).then(result => this.authResult(id, 'READY', result?.minecraftName), () => this.authResult(id, 'ERROR'));
       return this.listAccounts().find(a => a.id === id)!;
     });
   }
-  private async authResult(id: string, status: 'READY' | 'ERROR'): Promise<void> {
+  private async authResult(id: string, status: 'READY' | 'ERROR', minecraftName?: string): Promise<void> {
     try { await this.exclusive(async () => {
-      const updated = this.entries.map(a => a.id === id ? { ...a, status } : a);
+      const cleanName = minecraftName && /^[A-Za-z0-9_]{1,16}$/.test(minecraftName) ? minecraftName : undefined;
+      const updated = this.entries.map(a => a.id === id ? { ...a, status, ...(cleanName ? { minecraftName: cleanName } : {}) } : a);
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
       this.entries = updated;
     }); } catch { /* The on-disk WAITING state becomes ERROR after restart. */ }
@@ -167,7 +169,7 @@ export class ControlStore {
           a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
         this.entries = updated;
-        this.manager!.assignAccount(botId, accountId, { label: account.label, username: account.cacheKey, auth: 'microsoft' });
+        this.manager!.assignAccount(botId, accountId, { label: account.label, username: account.cacheKey, auth: 'microsoft' }, account.minecraftName);
         return this.listAccounts().find(a => a.id === accountId)!;
       });
     });
