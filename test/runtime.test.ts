@@ -25,13 +25,17 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
   const authSecret = 'SECRET_REFRESH_TOKEN_987654321';
   const sessionSecret = 'TEST_SESSION_ACCESS_24680';
   const replacementSecret = 'TEST_SESSION_ACCESS_REPLACED_86420';
+  const recoverySecret = 'TEST_SESSION_ACCESS_RECOVERY_97531';
   const otherProfileSecret = 'TEST_OTHER_PROFILE_11223';
+  const invalidSessionTokens = new Set<string>();
   const controls = new ControlStore(config, async account => {
     if (account.label === 'Failure') throw Error(authSecret);
     return account.label === 'Scout' ? { minecraftName: 'RealScout' } : {};
   }, async token => {
+    if (invalidSessionTokens.has(token)) throw Error('INVALID_SESSION_TOKEN');
     if (token === sessionSecret) return { accessToken: token, selectedProfile: { name: 'SessionMC', id: '12345678123412341234123456789abc' } };
     if (token === replacementSecret) return { accessToken: token, selectedProfile: { name: 'SessionMC2', id: '12345678123412341234123456789abc' } };
+    if (token === recoverySecret) return { accessToken: token, selectedProfile: { name: 'SessionMC3', id: '12345678123412341234123456789abc' } };
     if (token === otherProfileSecret) return { accessToken: token, selectedProfile: { name: 'OtherMC', id: 'abcdefabcdefabcdefabcdefabcdefab' } };
     throw Error('INVALID_SESSION_TOKEN');
   });
@@ -152,6 +156,22 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     assert.equal((await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:sessionSecret})).status,409);
     assert.equal(captured.at(-1)?.username,'SessionMC2');
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,409);
+    assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
+    invalidSessionTokens.add(replacementSecret);
+    const expiredStart=await write('/api/v1/bots/bot-1/actions/connect','POST',{});
+    assert.equal(expiredStart.status,422);
+    assert.equal((await expiredStart.json() as {error:string}).error,'SESSION_AUTH_REQUIRED');
+    const errored=(await (await get('/api/v1/accounts')).json() as {accounts:Array<{id:string;status:string;authError?:string}>})
+      .accounts.find(a=>a.id===account.id)!;
+    assert.equal(errored.status,'ERROR');assert.equal(errored.authError,'SESSION_TOKEN_INVALID');
+    assert.equal(manager.views()[0]?.state,'DISCONNECTED');
+    const recovered=await write(`/api/v1/accounts/${account.id}/session-token`,'PUT',{accessToken:recoverySecret});
+    assert.equal(recovered.status,200);
+    const recoveredAccount=await recovered.json() as {status:string;authError?:string;minecraftName?:string};
+    assert.equal(recoveredAccount.status,'READY');assert.equal(recoveredAccount.authError,undefined);
+    assert.equal(recoveredAccount.minecraftName,'SessionMC3');
+    assert.equal((await write('/api/v1/bots/bot-1/actions/connect','POST',{})).status,200);
+    assert.equal(captured.at(-1)?.username,'SessionMC3');
     assert.equal((await write('/api/v1/bots/bot-1/actions/disconnect','POST',{})).status,200);
     assert.equal((await del(`/api/v1/accounts/${account.id}`)).status,200);
     await assert.rejects(stat(file),{code:'ENOENT'});
