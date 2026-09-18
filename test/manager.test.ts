@@ -38,6 +38,15 @@ test('first connection waits for spawn and cooldown; notification alone does not
   assert.equal(f.manager.views()[0]?.instanceId, undefined);
   t.events.worldReset(); t.events.spawn(); assert.equal(f.manager.views()[0]?.instanceId, 'new-9'); f.manager.stop();
 });
+test('kick reason is retained on the individual bot view', () => {
+  const f = fixture(); f.tick(0); const t = f.connections[0]!;
+  t.events.kicked?.('Disconnected: duplicate login', true);
+  const view = f.manager.views()[0]!;
+  assert.equal(view.state, 'DISCONNECTED');
+  assert.equal(view.kickReason, 'Disconnected: duplicate login');
+  assert.equal(view.kickedAt, 0);
+  f.manager.stop();
+});
 test('web Start automatically continues from lobby into Pit after cooldown', () => {
   const f = fixture(1, new MockTaskHandler(), true);
   f.tick(0); assert.equal(f.connections.length, 0); assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
