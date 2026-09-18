@@ -1,7 +1,7 @@
 import { StateMachine, Generation } from '../core/state.js';
 import { UnknownReturnClassifier, type BotView, type GameEvent, type ReturnClassifier, type ReturnReason } from '../core/types.js';
 import type { Config } from '../config/index.js';
-import { Logger } from '../logging/logger.js';
+import { Logger, safeKickReason } from '../logging/logger.js';
 import { parseInstance } from '../instances/parser.js';
 import { InstanceRegistry } from '../instances/registry.js';
 import { DistributionManager } from '../instances/distribution.js';
@@ -15,7 +15,7 @@ interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number;
-  stableSince?: number; paused: boolean; execution?: Execution;
+  stableSince?: number; paused: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -79,7 +79,7 @@ export class BotManager {
     this.configurationLocked = true;
     try { return await operation(); } finally { this.configurationLocked = false; }
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position() }; }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
@@ -140,8 +140,10 @@ export class BotManager {
         },
         kicked: (reason, loggedIn) => {
           if (this.stopped || b.connection !== connection) return;
+          const kickReason = safeKickReason(reason) ?? 'Unknown kick reason';
+          b.lastKickReason = kickReason; b.lastKickedAt = this.now();
           this.logger.log('warn', 'bot kicked', { botId: b.id, accountLabel: b.accountLabel,
-            instance: b.instanceId, state: b.machine.state, kickReason: reason, loggedIn: loggedIn ?? null });
+            instance: b.instanceId, state: b.machine.state, kickReason, loggedIn: loggedIn ?? null });
           this.disconnected(b);
         },
         end: guard(() => this.disconnected(b)), error: guard(() => { this.log(b, 'transport error (details withheld)'); this.disconnected(b); })
