@@ -20,10 +20,13 @@ import type { TransportFactory } from './bot/transport.js';
 async function main(): Promise<void> {
   const config = loadConfig({ ...process.env, ...(process.argv.includes('--mock') ? { MODE: 'mock' } : {}) });
   if (config.inactiveMs <= config.suspectMs) throw new Error('INSTANCE_INACTIVE_MS must exceed INSTANCE_SUSPECT_MS');
-  const controls = new ControlStore(config, async (account, settings) => {
+  const controls = new ControlStore(config, async (account, settings, reportChallenge) => {
     const auth = new Authflow(account.cacheKey, join(settings.authDir, account.folder),
       { flow: 'live', authTitle: Titles.MinecraftNintendoSwitch, deviceType: 'Nintendo' },
-      data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`));
+      data => {
+        reportChallenge({ verificationUri: data.verification_uri, userCode: data.user_code, expiresIn: data.expires_in });
+        process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`);
+      });
     const result = await auth.getMinecraftJavaToken({ fetchProfile: true, fetchCertificates: false });
     if (!result.profile?.id) throw Error('AUTH_FAILED');
     const profile = result.profile as { name?: unknown };
