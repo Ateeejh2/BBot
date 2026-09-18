@@ -8,7 +8,8 @@
     "test": "npm run build && node scripts/run-tests.mjs",
     "start": "node dist/src/index.js",
     "start:mock": "node dist/src/index.js --mock",
-    "test:soak": "npm run build && node dist/scripts/soak.js"
+    "test:soak": "npm run build && node dist/scripts/soak.js",
+    "setup:live": "node scripts/setup-live-test.mjs"
   },
   "repository": {
     "type": "git",
