@@ -44,15 +44,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const viewerBotNumber = Number(viewerBotId.slice(4));
   if (viewerEnabled && viewerBotNumber > count) throw new Error('VIEWER_BOT_ID exceeds BOT_COUNT');
   let accounts: Account[];
+  let legacyAccountsPresent = false;
   if (mode === 'mock') accounts = Array.from({ length: count }, (_, i) => ({ label: `bot-${i + 1}`, username: `mock-${i + 1}`, auth: 'offline' }));
   else {
-    const raw: unknown = JSON.parse(readFileSync(resolve(env.ACCOUNTS_FILE ?? 'accounts.json'), 'utf8'));
+    let raw: unknown;
+    try { raw = JSON.parse(readFileSync(resolve(env.ACCOUNTS_FILE ?? 'accounts.json'), 'utf8')); legacyAccountsPresent = true; }
+    catch (error) {
+      if (!apiEnabled || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      raw = [];
+    }
+    if (apiEnabled && Array.isArray(raw) && raw.length === 0) raw = Array.from({ length: count }, (_, i) => ({ label: `unassigned-${i+1}`, username: `unassigned-${i+1}`, auth: 'offline' }));
     if (!Array.isArray(raw) || raw.length < count || !raw.every(a => a && typeof a.label === 'string' && /^[\w-]{1,40}$/.test(a.label) && typeof a.username === 'string' && a.username.length > 0 && a.username.length <= 256 && ['microsoft', 'offline'].includes(a.auth))) throw new Error('Invalid accounts file');
     accounts = (raw as Account[]).slice(0, count);
     if (new Set(accounts.map(a => a.label)).size !== count || new Set(accounts.map(a => a.username.toLowerCase())).size !== count) throw new Error('Duplicate accounts');
   }
   return {
-    mode: mode as 'mock' | 'live', count, host, version, accounts, level: level as 'debug' | 'info' | 'warn' | 'error',
+    mode: mode as 'mock' | 'live', count, host, version, accounts, legacyAccountsPresent, level: level as 'debug' | 'info' | 'warn' | 'error',
     port: integer('SERVER_PORT', 25565, 1, 65535),
     reconnect: { baseMs: reconnectBaseMs, maxMs: reconnectMaxMs, jitter: integer('RECONNECT_JITTER_PERCENT', 50, 0, 100) / 100 },
     connectTimeoutMs: integer('CONNECT_TIMEOUT_MS', 60000, 1000, 600000),

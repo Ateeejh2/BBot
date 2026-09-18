@@ -12,7 +12,7 @@ import type { TaskHandler } from '../events/task.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
 interface ManagedBot {
-  id: string; accountLabel: string; machine: StateMachine; generation: Generation;
+  id: string; accountLabel: string; accountId?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number;
   stableSince?: number; paused: boolean; execution?: Execution;
@@ -20,6 +20,7 @@ interface ManagedBot {
 export class BotManager {
   private bots: ManagedBot[];
   private stopped = false;
+  private configurationLocked = false;
   private nextConnectAt = 0;
   private nextRerollAt = 0;
   readonly distribution: DistributionManager;
@@ -45,7 +46,9 @@ export class BotManager {
   }
   connectBot(id: string): void {
     const b = this.controlled(id);
+    if (this.configurationLocked) throw new Error('CONFLICT');
     if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    if (this.config.mode === 'live' && this.config.api.enabled && !b.accountId) throw new Error('ACCOUNT_REQUIRED');
     b.paused = false; b.dueAt = 0;
     this.connect(b, this.bots.indexOf(b));
   }
@@ -59,7 +62,19 @@ export class BotManager {
     if (b.machine.state === 'DISCONNECTED') throw new Error('INVALID_STATE');
     b.paused = true; this.disconnected(b);
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountLabel: b.accountLabel, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position() }; }
+  assignAccount(botId: string, accountId: string, account: Config['accounts'][number]): void {
+    const b = this.controlled(botId);
+    if (b.machine.state !== 'DISCONNECTED') throw new Error('INVALID_STATE');
+    this.config.accounts[this.bots.indexOf(b)] = account;
+    b.accountId = accountId; b.accountLabel = account.label;
+  }
+  allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
+  async withConfigurationLock<T>(allowed: () => boolean, operation: () => Promise<T>): Promise<T> {
+    if (this.configurationLocked || !allowed()) throw Error('INVALID_STATE');
+    this.configurationLocked = true;
+    try { return await operation(); } finally { this.configurationLocked = false; }
+  }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position() }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
@@ -72,7 +87,7 @@ export class BotManager {
     }
     for (const [index, b] of this.bots.entries()) {
       if (b.paused) continue;
-      if (b.machine.state === 'DISCONNECTED' && now >= b.dueAt && now >= this.nextConnectAt) {
+      if (!this.configurationLocked && b.machine.state === 'DISCONNECTED' && now >= b.dueAt && now >= this.nextConnectAt) {
         this.nextConnectAt = now + this.config.connectionSpacingMs; this.connect(b, index); continue;
       }
       if (b.machine.state === 'CONNECTING' && now >= b.deadline) { this.disconnected(b); continue; }

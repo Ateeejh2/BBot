@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { BotManager } from '../bot/manager.js';
 import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
+import type { ControlStore } from '../runtime/control.js';
 
 function runtimeViewerUrl(config: Config): string | undefined {
   try {
@@ -20,7 +21,7 @@ function runtimeViewerUrl(config: Config): string | undefined {
 }
 
 // Only fixed, operator-facing fields cross the API boundary. Never serialize transports or config.
-export function createManagementApi(manager: BotManager, config: Config, logger: Logger) {
+export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore) {
   const origin = config.api.origin!;
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
   let sequence = 0;
@@ -36,7 +37,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
     return { version: 1, bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
-      logs: [...logs], viewer: config.viewer.enabled && viewerUrl
+      logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
@@ -58,30 +59,47 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.origin !== origin && !(req.method === 'GET' && req.headers.origin === undefined && req.headers['x-bbot-ui'] === '1')) { res.writeHead(403); res.end(); return; }
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, POST, OPTIONS',
+      res.writeHead(204, { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
         'access-control-allow-headers': 'Content-Type, X-BBot-UI', 'vary': 'Origin' }); res.end(); return;
     }
     if (req.method === 'GET' && req.url === '/api/v1/status') { send(res, 200, snapshot()); return; }
+    if (controls && req.method === 'GET' && req.url === '/api/v1/settings/server') { send(res, 200, controls.getServer()); return; }
+    if (controls && req.method === 'GET' && req.url === '/api/v1/accounts') { send(res, 200, { accounts: controls.listAccounts() }); return; }
     const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect)$/.exec(req.url ?? '');
-    if (req.method !== 'POST' || !match) { send(res, 404, { error: 'NOT_FOUND' }); return; }
+    const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
+    const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
+    const settingsWrite = !!controls && req.method === 'PUT' && req.url === '/api/v1/settings/server';
+    const accountWrite = !!controls && req.method === 'POST' && req.url === '/api/v1/accounts';
+    const assignmentWrite = !!controls && req.method === 'PUT' && !!assignment;
+    const retryWrite = !!controls && req.method === 'POST' && !!retry;
+    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
-    req.on('data', chunk => { size += chunk.length; if (size > 1024) req.destroy(); else body += chunk.toString(); });
-    req.on('end', () => {
-      if (size > 1024) return;
-      if (body !== '{}') { send(res, 400, { error: 'INVALID_BODY' }); return; }
+    req.on('data', chunk => { size += chunk.length; if (size <= 1024) body += chunk.toString(); });
+    req.on('end', () => { void (async () => {
+      if (size > 1024) { send(res, 413, { error: 'INVALID_BODY' }); return; }
       try {
-        const [, id, action] = match;
+        let data: unknown;
+        try { data = JSON.parse(body); } catch { throw Error('INVALID_INPUT'); }
+        if (settingsWrite) { const result = await controls!.saveServer(data); broadcast(); send(res, 200, result); return; }
+        if (accountWrite) { const result = await controls!.addAccount(data); broadcast(); send(res, 201, result); return; }
+        if (assignmentWrite) { const result = await controls!.assign(assignment![1]!, data); broadcast(); send(res, 200, result); return; }
+        if (retryWrite) { if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT'); const result = await controls!.retryAccount(retry![1]!); broadcast(); send(res, 200, result); return; }
+        if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT');
+        if (controls?.busy) throw Error('CONFLICT');
+        const [, id, action] = match!;
         if (action === 'connect') manager.connectBot(id!);
         else if (action === 'join-pit') manager.joinPit(id!);
         else manager.disconnectBot(id!);
         broadcast(); send(res, 200, snapshot());
       } catch (error) {
         const code = error instanceof Error ? error.message : '';
-        send(res, code === 'UNKNOWN_BOT' ? 404 : code === 'INVALID_STATE' ? 409 : 500,
-          { error: ['UNKNOWN_BOT', 'INVALID_STATE'].includes(code) ? code : 'INTERNAL_ERROR' });
+        const status = code === 'INVALID_INPUT' ? 400 : code === 'UNSUPPORTED_AUTH' ? 422 :
+          ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
+          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT'].includes(code) ? 409 : 500;
+        send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
       }
-    });
+    })(); });
   });
   server.on('upgrade', (req, socket, head) => {
     if (req.url !== '/api/v1/events' || req.headers.origin !== origin) { socket.destroy(); return; }

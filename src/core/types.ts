@@ -11,7 +11,7 @@ export interface Job {
   botId?: string; updatedAt: number; availableAt: number;
 }
 export interface BotView {
-  id: string; accountLabel: string; state: BotState; instanceId?: string;
+  id: string; accountLabel: string; accountId?: string; state: BotState; instanceId?: string;
   generation: number; position?: Position;
 }
 export type ReturnReason = 'UNKNOWN_RETURN' | 'AFK' | 'PLANNED';
