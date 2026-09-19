@@ -150,7 +150,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       signal.throwIfAborted();
       const start = bot.entity?.position;
       if (!start) throw new Error('Launch position unavailable');
-      const slime = bot.findBlocks({ matching: block => block.name === 'slime', maxDistance: 32, count: 96 })
+      const slime = bot.findBlocks({ matching: block => block.name === 'slime' || block.name === 'slime_block', maxDistance: 32, count: 96 })
         .filter(pos => Math.abs(pos.y - start.y) <= 6);
       if (!slime.length) throw new Error('Launch pad not found');
 
