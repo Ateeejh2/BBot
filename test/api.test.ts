@@ -50,6 +50,8 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     assert.equal((await action('connect')).status, 409);
     assert.equal((await action('join-pit')).status, 200);
     assert.equal((await action('join-pit')).status, 409);
+    assert.equal((await action('test-launch-pad')).status, 200);
+    assert.equal((await action('test-launch-pad')).status, 409);
     assert.equal((await action('disconnect')).status, 200);
     assert.equal((await action('disconnect')).status, 409);
     assert.equal((await action('chat')).status, 404);
