@@ -35,6 +35,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let correctionTraceUntil = 0;
   let correctionTraceRemaining = 0;
   let correctionAckPending = 0;
+  let correctionSequence = 0;
   let lastCorrectionAt = 0;
   let lastBotVelocityAt = 0;
   let lastBotVelocity: { x:number; y:number; z:number } | undefined;
@@ -310,9 +311,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
   const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
     if (closed || !bot.entity?.position) return;
     const receivedAt=Date.now();
-    correctionTraceUntil = receivedAt + 200;
-    correctionTraceRemaining = 4;
+    correctionTraceUntil = receivedAt + 500;
+    correctionTraceRemaining = 10;
     correctionAckPending++;
+    correctionSequence++;
     const before = bot.entity.position;
     const relative = typeof packet.flags === 'object'
       ? { x:Boolean(packet.flags.x), y:Boolean(packet.flags.y), z:Boolean(packet.flags.z) }
@@ -422,18 +424,53 @@ export function createMineflayerTransport(config: Config, index: number, events:
         yaw:numeric(params.yaw), pitch:numeric(params.pitch),
         onGround:typeof params.onGround === 'boolean' ? params.onGround : null,
         teleportId:typeof params.teleportId === 'number' ? params.teleportId : null,
-        correctionAck:isCorrectionAck
+        correctionAck:isCorrectionAck,
+        correctionSequence,
+        sinceCorrectionMs:lastCorrectionAt?Date.now()-lastCorrectionAt:null
       });
     }
     return originalClientWrite(name,params);
   };
   const velocityPacket = (packet:{entityId:number;velocity:{x:number;y:number;z:number}}) => {
     if(closed||packet.entityId!==bot.entity?.id)return;
-    lastBotVelocityAt=Date.now();
+    const now=Date.now();
+    const beforeVelocity={x:bot.entity.velocity.x,y:bot.entity.velocity.y,z:bot.entity.velocity.z};
+    lastBotVelocityAt=now;
     lastBotVelocity={x:packet.velocity.x/8000,y:packet.velocity.y/8000,z:packet.velocity.z/8000};
+    if(now<=correctionTraceUntil){
+      events.diagnostic?.('velocity packet after correction',{
+        correctionSequence,
+        sinceCorrectionMs:lastCorrectionAt?now-lastCorrectionAt:null,
+        beforeVelocityX:Math.round(beforeVelocity.x*1000)/1000,
+        beforeVelocityY:Math.round(beforeVelocity.y*1000)/1000,
+        beforeVelocityZ:Math.round(beforeVelocity.z*1000)/1000,
+        serverVelocityX:Math.round(lastBotVelocity.x*1000)/1000,
+        serverVelocityY:Math.round(lastBotVelocity.y*1000)/1000,
+        serverVelocityZ:Math.round(lastBotVelocity.z*1000)/1000
+      });
+    }
+  };
+  const physicsTickTrace = () => {
+    const now=Date.now();
+    if(closed||now>correctionTraceUntil||!bot.entity)return;
+    events.diagnostic?.('physics tick after correction',{
+      correctionSequence,
+      sinceCorrectionMs:lastCorrectionAt?now-lastCorrectionAt:null,
+      x:Math.round(bot.entity.position.x*1000)/1000,
+      y:Math.round(bot.entity.position.y*1000)/1000,
+      z:Math.round(bot.entity.position.z*1000)/1000,
+      velocityX:Math.round(bot.entity.velocity.x*1000)/1000,
+      velocityY:Math.round(bot.entity.velocity.y*1000)/1000,
+      velocityZ:Math.round(bot.entity.velocity.z*1000)/1000,
+      forward:bot.getControlState('forward'),
+      jump:bot.getControlState('jump'),
+      sprint:bot.getControlState('sprint'),
+      onGround:Boolean(bot.entity.onGround)
+    });
   };
   bot._client.prependListener('entity_velocity', velocityPacket);
   bot._client.prependListener('position', positionPacket);
+  bot.on('physicsTick', physicsTickTrace);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
   bot.on('kicked', kicked); bot.on('end', end); bot.on('error', error);
@@ -536,6 +573,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
+      bot.removeListener('physicsTick', physicsTickTrace);
       runtimeClient.write = originalClientWrite;
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
       bot.removeListener('entitySpawn', entitySpawn); bot.removeListener('blockUpdate', blockUpdate);
