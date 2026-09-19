@@ -9,7 +9,7 @@ import { backoff } from '../src/recovery/backoff.js';
 import { MockEventProvider, parseEventFeedV1 } from '../src/events/provider.js';
 import { loadConfig } from '../src/config/index.js';
 import { UnknownReturnClassifier, type BotView, type GameEvent } from '../src/core/types.js';
-import { CarePackageCoordinator } from '../src/events/care-package.js';
+import { CarePackageCoordinator, parseCarePackageAnnouncement } from '../src/events/care-package.js';
 const event = (id = 'e1'): GameEvent => ({ id, instanceId: 'mega10c', target: { x: 1, y: 64, z: 2 }, type: 'mock', expiresAt: 100000 });
 const bot = (id: string, x = 0): BotView => ({ id, accountLabel: id, state: 'IN_PIT_IDLE', instanceId: 'mega10c', generation: 0, position: { x, y: 64, z: 2 } });
 test('transfer parser accepts case/format variations and arbitrary instance prefixes', () => {
@@ -137,7 +137,7 @@ test('external event feed V1 is strict and cloned', () => {
     { version: 1, events: [event()], extra: true }
   ]) assert.throws(() => parseEventFeedV1(invalid));
 });
-test('Care Package coordinator clusters carrier chickens and creates one per-instance chest job', () => {
+test('Care Package coordinator waits for the live announcement, then clusters and expires from actual start', () => {
   const schedule = {
     refresh: async () => {},
     snapshot: () => ({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,
@@ -145,19 +145,30 @@ test('Care Package coordinator clusters carrier chickens and creates one per-ins
     eventsBetween: () => [{timestamp:10_000}]
   };
   const coordinator = new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
+  assert.deepEqual(parseCarePackageAnnouncement('§eMINOR EVENT! §6CARE PACKAGE in Water Area'),{area:'Water Area'});
+  assert.equal(parseCarePackageAnnouncement('MINOR EVENT! KOTL in Water Area'),undefined);
+
+  // Chickens can be buffered around the transition, but cannot trigger before the server announces the event.
   assert.equal(coordinator.observeChicken('Mega-A',{x:100,y:110,z:-50},9_900),undefined);
   assert.equal(coordinator.observeChicken('Mega-A',{x:102,y:111,z:-49},9_950),undefined);
-  const detected=coordinator.observeChicken('Mega-A',{x:101,y:109,z:-51},10_000);
-  assert.equal(detected?.instanceId,'mega-a');
-  assert.ok(detected && Math.abs(detected.target.x-101)<0.01 && Math.abs(detected.target.z+50)<0.01);
+  assert.equal(coordinator.observeChicken('Mega-A',{x:101,y:109,z:-51},10_000),undefined);
+
+  const started=coordinator.observeAnnouncement('Mega-A','MINOR EVENT! CARE PACKAGE in Water Area',10_100);
+  assert.equal(started?.instanceId,'mega-a');
+  assert.equal(started?.area,'Water Area');
+  assert.ok(started?.target && Math.abs(started.target.x-101)<0.01 && Math.abs(started.target.z+50)<0.01);
   coordinator.markLaunch('Mega-A',10_000,'LAUNCHING');
-  assert.equal(coordinator.trackingSnapshot(10_001).instances[0]?.state,'LAUNCHING');
-  const job=coordinator.observeChest('Mega-A',{x:99,y:64,z:-52},10_100);
+  assert.equal(coordinator.trackingSnapshot(10_101).instances[0]?.state,'LAUNCHING');
+
+  const job=coordinator.observeChest('Mega-A',{x:99,y:64,z:-52},10_200);
   assert.equal(job?.id,'care-package:10000:mega-a');
   assert.equal(job?.type,'care-package');
   assert.deepEqual(job?.target,{x:99,y:64,z:-52});
-  assert.equal(coordinator.observeChest('Mega-A',{x:100,y:64,z:-52},10_110),undefined);
-  assert.equal(coordinator.trackingSnapshot(10_110).instances[0]?.state,'CHEST_DETECTED');
+  assert.equal(job?.expiresAt,190_100);
+  assert.equal(job?.metadata?.startedAt,10_100);
+  assert.equal(job?.metadata?.area,'Water Area');
+  assert.equal(coordinator.observeChest('Mega-A',{x:100,y:64,z:-52},10_210),undefined);
+  assert.equal(coordinator.trackingSnapshot(10_210).instances[0]?.state,'CHEST_DETECTED');
 });
 test('configuration defaults are safe and malformed values fail closed', () => {
   assert.equal(loadConfig({}).mode, 'mock'); assert.equal(loadConfig({}).count, 1); assert.equal(loadConfig({}).pathConcurrency, 2);
