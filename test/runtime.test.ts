@@ -104,8 +104,8 @@ test('runtime settings and accounts stay scoped, persisted and secret-free', asy
     const fail=await write('/api/v1/accounts','POST',{kind:'MICROSOFT',label:'Failure'});
     assert.equal(fail.status,201);
     const failedAccount=await fail.json() as {id:string};
-    await new Promise(resolve=>setTimeout(resolve,10));
-    const status=await (await get('/api/v1/status')).text();
+    let status='';
+    for(let i=0;i<25;i++){status=await (await get('/api/v1/status')).text();if(status.includes('ERROR'))break;await delay(10);}
     assert.equal(status.includes(authSecret),false);
     assert.ok(status.includes('ERROR'));
     assert.equal((await write(`/api/v1/accounts/${failedAccount.id}/actions/retry-auth`,'POST',{})).status,200);
