@@ -14,6 +14,7 @@ test('live movement executor uses controls without pathfinder execution or direc
   assert.doesNotMatch(source,/bot\.entity\.velocity\.[xyz]\s*=/);
   assert.doesNotMatch(source,/bot\.entity\.position\.[xyz]\s*=/);
   assert.doesNotMatch(source,/setControlState\(['"]sprint['"],\s*true\)/);
+  assert.doesNotMatch(source,/await\s+bot\.look\s*\(/);
   assert.match(source,/setControlState\(['"]forward['"],\s*true\)/);
   assert.match(source,/setControlState\(['"]jump['"],/);
 });
