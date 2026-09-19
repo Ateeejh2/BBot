@@ -117,6 +117,20 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
   f.manager.stop();
 });
+test('performance snapshot tracks completed pathfinding attempts', async () => {
+  const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000); f.join(t);
+  f.scheduler.enqueue({ id: 'perf-job', instanceId: 'a', target: { x: 1, y: 64, z: 1 }, type: 'mock', expiresAt: 100000 }, 1000);
+  f.tick(1001); await delay(0); await delay(0);
+  const perf = f.manager.performanceSnapshot();
+  assert.equal(perf.concurrency, 2);
+  assert.equal(perf.active, 0);
+  assert.equal(perf.bots[0]?.pathAttempts, 1);
+  assert.equal(perf.bots[0]?.pathCompleted, 1);
+  assert.equal(perf.bots[0]?.pathFailed, 0);
+  assert.equal(typeof perf.bots[0]?.lastPathMs, 'number');
+  assert.equal(typeof perf.bots[0]?.lastPathQueueMs, 'number');
+  f.manager.stop();
+});
 test('spawn before transfer notification still confirms the same join attempt', () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000);
   t.events.worldReset(); t.events.spawn();
