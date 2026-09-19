@@ -122,6 +122,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   if (config.level === 'debug') { bot.on('windowOpen', windowOpen); bot.on('windowClose', windowClose); }
   return {
     position: () => bot.entity?.position ? { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z } : undefined,
+    ping: () => { const ping = bot.player?.ping; return typeof ping === 'number' && Number.isFinite(ping) && ping > 0 ? ping : undefined; },
     chat: command => { if (closed) throw new Error('Transport closed'); bot.chat(command); },
     navigate: async (target, signal) => {
       signal.throwIfAborted();
