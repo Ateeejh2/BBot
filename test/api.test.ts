@@ -26,8 +26,9 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     headers: { Origin: 'http://localhost:5173', ...(init.headers as Record<string,string> ?? {}) } });
   try {
     assert.equal((await fetch(base + '/api/v1/status', { headers: { Origin: 'http://evil.test' } })).status, 403);
-    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; viewer:unknown };
+    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; viewer:unknown };
     assert.equal(status.bots[0]?.state, 'DISCONNECTED');
+    assert.deepEqual(status.jobs, []);
     assert.equal(status.viewer, null);
     const action = (name:string, body='{}') => request(`/api/v1/bots/bot-1/actions/${name}`, {method:'POST',headers:{'Content-Type':'application/json'},body});
     assert.equal((await action('join-pit')).status, 409);
@@ -39,6 +40,19 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     assert.equal((await action('disconnect')).status, 200);
     assert.equal((await action('disconnect')).status, 409);
     assert.equal((await action('chat')).status, 404);
+    const createJob=(body:unknown)=>request('/api/v1/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const expiresAt=Date.now()+60_000;
+    assert.equal((await createJob({instanceId:'mega',eventType:'manual.test',target:{x:'1',y:64,z:2},expiresAt})).status,400);
+    assert.equal((await createJob({instanceId:'mega',eventType:'manual.test',target:{x:1,y:64,z:2},expiresAt:Date.now()-1})).status,400);
+    assert.equal((await createJob({instanceId:'mega',eventType:'manual.test',target:{x:1,y:64,z:2},expiresAt,command:'/stop'})).status,400);
+    const createdJobResponse=await createJob({instanceId:'Mega-A',eventType:'manual.test',target:{x:1.5,y:64,z:-2},expiresAt});
+    assert.equal(createdJobResponse.status,201);
+    const createdJob=await createdJobResponse.json() as {id:string;instanceId:string;eventType:string;state:string;x:number;y:number;z:number};
+    assert.match(createdJob.id,/^manual-[0-9a-f-]{36}$/);
+    assert.deepEqual({instanceId:createdJob.instanceId,eventType:createdJob.eventType,state:createdJob.state,x:createdJob.x,y:createdJob.y,z:createdJob.z},
+      {instanceId:'mega-a',eventType:'manual.test',state:'QUEUED',x:1.5,y:64,z:-2});
+    const jobStatus=await (await request('/api/v1/status')).json() as {jobs:Array<{id:string}>};
+    assert.equal(jobStatus.jobs.some(job=>job.id===createdJob.id),true);
     const ws = new WebSocket(base.replace('http:', 'ws:') + '/api/v1/events', {origin:'http://localhost:5173'});
     const packet = await new Promise<string>((resolve,reject) => { ws.once('message', data => resolve(data.toString())); ws.once('error',reject); });
     assert.equal(JSON.parse(packet).type,'snapshot');
