@@ -12,7 +12,7 @@ import type { TaskHandler } from '../events/task.js';
 import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
-interface EventPreparation { timestamp:number; generation:number; abort:AbortController; launched?:boolean; chestEvent?:GameEvent }
+interface EventPreparation { timestamp:number; generation:number; abort:AbortController; expiresAt?:number; launched?:boolean; chestEvent?:GameEvent }
 interface DebugWalk { generation:number; abort:AbortController }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
@@ -193,6 +193,10 @@ export class BotManager {
     }
     for (const [index, b] of this.bots.entries()) {
       if (b.paused || b.authCheckPending) continue;
+      if (b.preparation?.expiresAt!==undefined && now>=b.preparation.expiresAt) {
+        this.log(b,'care package preparation expired',{scheduledAt:b.preparation.timestamp});
+        this.cancelPreparation(b);
+      }
       if (!this.configurationLocked && b.machine.state === 'DISCONNECTED' && now >= b.dueAt && now >= this.nextConnectAt) {
         this.nextConnectAt = now + this.config.connectionSpacingMs; this.connect(b, index); continue;
       }
@@ -333,6 +337,13 @@ export class BotManager {
   }
   private message(b: ManagedBot, text: string): void {
     if (this.movementDebug) return;
+    if(b.instanceId&&this.carePackages){
+      const started=this.carePackages.observeAnnouncement(b.instanceId,text,this.now());
+      if(started){
+        this.log(b,'care package event started',{scheduledAt:started.timestamp,startedAt:started.startedAt,area:started.area});
+        if(started.target)this.prepareCarePackage(b,started.timestamp,started.target);
+      }
+    }
     const instance = parseInstance(text);
     if (instance && !['DISCONNECTED', 'CONNECTING'].includes(b.machine.state)) {
       if (b.machine.state !== 'JOINING_PIT') {
@@ -388,7 +399,8 @@ export class BotManager {
     const bot=candidates.find(value=>value.id===source.id)??candidates[0];
     if(!bot)return;
     const transport=bot.transport!;
-    const preparation:EventPreparation={timestamp,generation:bot.generation.current,abort:new AbortController()};
+    const preparation:EventPreparation={timestamp,generation:bot.generation.current,abort:new AbortController(),
+      expiresAt:this.carePackages.expiresAt(bot.instanceId,timestamp)};
     bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
     this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
     this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
