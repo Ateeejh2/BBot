@@ -230,6 +230,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
     };
     const horizontal = Math.hypot(target.x-before.x,target.z-before.z);
     const vertical = target.y-before.y;
+    const feetBlock = bot.blockAt(before);
+    const floorBlock = bot.blockAt(before.offset(0,-0.01,0));
     const runtimeEntity = bot.entity as typeof bot.entity & { attributes?: Record<string, unknown> };
     const runtimeBot = bot as typeof bot & { abilities?: { walkingSpeed?: number } };
     const effects = runtimeEntity.effects ?? {};
@@ -257,6 +259,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
       horizontal: Math.round(horizontal*1000)/1000,
       vertical: Math.round(vertical*1000)/1000,
       relativeX: relative.x, relativeY: relative.y, relativeZ: relative.z,
+      feetBlock: feetBlock?.name ?? null,
+      feetMeta: typeof feetBlock?.metadata === 'number' ? feetBlock.metadata : null,
+      floorBlock: floorBlock?.name ?? null,
+      floorMeta: typeof floorBlock?.metadata === 'number' ? floorBlock.metadata : null,
       beforeX: Math.round(before.x*1000)/1000,
       beforeY: Math.round(before.y*1000)/1000,
       beforeZ: Math.round(before.z*1000)/1000,
