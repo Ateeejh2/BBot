@@ -34,6 +34,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let lastSpawnAt = 0;
   let correctionTraceUntil = 0;
   let correctionTraceRemaining = 0;
+  let correctionAckPending = 0;
+  let lastCorrectionAt = 0;
+  let lastBotVelocityAt = 0;
+  let lastBotVelocity: { x:number; y:number; z:number } | undefined;
   const movementPacketTimes:number[] = [];
   const sprintActionTimes:number[] = [];
   const stopPath = () => { bot.clearControlStates(); };
@@ -305,8 +309,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
   };
   const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
     if (closed || !bot.entity?.position) return;
-    correctionTraceUntil = Date.now() + 200;
+    const receivedAt=Date.now();
+    correctionTraceUntil = receivedAt + 200;
     correctionTraceRemaining = 4;
+    correctionAckPending++;
     const before = bot.entity.position;
     const relative = typeof packet.flags === 'object'
       ? { x:Boolean(packet.flags.x), y:Boolean(packet.flags.y), z:Boolean(packet.flags.z) }
@@ -342,17 +348,25 @@ export function createMineflayerTransport(config: Config, index: number, events:
       for (const modifier of modifiers) if (modifier.operation===2) value += value * (modifier.amount ?? 0);
       effectiveMovementSpeed = value;
     }
-    const now=Date.now();
+    const now=receivedAt;
+    const sinceCorrectionMs=lastCorrectionAt?now-lastCorrectionAt:null;
+    lastCorrectionAt=now;
     const packetTimes=movementPacketTimes.filter(at=>now-at<=1000);
     const packetGaps=packetTimes.slice(1).map((at,i)=>at-packetTimes[i]!);
     const sprintActions=sprintActionTimes.filter(at=>now-at<=2000);
     events.diagnostic?.('server position correction', {
       sinceSpawnMs: lastSpawnAt ? now-lastSpawnAt : null,
-      movementPackets1s:packetTimes.length,
+      sinceCorrectionMs,
+      pingMs:typeof bot.player?.ping==='number'&&Number.isFinite(bot.player.ping)?bot.player.ping:null,
+      normalMovementPackets1s:packetTimes.length,
       minMovementPacketGapMs:packetGaps.length?Math.min(...packetGaps):null,
       maxMovementPacketGapMs:packetGaps.length?Math.max(...packetGaps):null,
       movementPacketBursts:packetGaps.filter(gap=>gap<20).length,
       sprintActions2s:sprintActions.length,
+      sinceVelocityPacketMs:lastBotVelocityAt?now-lastBotVelocityAt:null,
+      serverVelocityX:lastBotVelocity?.x??null,
+      serverVelocityY:lastBotVelocity?.y??null,
+      serverVelocityZ:lastBotVelocity?.z??null,
       horizontal: Math.round(horizontal*1000)/1000,
       vertical: Math.round(vertical*1000)/1000,
       relativeX: relative.x, relativeY: relative.y, relativeZ: relative.z,
@@ -385,10 +399,13 @@ export function createMineflayerTransport(config: Config, index: number, events:
   const runtimeClient = bot._client as unknown as { write(name:string, params:Record<string, unknown>): unknown };
   const originalClientWrite = runtimeClient.write.bind(bot._client);
   runtimeClient.write = (name:string, params:Record<string, unknown>) => {
-    if(!closed && ['position','position_look','look','flying'].includes(name)){
+    const isMovementPacket=['position','position_look','look','flying'].includes(name);
+    const isCorrectionAck=isMovementPacket&&correctionAckPending>0&&name==='position_look';
+    if(isCorrectionAck)correctionAckPending--;
+    if(!closed && isMovementPacket && !isCorrectionAck){
       const now=Date.now();
       movementPacketTimes.push(now);
-      while(movementPacketTimes.length>24||movementPacketTimes[0]!<now-2000)movementPacketTimes.shift();
+      while(movementPacketTimes.length>48||movementPacketTimes[0]!<now-2000)movementPacketTimes.shift();
     }
     if(!closed && name==='entity_action' && (params.actionId===3||params.actionId===4)){
       const now=Date.now();
@@ -404,11 +421,18 @@ export function createMineflayerTransport(config: Config, index: number, events:
         x:numeric(params.x), y:numeric(params.y), z:numeric(params.z),
         yaw:numeric(params.yaw), pitch:numeric(params.pitch),
         onGround:typeof params.onGround === 'boolean' ? params.onGround : null,
-        teleportId:typeof params.teleportId === 'number' ? params.teleportId : null
+        teleportId:typeof params.teleportId === 'number' ? params.teleportId : null,
+        correctionAck:isCorrectionAck
       });
     }
     return originalClientWrite(name,params);
   };
+  const velocityPacket = (packet:{entityId:number;velocity:{x:number;y:number;z:number}}) => {
+    if(closed||packet.entityId!==bot.entity?.id)return;
+    lastBotVelocityAt=Date.now();
+    lastBotVelocity={x:packet.velocity.x/8000,y:packet.velocity.y/8000,z:packet.velocity.z/8000};
+  };
+  bot._client.prependListener('entity_velocity', velocityPacket);
   bot._client.prependListener('position', positionPacket);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
@@ -510,6 +534,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     close: () => {
       if (closed) return; closed = true;
       stopPath();
+      bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
       runtimeClient.write = originalClientWrite;
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
