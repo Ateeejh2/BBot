@@ -56,11 +56,11 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package event started|care package launch started|care package launch completed|care package launch failed|care package waiting for chest|care package chest detected|care package chest path started|care package chest handoff failed|care package preparation expired|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug waiting for position settle|movement debug path started|movement debug path completed|movement debug path failed|server position correction|movement packet after correction)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package event started|care package launch started|care package launch completed|care package launch failed|care package waiting for chest|care package chest detected|care package chest path started|care package chest handoff failed|care package preparation expired|care package test started|care package test chest generated|care package test chest path started|care package test failed|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug waiting for position settle|movement debug path started|movement debug path completed|movement debug path failed|server position correction|movement packet after correction)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
-      detail: ['launch pad test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason :
+      detail: ['launch pad test failed','care package test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason :
         message === 'server position correction'
           ? `Δh=${typeof fields.horizontal === 'number' ? fields.horizontal.toFixed(3) : '?'} Δy=${typeof fields.vertical === 'number' ? fields.vertical.toFixed(3) : '?'} ` +
             `pos=${typeof fields.beforeX === 'number' ? fields.beforeX.toFixed(2) : '?'},${typeof fields.beforeY === 'number' ? fields.beforeY.toFixed(2) : '?'},${typeof fields.beforeZ === 'number' ? fields.beforeZ.toFixed(2) : '?'}→${typeof fields.targetX === 'number' ? fields.targetX.toFixed(2) : '?'},${typeof fields.targetY === 'number' ? fields.targetY.toFixed(2) : '?'},${typeof fields.targetZ === 'number' ? fields.targetZ.toFixed(2) : '?'} ` +
@@ -115,7 +115,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       send(res, 200, { challenge: controls.getAuthChallenge(authChallenge[1]!) ?? null });
       return;
     }
-    const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect|test-launch-pad)$/.exec(req.url ?? '');
+    const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect|test-launch-pad|test-care-package)$/.exec(req.url ?? '');
     const fleetAction = /^\/api\/v1\/fleet\/actions\/(start-assigned|stop-all)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
@@ -184,6 +184,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         }
         else if (action === 'join-pit') manager.joinPit(id!);
         else if (action === 'test-launch-pad') manager.testLaunchPad(id!);
+        else if (action === 'test-care-package') manager.testCarePackage(id!);
         else manager.disconnectBot(id!);
         broadcast(); send(res, 200, snapshot());
       } catch (error) {
