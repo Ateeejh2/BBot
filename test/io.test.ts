@@ -3,11 +3,25 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HttpEventProvider } from '../src/events/provider.js';
+import { HttpEventProvider, parseEventFeedV1 } from '../src/events/provider.js';
 import { JsonStore } from '../src/core/store.js';
 import { Logger } from '../src/logging/logger.js';
 const options = { timeoutMs: 50, retries: 0, minIntervalMs: 1, maxBytes: 1000, maxRetryMs: 1 };
 const url = new URL('https://example.invalid/events');
+test('HTTP provider accepts canonical event feed V1', async () => {
+  const expiresAt = Date.now() + 60_000;
+  const body = JSON.stringify({ version: 1, events: [{
+    id: 'web-event-1', instanceId: 'Mega-A', type: 'care-package',
+    target: { x: 10, y: 64, z: -5 }, expiresAt
+  }] });
+  const provider = new HttpEventProvider(url, parseEventFeedV1, options, (async () => new Response(body)) as typeof fetch);
+  const events = await provider.fetchEvents();
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.id, 'web-event-1');
+  assert.equal(events[0]?.instanceId, 'Mega-A');
+  assert.deepEqual(events[0]?.target, { x: 10, y: 64, z: -5 });
+});
+
 test('HTTP provider validates parse output and rejects oversized/invalid bodies', async () => {
   for (const body of ['invalid-json', '[{}]', 'x'.repeat(1001)]) {
     const provider = new HttpEventProvider(url, value => value as never, options, (async () => new Response(body)) as typeof fetch);
