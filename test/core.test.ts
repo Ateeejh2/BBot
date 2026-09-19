@@ -71,20 +71,30 @@ test('scheduler chooses nearest eligible same-instance bot without double assign
   const assigned = s.assign([bot('far', 20), bot('near', 1), busy, wrong], 1);
   assert.deepEqual(assigned.map(a => a.bot.id), ['near', 'far']); assert.equal(s.assign([bot('near')], 2).length, 0);
 });
-test('job return uses lease token; stale completion cannot finish reassigned job', () => {
+test('job return records reason and retry time; stale completion cannot finish reassigned job', () => {
   const s = new Scheduler(3, 100, 10); s.enqueue(event(), 0);
   const a = s.assign([bot('a')], 1)[0]!; const lease = a.job.lease;
-  assert.ok(s.release('e1', 'a', lease, 2)); assert.equal(s.assign([bot('b')], 3).length, 0);
+  assert.ok(s.release('e1', 'a', lease, 2, 'PATH_NOT_FOUND'));
+  assert.equal(s.jobs.get('e1')?.lastFailure, 'PATH_NOT_FOUND');
+  assert.equal(s.jobs.get('e1')?.lastFailureAt, 2);
+  assert.equal(s.jobs.get('e1')?.retryAt, 12);
+  assert.equal(s.assign([bot('b')], 3).length, 0);
   const b = s.assign([bot('b')], 12)[0]!;
+  assert.equal(s.jobs.get('e1')?.retryAt, undefined);
   assert.equal(s.complete('e1', 'a', lease, 13), false);
   assert.ok(s.complete('e1', 'b', b.job.lease, 14)); assert.equal(s.jobs.get('e1')?.state, 'COMPLETED');
   assert.equal(s.enqueue(event(), 15), false);
 });
-test('job attempts are bounded and events expire even while running', () => {
+test('job attempts are bounded and terminal failures keep a reason', () => {
   const s = new Scheduler(1); s.enqueue(event(), 0); const a = s.assign([bot('a')], 1)[0]!;
-  s.release('e1', 'a', a.job.lease, 2); assert.equal(s.jobs.get('e1')?.state, 'FAILED');
+  s.release('e1', 'a', a.job.lease, 2, 'PATH_TIMEOUT');
+  assert.equal(s.attemptLimit, 1);
+  assert.equal(s.jobs.get('e1')?.state, 'FAILED');
+  assert.equal(s.jobs.get('e1')?.lastFailure, 'PATH_TIMEOUT');
+  assert.equal(s.jobs.get('e1')?.retryAt, undefined);
   s.enqueue(event('e2'), 0); s.assign([bot('a')], 1); assert.equal(s.expire(100001).length, 1);
   assert.equal(s.jobs.get('e2')?.state, 'EXPIRED');
+  assert.equal(s.jobs.get('e2')?.lastFailure, 'JOB_EXPIRED');
 });
 test('snapshot restoration requeues interrupted jobs with a new lease', () => {
   const s = new Scheduler(); s.enqueue(event(), 0); s.assign([bot('a')], 1);
