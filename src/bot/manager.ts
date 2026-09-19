@@ -230,7 +230,7 @@ export class BotManager {
     const message=error instanceof Error?error.message:'';
     const allowed=new Set(['No path to the goal!','Path planning timeout','Control walk timeout','Position unavailable','Control walk stuck',
       'Control walk ended before arrival','Control turn timeout','Launch pad not found','Launch pad unavailable','Launch cancelled',
-      'Launch landing timeout','Launch pad did not trigger','Landing wait timeout','JOB_REJECTED','RESERVATION_FAILED']);
+      'Launch landing timeout','Launch pad did not trigger','Landing wait timeout','Control walk collision','JOB_REJECTED','RESERVATION_FAILED']);
     return allowed.has(message)?message:'Movement failed';
   }
   tick(): void {
@@ -331,7 +331,7 @@ export class BotManager {
           if (this.stopped || b.connection !== connection) return;
           if (name === 'server position correction') b.lastPositionCorrectionAt = this.now();
           const level = name.startsWith('viewer ') || name === 'server position correction' || name === 'movement packet after correction' ||
-            name === 'control path planning failed' || name === 'launch pad selected' ? 'info' : 'debug';
+            name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...fields });
         },
