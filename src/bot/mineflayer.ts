@@ -30,6 +30,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let closed = false;
   let viewerStarted = false;
   let viewerStarting = false;
+  let lastSpawnAt = 0;
   const stopPath = () => { bot.clearControlStates(); };
   const walkingMovements = () => {
     const movements = new Movements(bot);
@@ -151,6 +152,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     }
   };
   const spawn = () => {
+    lastSpawnAt = Date.now();
     const movements = walkingMovements();
     bot.pathfinder.setMovements(movements);
     bot.pathfinder.tickTimeout = 10;
@@ -215,6 +217,31 @@ export function createMineflayerTransport(config: Config, index: number, events:
     if (closed || !newBlock?.position || newBlock.name !== 'chest' || oldBlock?.name === 'chest') return;
     events.chestAppeared?.({ x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z });
   };
+  const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
+    if (closed || !bot.entity?.position) return;
+    const before = bot.entity.position;
+    const relative = typeof packet.flags === 'object'
+      ? { x:Boolean(packet.flags.x), y:Boolean(packet.flags.y), z:Boolean(packet.flags.z) }
+      : { x:Boolean(packet.flags & 1), y:Boolean(packet.flags & 2), z:Boolean(packet.flags & 4) };
+    const target = {
+      x: relative.x ? before.x + packet.x : packet.x,
+      y: relative.y ? before.y + packet.y : packet.y,
+      z: relative.z ? before.z + packet.z : packet.z
+    };
+    const horizontal = Math.hypot(target.x-before.x,target.z-before.z);
+    const vertical = target.y-before.y;
+    events.diagnostic?.('server position correction', {
+      sinceSpawnMs: lastSpawnAt ? Date.now()-lastSpawnAt : null,
+      horizontal: Math.round(horizontal*1000)/1000,
+      vertical: Math.round(vertical*1000)/1000,
+      relativeX: relative.x, relativeY: relative.y, relativeZ: relative.z,
+      forward: bot.getControlState('forward'),
+      jump: bot.getControlState('jump'),
+      sprint: bot.getControlState('sprint'),
+      onGround: Boolean(bot.entity.onGround)
+    });
+  };
+  bot._client.prependListener('position', positionPacket);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
   bot.on('kicked', kicked); bot.on('end', end); bot.on('error', error);
@@ -311,6 +338,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     close: () => {
       if (closed) return; closed = true;
       stopPath();
+      bot._client.removeListener('position', positionPacket);
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
       bot.removeListener('entitySpawn', entitySpawn); bot.removeListener('blockUpdate', blockUpdate);
       bot.removeListener('kicked', kicked); bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
