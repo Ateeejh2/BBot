@@ -20,6 +20,10 @@ export class MockTransport implements BotTransport {
     await abortableDelay(20, AbortSignal.any([signal, this.lifetime.signal]));
     this.current = { ...target };
   }
+  async launchToward(target: Pick<Position, 'x' | 'z'>, signal: AbortSignal): Promise<void> {
+    await abortableDelay(20, AbortSignal.any([signal, this.lifetime.signal]));
+    this.current = { x: target.x, y: 64, z: target.z };
+  }
   stopPath(): void {}
   close(): void { this.closed = true; this.lifetime.abort(); }
 }
