@@ -7,7 +7,7 @@ import { Scheduler } from './scheduler/scheduler.js';
 import { PathfindingController } from './pathfinding/controller.js';
 import { BotManager } from './bot/manager.js';
 import { MockTransport } from './bot/mock.js';
-import { MockEventProvider } from './events/provider.js';
+import { HttpEventProvider, MockEventProvider, parseEventFeedV1 } from './events/provider.js';
 import { MockTaskHandler } from './events/task.js';
 import { JsonStore } from './core/store.js';
 import { Application } from './core/application.js';
@@ -47,10 +47,15 @@ async function main(): Promise<void> {
   const paths = new PathfindingController(config.pathConcurrency, config.pathTimeoutMs);
   const manager = new BotManager(config, factory, registry, scheduler, paths, new MockTaskHandler(), logger);
   if (config.api.enabled && config.mode === 'live') await controls.bind(manager);
-  // No actual API and no movement-producing mock events in live mode.
-  const provider = new MockEventProvider(config.mode === 'mock' ? [1, 2, 3].map(n => ({
-    id: `demo-${Date.now()}-${n}`, instanceId: `mock-pit-${n}`, target: { x: n * 5, y: 64, z: 5 }, type: 'mock', expiresAt: Date.now() + 300000
-  })) : []);
+  const provider = config.mode === 'mock'
+    ? new MockEventProvider([1, 2, 3].map(n => ({
+        id: `demo-${Date.now()}-${n}`, instanceId: `mock-pit-${n}`, target: { x: n * 5, y: 64, z: 5 }, type: 'mock', expiresAt: Date.now() + 300000
+      })))
+    : config.eventProviderUrl
+      ? new HttpEventProvider(new URL(config.eventProviderUrl), parseEventFeedV1, {
+          timeoutMs: 10000, retries: 2, minIntervalMs: config.eventPollMs, maxBytes: 1_000_000, maxRetryMs: 60000
+        })
+      : new MockEventProvider([]);
   const app = new Application(manager, provider, new JsonStore(config.dataDir, config.mode), logger, config);
   const api = config.api.enabled ? createManagementApi(manager, config, logger, config.mode === 'live' ? controls : undefined) : undefined;
   const input = createInterface({ input: process.stdin, terminal: false });
@@ -64,7 +69,8 @@ async function main(): Promise<void> {
     else if (command === 'recover' && botId) manager.notifyLobbyReturn(botId);
   });
   try { await api?.listen(); await app.start(); } catch (error) { input.close(); manager.stop(); await api?.close(); throw error; }
-  logger.log('info', 'BBot started', { mode: config.mode, botCount: config.count, pathConcurrency: config.pathConcurrency });
+  logger.log('info', 'BBot started', { mode: config.mode, botCount: config.count, pathConcurrency: config.pathConcurrency,
+    eventProvider: config.eventProviderUrl ? 'http' : 'disabled' });
 }
 function safeStartupError(error: unknown): string {
   const raw = error instanceof Error ? error.message : '';
