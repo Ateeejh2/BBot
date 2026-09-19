@@ -30,7 +30,66 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let closed = false;
   let viewerStarted = false;
   let viewerStarting = false;
-  const stopPath = () => { bot.pathfinder.setGoal(null); bot.clearControlStates(); };
+  const stopPath = () => { bot.clearControlStates(); };
+  const walkingMovements = () => {
+    const movements = new Movements(bot);
+    movements.canDig = false;
+    movements.allow1by1towers = false;
+    movements.allowParkour = false;
+    movements.allowSprinting = false;
+    movements.scafoldingBlocks = [];
+    movements.allowFreeMotion = false;
+    return movements;
+  };
+  const angleDelta = (target:number,current:number) => {
+    let value = target-current;
+    while (value > Math.PI) value -= Math.PI*2;
+    while (value < -Math.PI) value += Math.PI*2;
+    return value;
+  };
+  const controlWalk = async (target:{x:number;y:number;z:number}, range:number, signal:AbortSignal) => {
+    signal.throwIfAborted();
+    const movements = walkingMovements();
+    const plan = bot.pathfinder.getPathTo(movements, new goals.GoalNear(target.x,target.y,target.z,range), config.pathTimeoutMs);
+    if (plan.status !== 'success') throw new Error(plan.status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
+    events.diagnostic?.('control path planned',{nodes:plan.path.length,targetX:target.x,targetY:target.y,targetZ:target.z});
+    const started = Date.now();
+    try {
+      bot.setControlState('sprint',false);
+      for (const waypoint of plan.path) {
+        let best = Number.POSITIVE_INFINITY;
+        let lastProgress = Date.now();
+        while (true) {
+          signal.throwIfAborted();
+          if (Date.now()-started > config.pathTimeoutMs) throw new Error('Control walk timeout');
+          const p = bot.entity?.position;
+          if (!p) throw new Error('Position unavailable');
+          const dx = waypoint.x-p.x, dz = waypoint.z-p.z, dy = waypoint.y-p.y;
+          const horizontal = Math.hypot(dx,dz);
+          if (horizontal <= 0.42 && Math.abs(dy) < 1.05) break;
+          if (horizontal < best-0.03) { best=horizontal; lastProgress=Date.now(); }
+          else if (Date.now()-lastProgress > 3000) throw new Error('Control walk stuck');
+
+          const yaw = Math.atan2(-dx,-dz);
+          if (Math.abs(angleDelta(yaw,bot.entity.yaw)) > 0.04) await bot.look(yaw,bot.entity.pitch,false);
+          signal.throwIfAborted();
+          bot.setControlState('sprint',false);
+          bot.setControlState('sneak',false);
+          bot.setControlState('back',false);
+          bot.setControlState('left',false);
+          bot.setControlState('right',false);
+          bot.setControlState('forward',true);
+          bot.setControlState('jump',dy > 0.35 && bot.entity.onGround);
+          await bot.waitForTicks(1);
+        }
+        bot.setControlState('jump',false);
+      }
+      const p = bot.entity?.position;
+      if (!p || Math.hypot(p.x-target.x,p.z-target.z) > range+0.9 || Math.abs(p.y-target.y) > 1.5) throw new Error('Control walk ended before arrival');
+    } finally {
+      bot.clearControlStates();
+    }
+  };
   const reportIdentity = () => {
     const username = bot.username;
     if (typeof username === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(username)) events.identity?.(username);
@@ -71,9 +130,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     }
   };
   const spawn = () => {
-    const movements = new Movements(bot);
-    movements.canDig = false; movements.allow1by1towers = false; movements.allowParkour = false;
-    movements.scafoldingBlocks = []; movements.allowFreeMotion = false;
+    const movements = walkingMovements();
     bot.pathfinder.setMovements(movements);
     bot.pathfinder.tickTimeout = 10;
     bot.pathfinder.thinkTimeout = config.pathTimeoutMs;
@@ -146,15 +203,13 @@ export function createMineflayerTransport(config: Config, index: number, events:
     ping: () => { const ping = bot.player?.ping; return typeof ping === 'number' && Number.isFinite(ping) && ping > 0 ? ping : undefined; },
     chat: command => { if (closed) throw new Error('Transport closed'); bot.chat(command); },
     navigate: async (target, signal) => {
-      signal.throwIfAborted();
       const abort = () => stopPath();
       signal.addEventListener('abort', abort, { once: true });
       try {
-        await bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 1)); signal.throwIfAborted();
-        const p = bot.entity?.position;
-        if (!p || Math.hypot(Math.floor(p.x) - Math.floor(target.x), Math.floor(p.y) - Math.floor(target.y), Math.floor(p.z) - Math.floor(target.z)) > 1) throw new Error('Path ended before arrival');
+        await controlWalk(target,1,signal);
+      } finally {
+        signal.removeEventListener('abort', abort);
       }
-      finally { signal.removeEventListener('abort', abort); }
     },
     launchToward: async (target, signal) => {
       signal.throwIfAborted();
@@ -202,13 +257,15 @@ export function createMineflayerTransport(config: Config, index: number, events:
       const abort = () => stopPath();
       signal.addEventListener('abort', abort, { once:true });
       try {
-        await bot.pathfinder.goto(new goals.GoalNear(approach.x,approach.y,approach.z,1));
+        await controlWalk(approach,0.8,signal);
         signal.throwIfAborted();
-        stopPath();
         const padBlock = bot.blockAt(slime.reduce((best,p)=>Math.hypot(p.x-pad.x,p.z-pad.z)<Math.hypot(best.x-pad.x,best.z-pad.z)?p:best,slime[0]!));
         if (!padBlock) throw new Error('Launch pad unavailable');
-        await bot.lookAt(padBlock.position.offset(.5,1,.5), true);
-        bot.clearControlStates(); bot.setControlState('forward',true);
+        await bot.lookAt(padBlock.position.offset(.5,1,.5), false);
+        signal.throwIfAborted();
+        bot.clearControlStates();
+        bot.setControlState('sprint',false);
+        bot.setControlState('forward',true);
         const launchedFrom={x:bot.entity.position.x,y:bot.entity.position.y,z:bot.entity.position.z};
         let launched=false, groundSamples=0;
         await new Promise<void>((resolve,reject)=>{
