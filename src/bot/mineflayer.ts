@@ -39,6 +39,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let lastCorrectionAt = 0;
   let lastBotVelocityAt = 0;
   let lastBotVelocity: { x:number; y:number; z:number } | undefined;
+  let lastSprintActionAt = 0;
+  let lastSprintAction: 'START' | 'STOP' | undefined;
+  let lastServerMovementAttributeAt = 0;
+  let lastServerMovementAttribute: { value:number; effective:number; modifiers:string; sprintModifier:boolean } | undefined;
   const movementPacketTimes:number[] = [];
   const sprintActionTimes:number[] = [];
   const stopPath = () => { bot.clearControlStates(); };
@@ -365,6 +369,13 @@ export function createMineflayerTransport(config: Config, index: number, events:
       maxMovementPacketGapMs:packetGaps.length?Math.max(...packetGaps):null,
       movementPacketBursts:packetGaps.filter(gap=>gap<20).length,
       sprintActions2s:sprintActions.length,
+      lastSprintAction:lastSprintAction??null,
+      sinceSprintActionMs:lastSprintActionAt?now-lastSprintActionAt:null,
+      sinceServerMovementAttributeMs:lastServerMovementAttributeAt?now-lastServerMovementAttributeAt:null,
+      serverMovementAttributeValue:lastServerMovementAttribute?.value??null,
+      serverMovementEffectiveSpeed:lastServerMovementAttribute?.effective??null,
+      serverMovementModifiers:lastServerMovementAttribute?.modifiers??'none',
+      serverMovementSprintModifier:lastServerMovementAttribute?.sprintModifier??null,
       sinceVelocityPacketMs:lastBotVelocityAt?now-lastBotVelocityAt:null,
       serverVelocityX:lastBotVelocity?.x??null,
       serverVelocityY:lastBotVelocity?.y??null,
@@ -398,6 +409,27 @@ export function createMineflayerTransport(config: Config, index: number, events:
       onGround: Boolean(bot.entity.onGround)
     });
   };
+  const updateAttributesPacket = (packet:{
+    entityId:number;
+    properties:Array<{key:string;value:number;modifiers:Array<{uuid:unknown;amount:number;operation:number}>}>;
+  }) => {
+    if(closed || packet.entityId!==bot.entity?.id)return;
+    const property=packet.properties?.find(value=>/movement.*speed|speed.*movement/i.test(value.key));
+    if(!property)return;
+    const modifiers=Array.isArray(property.modifiers)?property.modifiers:[];
+    const sprintUuid='662a6b8d-da3e-4c1c-8813-96ea6097278d';
+    const uuidString=(value:unknown)=>typeof value==='string'?value.toLowerCase():String(value).toLowerCase();
+    const sprintModifier=modifiers.some(modifier=>uuidString(modifier.uuid)===sprintUuid);
+    const summary=modifiers.map(modifier=>`${Math.round(modifier.amount*10000)/10000}:${modifier.operation}:${uuidString(modifier.uuid).slice(0,8)}`).slice(0,8).join(',');
+    const baseAfterAdd=property.value+modifiers.filter(modifier=>modifier.operation===0).reduce((sum,modifier)=>sum+modifier.amount,0);
+    let effective=baseAfterAdd;
+    effective+=baseAfterAdd*modifiers.filter(modifier=>modifier.operation===1).reduce((sum,modifier)=>sum+modifier.amount,0);
+    for(const modifier of modifiers)if(modifier.operation===2)effective+=effective*modifier.amount;
+    lastServerMovementAttributeAt=Date.now();
+    lastServerMovementAttribute={value:property.value,effective,modifiers:summary||'none',sprintModifier};
+  };
+  bot._client.prependListener('update_attributes', updateAttributesPacket);
+  bot._client.prependListener('entity_update_attributes', updateAttributesPacket);
   const runtimeClient = bot._client as unknown as { write(name:string, params:Record<string, unknown>): unknown };
   const originalClientWrite = runtimeClient.write.bind(bot._client);
   runtimeClient.write = (name:string, params:Record<string, unknown>) => {
@@ -412,6 +444,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
     if(!closed && name==='entity_action' && (params.actionId===3||params.actionId===4)){
       const now=Date.now();
       sprintActionTimes.push(now);
+      lastSprintActionAt=now;
+      lastSprintAction=params.actionId===3?'START':'STOP';
       while(sprintActionTimes.length>16||sprintActionTimes[0]!<now-4000)sprintActionTimes.shift();
     }
     if (!closed && correctionTraceRemaining > 0 && Date.now() <= correctionTraceUntil &&
@@ -573,6 +607,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
+      bot._client.removeListener('update_attributes', updateAttributesPacket);
+      bot._client.removeListener('entity_update_attributes', updateAttributesPacket);
       bot.removeListener('physicsTick', physicsTickTrace);
       runtimeClient.write = originalClientWrite;
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
