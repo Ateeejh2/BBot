@@ -8,6 +8,7 @@ import { validEvent, type GameEvent, type Job } from '../core/types.js';
 import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
 import type { ControlStore } from '../runtime/control.js';
+import { RuntimePerformanceMonitor } from '../runtime/performance.js';
 
 function runtimeViewerUrl(config: Config): string | undefined {
   try {
@@ -49,6 +50,7 @@ function manualJob(value: unknown, now: number): GameEvent {
 // Only fixed, operator-facing fields cross the API boundary. Never serialize transports or config.
 export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore) {
   const origin = config.api.origin!;
+  const performance = new RuntimePerformanceMonitor();
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
@@ -64,6 +66,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     return { version: 1, bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
       jobs: manager.scheduler.snapshot().map(publicJob),
+      performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
       logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
@@ -175,7 +178,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   wss.on('connection', ws => { ws.send(JSON.stringify({ type: 'snapshot', data: snapshot() })); });
   return {
     listen: () => new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(config.api.port, config.api.host, resolve); }),
-    close: () => new Promise<void>(resolve => { clearInterval(timer); unsubscribe(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { clearInterval(timer); unsubscribe(); performance.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
     address: () => server.address()
   };
 }
