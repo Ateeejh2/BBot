@@ -56,6 +56,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let lastSprintAction: 'START' | 'STOP' | undefined;
   let lastServerMovementAttributeAt = 0;
   let lastServerMovementAttribute: { value:number; effective:number; modifiers:string; sprintModifier:boolean } | undefined;
+  let lastServerAbilitiesAt = 0;
+  let lastServerAbilities: { flags:number; flyingSpeed:number; walkingSpeed:number } | undefined;
   const movementPacketTimes:number[] = [];
   const movementHistory:Array<{at:number;packet:string;x:number;y:number;z:number;yaw:number|null;onGround:boolean|null}> = [];
   const sprintActionTimes:number[] = [];
@@ -402,6 +404,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
       if(distance<nearestSentDistance){nearestSentDistance=distance;nearestSent=sample;nearestSentIndex=i;}
     }
     const lastSent=recentMovement.at(-1);
+    const recentSteps=recentMovement.slice(1).map((sample,index)=>({
+      horizontal:Math.hypot(sample.x-recentMovement[index]!.x,sample.z-recentMovement[index]!.z),
+      gapMs:sample.at-recentMovement[index]!.at
+    })).filter(step=>step.gapMs>0&&step.gapMs<=120);
+    const lastStep=recentSteps.at(-1);
+    const maxStep=recentSteps.length?Math.max(...recentSteps.map(step=>step.horizontal)):null;
     events.diagnostic?.('server position correction', {
       sinceSpawnMs: lastSpawnAt ? now-lastSpawnAt : null,
       sinceCorrectionMs,
@@ -418,6 +426,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
       nearestSentZ:nearestSent?.z??null,
       lastSentAgeMs:lastSent?now-lastSent.at:null,
       lastSentTargetDistance:lastSent?Math.round(Math.hypot(lastSent.x-target.x,lastSent.z-target.z,Math.min(4,Math.abs(lastSent.y-target.y)))*1000)/1000:null,
+      lastMovementStep:lastStep?Math.round(lastStep.horizontal*1000)/1000:null,
+      maxMovementStep:maxStep===null?null:Math.round(maxStep*1000)/1000,
+      sinceServerAbilitiesMs:lastServerAbilitiesAt?now-lastServerAbilitiesAt:null,
+      serverAbilityFlags:lastServerAbilities?.flags??null,
+      serverFlyingSpeed:lastServerAbilities?.flyingSpeed??null,
+      serverWalkingSpeed:lastServerAbilities?.walkingSpeed??null,
       sprintActions2s:sprintActions.length,
       lastSprintAction:lastSprintAction??null,
       sinceSprintActionMs:lastSprintActionAt?now-lastSprintActionAt:null,
@@ -459,6 +473,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
       onGround: Boolean(bot.entity.onGround)
     });
   };
+  const abilitiesPacket = (packet:{flags:number;flyingSpeed:number;walkingSpeed:number}) => {
+    if(closed)return;
+    lastServerAbilitiesAt=Date.now();
+    lastServerAbilities={flags:packet.flags,flyingSpeed:packet.flyingSpeed,walkingSpeed:packet.walkingSpeed};
+  };
+  bot._client.prependListener('abilities', abilitiesPacket);
   const updateAttributesPacket = (packet:{
     entityId:number;
     properties:Array<{key:string;value:number;modifiers:Array<{uuid:unknown;amount:number;operation:number}>}>;
@@ -681,6 +701,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
+      bot._client.removeListener('abilities', abilitiesPacket);
       bot._client.removeListener('update_attributes', updateAttributesPacket);
       bot._client.removeListener('entity_update_attributes', updateAttributesPacket);
       bot.removeListener('physicsTick', physicsTickTrace);
