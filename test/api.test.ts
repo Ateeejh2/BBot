@@ -17,7 +17,12 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
   const logger = new Logger('info');
   const manager = new BotManager(config, (_index, events) => new MockTransport(events, () => 'mega'),
     new InstanceRegistry(), new Scheduler(3, 100, 100), new PathfindingController(1, 1000), new MockTaskHandler(), logger);
-  const api = createManagementApi(manager, config, logger);
+  const carePackages = {
+    refresh: async () => {},
+    snapshot: () => ({ source:'brookeafk.com' as const, sourceUrl:'https://brookeafk.com/', updatedAt:123,
+      status:'OK' as const, events:[{timestamp:456}] })
+  };
+  const api = createManagementApi(manager, config, logger, undefined, carePackages);
   await api.listen();
   const address = api.address();
   assert.ok(address && typeof address !== 'string');
@@ -26,9 +31,11 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     headers: { Origin: 'http://localhost:5173', ...(init.headers as Record<string,string> ?? {}) } });
   try {
     assert.equal((await fetch(base + '/api/v1/status', { headers: { Origin: 'http://evil.test' } })).status, 403);
-    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; performance:{runtime:{cpuPercent:number;rssMb:number;eventLoopP99Ms:number};pathfinding:{active:number;queued:number;concurrency:number}}; viewer:unknown };
+    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; carePackages:{source:string;status:string;events:Array<{timestamp:number}>}; performance:{runtime:{cpuPercent:number;rssMb:number;eventLoopP99Ms:number};pathfinding:{active:number;queued:number;concurrency:number}}; viewer:unknown };
     assert.equal(status.bots[0]?.state, 'DISCONNECTED');
     assert.deepEqual(status.jobs, []);
+    assert.equal(status.carePackages.source,'brookeafk.com');
+    assert.deepEqual(status.carePackages.events,[{timestamp:456}]);
     assert.ok(Number.isFinite(status.performance.runtime.cpuPercent));
     assert.ok(status.performance.runtime.rssMb > 0);
     assert.ok(Number.isFinite(status.performance.runtime.eventLoopP99Ms));
