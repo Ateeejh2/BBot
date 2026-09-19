@@ -14,13 +14,13 @@ test('Brooke schedule returns the nearest five future Care Packages and keeps la
   let fail = false;
   const feed = [
     { event:'Care Package', timestamp:900_000, type:'minor' },
-    { event:'Auction', timestamp:1_010_000, type:'minor' },
-    { event:'Care Package', timestamp:1_060_000, type:'minor' },
-    { event:'Care Package', timestamp:1_020_000, type:'minor' },
-    { event:'Care Package', timestamp:1_050_000, type:'minor' },
-    { event:'Care Package', timestamp:1_030_000, type:'minor' },
-    { event:'Care Package', timestamp:1_040_000, type:'minor' },
-    { event:'Care Package', timestamp:1_070_000, type:'minor' }
+    { event:'Auction', timestamp:1_100_000, type:'minor' },
+    { event:'Care Package', timestamp:1_600_000, type:'minor' },
+    { event:'Care Package', timestamp:1_200_000, type:'minor' },
+    { event:'Care Package', timestamp:1_500_000, type:'minor' },
+    { event:'Care Package', timestamp:1_300_000, type:'minor' },
+    { event:'Care Package', timestamp:1_400_000, type:'minor' },
+    { event:'Care Package', timestamp:1_700_000, type:'minor' }
   ];
   const schedule = new BrookeCarePackageSchedule((async () => {
     if (fail) throw new Error('offline');
@@ -28,7 +28,7 @@ test('Brooke schedule returns the nearest five future Care Packages and keeps la
   }) as typeof fetch, () => now);
   await schedule.refresh();
   assert.deepEqual(schedule.snapshot().events.map(event => event.timestamp),
-    [1_020_000,1_030_000,1_040_000,1_050_000,1_060_000]);
+    [1_200_000,1_300_000,1_400_000,1_500_000,1_600_000]);
   assert.equal(schedule.snapshot().status,'OK');
 
   fail = true; now += 61_000;
