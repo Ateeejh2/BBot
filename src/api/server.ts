@@ -54,26 +54,8 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const origin = config.api.origin!;
   const performance = new RuntimePerformanceMonitor();
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
-  const chatLogs: Array<{ id:number; at:number; botId:string; instanceId?:string; channel:string; text:string }> = [];
   let sequence = 0;
-  let chatSequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (message === 'chat message received' && fields.botId && typeof fields.chatText === 'string') {
-      const text = fields.chatText.replace(/[\r\n]+/g, ' ').trim().slice(0, 500);
-      if (text) {
-        chatLogs.push({
-          id: ++chatSequence,
-          at: Date.now(),
-          botId: fields.botId,
-          instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
-          channel: typeof fields.channel === 'string' ? fields.channel.slice(0, 32) : 'unknown',
-          text
-        });
-        if (chatLogs.length > 200) chatLogs.shift();
-        broadcast();
-      }
-      return;
-    }
     if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package event started|care package launch started|care package launch completed|care package launch failed|care package waiting for chest|care package chest detected|care package chest path started|care package chest handoff failed|care package preparation expired|care package test started|care package test chest generated|care package test chest path started|care package test failed|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug waiting for position settle|movement debug path started|movement debug path completed|movement debug path failed|control path planning failed|control walk collision|launch pad selected|server position correction|movement packet after correction|velocity packet after correction|physics tick after correction)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
@@ -113,7 +95,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
       carePackages: carePackages?.snapshot(),
       carePackageTracking: manager.carePackageTrackingSnapshot(), movementDebug: manager.movementDebugEnabled(),
-      logs: [...logs], chatLogs: [...chatLogs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
+      logs: [...logs], chatLogs: manager.chatDebugSnapshot(), serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
