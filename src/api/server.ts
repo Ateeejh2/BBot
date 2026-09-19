@@ -56,11 +56,14 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug path started|movement debug path completed|movement debug path failed)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug path started|movement debug path completed|movement debug path failed|server position correction)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
-      detail: ['launch pad test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason : undefined });
+      detail: ['launch pad test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason :
+        message === 'server position correction'
+          ? `Δh=${typeof fields.horizontal === 'number' ? fields.horizontal.toFixed(3) : '?'} Δy=${typeof fields.vertical === 'number' ? fields.vertical.toFixed(3) : '?'} spawn=${typeof fields.sinceSpawnMs === 'number' ? fields.sinceSpawnMs : '?'}ms fwd=${Boolean(fields.forward)} jump=${Boolean(fields.jump)} sprint=${Boolean(fields.sprint)} ground=${Boolean(fields.onGround)}`
+          : undefined });
     if (logs.length > 100) logs.shift();
     broadcast();
   });
