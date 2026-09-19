@@ -10,22 +10,26 @@ import { Logger } from '../src/logging/logger.js';
 import { MockTaskHandler, type TaskHandler } from '../src/events/task.js';
 import type { BotTransport, TransportEvents } from '../src/bot/transport.js';
 import type { Position } from '../src/core/types.js';
+import { CarePackageCoordinator } from '../src/events/care-package.js';
 class ControlledTransport implements BotTransport {
   commands: string[] = []; closed = false; stopped = 0;
   navigation: (target: Position, signal: AbortSignal) => Promise<void> = async () => {};
+  launcher: (target: Pick<Position,'x'|'z'>, signal: AbortSignal) => Promise<void> = async () => {};
+  launches: Array<Pick<Position,'x'|'z'>> = [];
   constructor(readonly events: TransportEvents) {}
   position() { return { x: 0, y: 64, z: 0 }; }
   chat(command: string) { this.commands.push(command); }
   navigate(target: Position, signal: AbortSignal) { return this.navigation(target, signal); }
+  launchToward(target: Pick<Position,'x'|'z'>, signal: AbortSignal) { this.launches.push({...target}); return this.launcher(target,signal); }
   stopPath() { this.stopped++; }
   close() { this.closed = true; }
 }
-function fixture(count = 1, task: TaskHandler = new MockTaskHandler(), apiEnabled = false) {
+function fixture(count = 1, task: TaskHandler = new MockTaskHandler(), apiEnabled = false, carePackages?:CarePackageCoordinator) {
   let now = 0; const connections: ControlledTransport[] = [];
   const config = loadConfig({ BOT_COUNT: String(count), CONNECTION_SPACING_MS: '100', PLAY_COOLDOWN_MS: '1000', JOIN_TIMEOUT_MS: '1000', RECONNECT_BASE_MS: '100', RECONNECT_MAX_MS: '1000', JOB_RETRY_MS: '100', TASK_TIMEOUT_MS: '100', ...(apiEnabled ? { API_ENABLED: 'true', API_ORIGIN: 'http://localhost:5173' } : {}) });
   const scheduler = new Scheduler(3, 100, 100); const paths = new PathfindingController(2, 1000);
   const registry = new InstanceRegistry();
-  const manager = new BotManager(config, (_i, events) => { const t = new ControlledTransport(events); connections.push(t); return t; }, registry, scheduler, paths, task, new Logger('error'), () => now, () => 1);
+  const manager = new BotManager(config, (_i, events) => { const t = new ControlledTransport(events); connections.push(t); return t; }, registry, scheduler, paths, task, new Logger('error'), () => now, () => 1, undefined, carePackages);
   const tick = (at: number) => { now = at; manager.tick(); };
   const join = (transport: ControlledTransport, id = 'a') => { transport.events.message(`SERVER FOUND! Sending to ${id}!`); transport.events.worldReset(); transport.events.spawn(); };
   return { config, manager, scheduler, paths, registry, connections, tick, join };
@@ -115,6 +119,33 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.tick(999); assert.deepEqual(t.commands, []);
   f.tick(1000); assert.deepEqual(t.commands, ['/play pit']); assert.equal(f.manager.views()[0]?.state, 'JOINING_PIT');
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
+  f.manager.stop();
+});
+test('Care Package carrier detection launches from spawn before chest Job assignment', async () => {
+  const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
+  const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
+  const f=fixture(1,new MockTaskHandler(),false,coordinator);
+  f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
+  let finishLaunch!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finishLaunch=resolve;});
+  t.events.chickenSpawn?.({x:80,y:110,z:-30});
+  t.events.chickenSpawn?.({x:82,y:111,z:-31});
+  t.events.chickenSpawn?.({x:81,y:109,z:-29});
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
+  assert.equal(t.launches.length,1);
+  assert.ok(Math.abs(t.launches[0]!.x-81)<0.01);
+  assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'LAUNCHING');
+
+  t.events.chestAppeared?.({x:79,y:64,z:-32});
+  const job=f.scheduler.jobs.get('care-package:1000:mega-a');
+  assert.equal(job?.state,'QUEUED');
+  assert.deepEqual(job?.event.target,{x:79,y:64,z:-32});
+  f.tick(1001);assert.equal(job?.state,'QUEUED');
+
+  finishLaunch();await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'CHEST_DETECTED');
+  f.tick(1002);await delay(0);await delay(0);
+  assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
   f.manager.stop();
 });
 test('performance snapshot tracks completed pathfinding attempts', async () => {
