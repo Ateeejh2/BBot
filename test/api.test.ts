@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
+import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig } from '../src/config/index.js';
 import { BotManager } from '../src/bot/manager.js';
 import { MockTransport } from '../src/bot/mock.js';
@@ -56,7 +57,10 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     assert.equal((await action('connect')).status, 409);
     assert.equal((await action('join-pit')).status, 200);
     assert.equal((await action('join-pit')).status, 409);
+    assert.equal((await action('test-care-package')).status, 200);
+    await delay(60);
     assert.equal((await action('test-launch-pad')).status, 200);
+    await delay(30);
     assert.equal((await action('disconnect')).status, 200);
     assert.equal((await action('disconnect')).status, 409);
     assert.equal((await action('chat')).status, 404);
