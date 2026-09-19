@@ -148,6 +148,18 @@ test('Care Package carrier detection launches from spawn before chest Job assign
   assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
   f.manager.stop();
 });
+test('manual launch-pad test uses outward direction and blocks duplicate preparation', async () => {
+  const f=fixture();f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
+  let finish!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finish=resolve;});
+  const result=f.manager.testLaunchPad('bot-1');
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
+  assert.deepEqual(result.target,{x:128,z:0});
+  assert.deepEqual(t.launches,[{x:128,z:0}]);
+  assert.throws(()=>f.manager.testLaunchPad('bot-1'),{message:'INVALID_STATE'});
+  finish();await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  f.manager.stop();
+});
 test('performance snapshot tracks completed pathfinding attempts', async () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000); f.join(t);
   f.scheduler.enqueue({ id: 'perf-job', instanceId: 'a', target: { x: 1, y: 64, z: 1 }, type: 'mock', expiresAt: 100000 }, 1000);
