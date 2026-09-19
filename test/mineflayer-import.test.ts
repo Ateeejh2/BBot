@@ -44,6 +44,6 @@ test('movement executor does not skip one-block jumps and replans after horizont
   assert.match(source,/Math\.abs\(dy\) < 0\.35/);
   assert.match(source,/const needsJump = dy > 0\.35/);
   assert.match(source,/isCollidedHorizontally/);
-  assert.match(source,/collisionTicks >= 3/);
+  assert.match(source,/collided && !needsJump && aligned/);
   assert.match(source,/control walk collision/);
 });
