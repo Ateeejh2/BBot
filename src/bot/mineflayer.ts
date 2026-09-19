@@ -16,7 +16,18 @@ type ViewerBot = ReturnType<typeof createBot> & { viewer?: { close(): void } };
 /** The only module allowed to import Mineflayer. */
 export function createBotOptions(config: Config, index: number): BotOptions {
   const account = config.accounts[index]!;
-  const common = { host: config.host, port: config.port, version: config.version, hideErrors: true, logErrors: false };
+  const common = {
+    host: config.host,
+    port: config.port,
+    version: config.version,
+    hideErrors: true,
+    logErrors: false,
+    // Mineflayer normally catches up several missed 50 ms physics steps in one
+    // timer callback. On Windows that can turn into movement-packet bursts only
+    // a few milliseconds apart. Vanilla 1.8.9 advances one client tick at a time,
+    // so keep legacy movement delivery paced instead of bursting catch-up ticks.
+    maxCatchupTicks: config.version === '1.8.9' ? 1 : 4
+  };
   if (account.kind === 'SESSION') return { ...common, username: account.username,
     auth: 'mojang', session: readSessionCredential(config.authDir, account.accountId),
     skipValidation: true, profilesFolder: false };
