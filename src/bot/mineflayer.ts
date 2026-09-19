@@ -4,7 +4,8 @@ const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { parseInstance } from '../instances/parser.js';
-import { eligibleTransferChannel } from './message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel } from './message-source.js';
+import { parseCarePackageAnnouncement } from '../events/care-package.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 import { readSessionCredential } from '../runtime/session.js';
@@ -195,6 +196,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const lower = clean.toLowerCase();
     const candidate = parseInstance(text);
     const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel, candidate !== undefined);
+    const careAnnouncement = parseCarePackageAnnouncement(text);
+    const careEligible = eligibleServerAnnouncementChannel(position, sender, careAnnouncement !== undefined);
     const looksTransferRelated =
       candidate !== undefined ||
       lower.includes('server found') ||
@@ -211,7 +214,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
         hasSendingTo: lower.includes('sending to')
       });
     }
-    if (!eligible) return;
+    if (careAnnouncement) {
+      events.diagnostic?.('care package announcement observed', {
+        channel: position, senderPresent: Boolean(sender), eligible: careEligible, area: careAnnouncement.area
+      });
+    }
+    if (!eligible && !careEligible) return;
     events.message(text);
   };
   const normalizeKickReason = (reason: unknown): string => {
