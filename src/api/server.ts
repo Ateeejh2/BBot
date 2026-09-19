@@ -56,7 +56,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined });
