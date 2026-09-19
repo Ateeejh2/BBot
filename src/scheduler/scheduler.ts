@@ -1,7 +1,8 @@
-import { distance, instanceKey, validEvent, type BotView, type GameEvent, type Job } from '../core/types.js';
+import { distance, instanceKey, validEvent, type BotView, type GameEvent, type Job, type JobFailureReason } from '../core/types.js';
 export class Scheduler {
   readonly jobs = new Map<string, Job>();
   constructor(private maxAttempts = 3, private maxJobs = 2000, private retryMs = 5000) {}
+  get attemptLimit(): number { return this.maxAttempts; }
   enqueue(event: GameEvent, now: number): boolean {
     if (!validEvent(event) || event.expiresAt <= now || this.jobs.has(event.id)) return false;
     this.prune(now);
@@ -17,7 +18,7 @@ export class Scheduler {
       const candidates = bots.filter(b => b.state === 'IN_PIT_IDLE' && b.instanceId === job.event.instanceId && b.position && !reserved.has(b.id));
       candidates.sort((a, b) => distance(a.position!, job.event.target) - distance(b.position!, job.event.target) || a.id.localeCompare(b.id));
       const bot = candidates[0]; if (!bot) continue;
-      job.state = 'ASSIGNED'; job.botId = bot.id; job.attempts++; job.lease++; job.updatedAt = now;
+      job.state = 'ASSIGNED'; job.botId = bot.id; job.attempts++; job.lease++; job.updatedAt = now; job.retryAt = undefined;
       reserved.add(bot.id); assignments.push({ job, bot });
     }
     return assignments;
@@ -32,18 +33,29 @@ export class Scheduler {
   }
   complete(id: string, botId: string, lease: number, now: number): boolean {
     if (!this.owns(id, botId, lease)) return false;
-    const job = this.jobs.get(id)!; job.state = job.event.expiresAt <= now ? 'EXPIRED' : 'COMPLETED'; job.botId = undefined; job.updatedAt = now; return true;
+    const job = this.jobs.get(id)!; job.state = job.event.expiresAt <= now ? 'EXPIRED' : 'COMPLETED'; job.botId = undefined; job.updatedAt = now; job.retryAt = undefined;
+    if (job.state === 'EXPIRED') { job.lastFailure = 'JOB_EXPIRED'; job.lastFailureAt = now; }
+    return true;
   }
-  release(id: string, botId: string, lease: number, now: number): boolean {
+  release(id: string, botId: string, lease: number, now: number, reason: JobFailureReason = 'PATH_FAILED'): boolean {
     if (!this.owns(id, botId, lease)) return false;
     const job = this.jobs.get(id)!;
     job.state = job.event.expiresAt <= now ? 'EXPIRED' : job.attempts >= this.maxAttempts ? 'FAILED' : 'QUEUED';
-    job.botId = undefined; job.lease++; job.updatedAt = now; job.availableAt = now + this.retryMs; return true;
+    job.botId = undefined; job.lease++; job.updatedAt = now;
+    job.lastFailure = job.state === 'EXPIRED' ? 'JOB_EXPIRED' : reason;
+    job.lastFailureAt = now;
+    if (job.state === 'QUEUED') {
+      job.availableAt = now + this.retryMs;
+      job.retryAt = job.availableAt;
+    } else {
+      job.retryAt = undefined;
+    }
+    return true;
   }
   expire(now: number): Job[] {
     const expired: Job[] = [];
     for (const job of this.jobs.values()) if (!['COMPLETED', 'FAILED', 'EXPIRED'].includes(job.state) && job.event.expiresAt <= now) {
-      expired.push({ ...job }); job.state = 'EXPIRED'; job.botId = undefined; job.lease++; job.updatedAt = now;
+      expired.push({ ...job }); job.state = 'EXPIRED'; job.botId = undefined; job.lease++; job.updatedAt = now; job.retryAt = undefined; job.lastFailure = 'JOB_EXPIRED'; job.lastFailureAt = now;
     }
     this.prune(now); return expired;
   }
@@ -56,7 +68,7 @@ export class Scheduler {
     for (const saved of jobs.slice(-this.maxJobs)) {
       if (!validEvent(saved.event) || saved.event.expiresAt <= now) continue;
       const job = structuredClone(saved);
-      if (['ASSIGNED', 'RUNNING'].includes(job.state)) { job.state = job.attempts >= this.maxAttempts ? 'FAILED' : 'QUEUED'; job.lease++; job.availableAt = now + this.retryMs; }
+      if (['ASSIGNED', 'RUNNING'].includes(job.state)) { job.state = job.attempts >= this.maxAttempts ? 'FAILED' : 'QUEUED'; job.lease++; job.lastFailure = 'INSTANCE_LOST'; job.lastFailureAt = now; job.availableAt = now + this.retryMs; job.retryAt = job.state === 'QUEUED' ? job.availableAt : undefined; }
       job.botId = undefined; this.jobs.set(job.id, job);
     }
   }
