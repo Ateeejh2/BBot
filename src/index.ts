@@ -8,6 +8,7 @@ import { PathfindingController } from './pathfinding/controller.js';
 import { BotManager } from './bot/manager.js';
 import { MockTransport } from './bot/mock.js';
 import { HttpEventProvider, MockEventProvider, parseEventFeedV1 } from './events/provider.js';
+import { BrookeCarePackageSchedule } from './events/brooke.js';
 import { MockTaskHandler } from './events/task.js';
 import { JsonStore } from './core/store.js';
 import { Application } from './core/application.js';
@@ -57,7 +58,8 @@ async function main(): Promise<void> {
         })
       : new MockEventProvider([]);
   const app = new Application(manager, provider, new JsonStore(config.dataDir, config.mode), logger, config);
-  const api = config.api.enabled ? createManagementApi(manager, config, logger, config.mode === 'live' ? controls : undefined) : undefined;
+  const carePackages = config.api.enabled && config.mode === 'live' ? new BrookeCarePackageSchedule() : undefined;
+  const api = config.api.enabled ? createManagementApi(manager, config, logger, config.mode === 'live' ? controls : undefined, carePackages) : undefined;
   const input = createInterface({ input: process.stdin, terminal: false });
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; input.close(); await api?.close(); await app.stop(); setTimeout(() => process.exit(process.exitCode ?? 0), 10000).unref(); };
