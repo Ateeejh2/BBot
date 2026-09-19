@@ -9,6 +9,7 @@ import { BotManager } from './bot/manager.js';
 import { MockTransport } from './bot/mock.js';
 import { HttpEventProvider, MockEventProvider, parseEventFeedV1 } from './events/provider.js';
 import { BrookeCarePackageSchedule } from './events/brooke.js';
+import { CarePackageCoordinator } from './events/care-package.js';
 import { MockTaskHandler } from './events/task.js';
 import { JsonStore } from './core/store.js';
 import { Application } from './core/application.js';
@@ -46,7 +47,10 @@ async function main(): Promise<void> {
   const registry = new InstanceRegistry(config.maxInstances);
   const scheduler = new Scheduler(config.jobMaxAttempts, config.maxJobs, config.jobRetryMs);
   const paths = new PathfindingController(config.pathConcurrency, config.pathTimeoutMs);
-  const manager = new BotManager(config, factory, registry, scheduler, paths, new MockTaskHandler(), logger);
+  const carePackages = config.mode === 'live' ? new BrookeCarePackageSchedule() : undefined;
+  const carePackageCoordinator = carePackages ? new CarePackageCoordinator(carePackages) : undefined;
+  const manager = new BotManager(config, factory, registry, scheduler, paths, new MockTaskHandler(), logger,
+    Date.now, Math.random, undefined, carePackageCoordinator);
   if (config.api.enabled && config.mode === 'live') await controls.bind(manager);
   const provider = config.mode === 'mock'
     ? new MockEventProvider([1, 2, 3].map(n => ({
@@ -57,8 +61,7 @@ async function main(): Promise<void> {
           timeoutMs: 10000, retries: 2, minIntervalMs: config.eventPollMs, maxBytes: 1_000_000, maxRetryMs: 60000
         })
       : new MockEventProvider([]);
-  const app = new Application(manager, provider, new JsonStore(config.dataDir, config.mode), logger, config);
-  const carePackages = config.api.enabled && config.mode === 'live' ? new BrookeCarePackageSchedule() : undefined;
+  const app = new Application(manager, provider, new JsonStore(config.dataDir, config.mode), logger, config, carePackages);
   const api = config.api.enabled ? createManagementApi(manager, config, logger, config.mode === 'live' ? controls : undefined, carePackages) : undefined;
   const input = createInterface({ input: process.stdin, terminal: false });
   let stopping = false;
