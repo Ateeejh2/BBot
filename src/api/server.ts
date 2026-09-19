@@ -62,7 +62,11 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
       detail: ['launch pad test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason :
         message === 'server position correction'
-          ? `Δh=${typeof fields.horizontal === 'number' ? fields.horizontal.toFixed(3) : '?'} Δy=${typeof fields.vertical === 'number' ? fields.vertical.toFixed(3) : '?'} spawn=${typeof fields.sinceSpawnMs === 'number' ? fields.sinceSpawnMs : '?'}ms fwd=${Boolean(fields.forward)} jump=${Boolean(fields.jump)} sprint=${Boolean(fields.sprint)} ground=${Boolean(fields.onGround)}`
+          ? `Δh=${typeof fields.horizontal === 'number' ? fields.horizontal.toFixed(3) : '?'} Δy=${typeof fields.vertical === 'number' ? fields.vertical.toFixed(3) : '?'} ` +
+            `pos=${typeof fields.beforeX === 'number' ? fields.beforeX.toFixed(2) : '?'},${typeof fields.beforeY === 'number' ? fields.beforeY.toFixed(2) : '?'},${typeof fields.beforeZ === 'number' ? fields.beforeZ.toFixed(2) : '?'}→${typeof fields.targetX === 'number' ? fields.targetX.toFixed(2) : '?'},${typeof fields.targetY === 'number' ? fields.targetY.toFixed(2) : '?'},${typeof fields.targetZ === 'number' ? fields.targetZ.toFixed(2) : '?'} ` +
+            `vel=${typeof fields.velocityX === 'number' ? fields.velocityX.toFixed(3) : '?'},${typeof fields.velocityY === 'number' ? fields.velocityY.toFixed(3) : '?'},${typeof fields.velocityZ === 'number' ? fields.velocityZ.toFixed(3) : '?'} ` +
+            `walk=${typeof fields.walkingSpeed === 'number' ? fields.walkingSpeed.toFixed(4) : '?'} attr=${typeof fields.movementAttributeValue === 'number' ? fields.movementAttributeValue.toFixed(4) : '?'} mods=${typeof fields.movementModifierCount === 'number' ? fields.movementModifierCount : '?'} effects=${typeof fields.effects === 'string' ? fields.effects : '?'} ` +
+            `fwd=${Boolean(fields.forward)} jump=${Boolean(fields.jump)} sprint=${Boolean(fields.sprint)} ground=${Boolean(fields.onGround)}`
           : undefined });
     if (logs.length > 100) logs.shift();
     broadcast();
