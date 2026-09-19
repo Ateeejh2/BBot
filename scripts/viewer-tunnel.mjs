@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { chmod, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 
 const port = Number(process.env.VIEWER_PORT ?? '3007');
 if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
@@ -11,6 +12,7 @@ if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
 const viewerUrl = `http://127.0.0.1:${port}/`;
 const dataDir = resolve(process.env.DATA_DIR ?? 'data');
 const runtimeFile = join(dataDir, 'viewer-public-url.json');
+const require = createRequire(import.meta.url);
 
 async function viewerReady() {
   const controller = new AbortController();
@@ -58,7 +60,20 @@ if (!haveBinary) {
 }
 
 if (!(await viewerReady())) {
-  process.stdout.write(`Waiting for Viewer on ${viewerUrl} Start/connect ${process.env.VIEWER_BOT_ID ?? 'bot-1'}; this terminal can stay open.\n`);
+  const enabled = process.env.VIEWER_ENABLED === 'true';
+  const botId = process.env.VIEWER_BOT_ID ?? 'bot-1';
+  let dependency = 'available';
+  try {
+    const mod = require('prismarine-viewer');
+    if (typeof mod?.mineflayer !== 'function') dependency = 'invalid export';
+  } catch {
+    dependency = 'missing';
+  }
+  process.stdout.write(`Waiting for Viewer on ${viewerUrl}\n`);
+  process.stdout.write(`Viewer config: enabled=${enabled} bot=${botId} port=${port} dependency=${dependency}\n`);
+  if (!enabled) process.stdout.write('Viewer is disabled. Run npm run setup:viewer, then restart BBot.\n');
+  else if (dependency !== 'available') process.stdout.write('prismarine-viewer is not usable. Run npm run setup:viewer, then restart BBot.\n');
+  else process.stdout.write(`Start/connect ${botId}. Viewer starts on that bot's spawn event.\n`);
 }
 while (!(await viewerReady())) {
   await new Promise(resolveDelay => setTimeout(resolveDelay, 1000));
