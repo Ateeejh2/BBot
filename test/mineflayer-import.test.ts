@@ -13,7 +13,8 @@ test('live movement executor uses controls without pathfinder execution or direc
   assert.doesNotMatch(source,/pathfinder\.goto\s*\(/);
   assert.doesNotMatch(source,/bot\.entity\.velocity\.[xyz]\s*=/);
   assert.doesNotMatch(source,/bot\.entity\.position\.[xyz]\s*=/);
-  assert.doesNotMatch(source,/setControlState\(['"]sprint['"],\s*true\)/);
+  assert.match(source,/const canSprint =/);
+  assert.match(source,/setControlState\(['"]sprint['"],\s*canSprint\)/);
   assert.doesNotMatch(source,/await\s+bot\.look\s*\(/);
   assert.match(source,/setControlState\(['"]forward['"],\s*true\)/);
   assert.match(source,/setControlState\(['"]jump['"],/);
@@ -35,4 +36,14 @@ test('movement planner continues partial A-star slices instead of treating them 
   assert.match(source,/plan\.status !== 'partial'/);
   assert.match(source,/setImmediate\(/);
   assert.doesNotMatch(source,/const plan = bot\.pathfinder\.getPathTo\(/);
+});
+
+
+test('movement executor does not skip one-block jumps and replans after horizontal collision', async () => {
+  const source = await readFile('src/bot/mineflayer.ts','utf8');
+  assert.match(source,/Math\.abs\(dy\) < 0\.35/);
+  assert.match(source,/const needsJump = dy > 0\.35/);
+  assert.match(source,/isCollidedHorizontally/);
+  assert.match(source,/collisionTicks >= 3/);
+  assert.match(source,/control walk collision/);
 });
