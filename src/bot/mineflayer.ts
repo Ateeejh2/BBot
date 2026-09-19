@@ -36,6 +36,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let correctionTraceRemaining = 0;
   let correctionAckPending = 0;
   let correctionSequence = 0;
+  let standingBeforePosition: boolean | undefined;
   let lastCorrectionAt = 0;
   let lastBotVelocityAt = 0;
   let lastBotVelocity: { x:number; y:number; z:number } | undefined;
@@ -309,7 +310,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
     events.chestAppeared?.({ x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z });
   };
   const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
+    standingBeforePosition = undefined;
     if (closed || !bot.entity?.position) return;
+    // Mineflayer 4.39.0 forces entity.onGround=false for every clientbound position packet.
+    // Vanilla 1.8 keeps the local standing state and only replies to the teleport with onGround=false.
+    // Preserve standing only after the initial spawn so login still begins airborne.
+    if (lastSpawnAt > 0) standingBeforePosition = Boolean(bot.entity.onGround);
     const receivedAt=Date.now();
     correctionTraceUntil = receivedAt + 500;
     correctionTraceRemaining = 10;
@@ -431,6 +437,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
     }
     return originalClientWrite(name,params);
   };
+  const restoreStandingAfterPosition = () => {
+    if(closed)return;
+    const standing=standingBeforePosition;
+    standingBeforePosition=undefined;
+    if(standing!==undefined && bot.entity) bot.entity.onGround=standing;
+  };
   const velocityPacket = (packet:{entityId:number;velocity:{x:number;y:number;z:number}}) => {
     if(closed||packet.entityId!==bot.entity?.id)return;
     const now=Date.now();
@@ -470,6 +482,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   };
   bot._client.prependListener('entity_velocity', velocityPacket);
   bot._client.prependListener('position', positionPacket);
+  bot._client.on('position', restoreStandingAfterPosition);
   bot.on('physicsTick', physicsTickTrace);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
@@ -573,6 +586,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
+      bot._client.removeListener('position', restoreStandingAfterPosition);
       bot.removeListener('physicsTick', physicsTickTrace);
       runtimeClient.write = originalClientWrite;
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
