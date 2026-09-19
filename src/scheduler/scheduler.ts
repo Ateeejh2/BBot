@@ -23,6 +23,19 @@ export class Scheduler {
     }
     return assignments;
   }
+  assignTo(id: string, bot: BotView, now: number): { job: Job; bot: BotView } | undefined {
+    const job = this.jobs.get(id);
+    if (!job || job.state !== 'QUEUED' || job.availableAt > now || job.event.expiresAt <= now) {
+      if (job && job.event.expiresAt <= now && job.state === 'QUEUED') { job.state = 'EXPIRED'; job.updatedAt = now; }
+      return;
+    }
+    if (bot.state !== 'IN_PIT_IDLE' || bot.instanceId !== job.event.instanceId || !bot.position) return;
+    const reserved = [...this.jobs.values()].some(value =>
+      value.id !== id && value.botId === bot.id && ['ASSIGNED','RUNNING'].includes(value.state));
+    if (reserved) return;
+    job.state = 'ASSIGNED'; job.botId = bot.id; job.attempts++; job.lease++; job.updatedAt = now; job.retryAt = undefined;
+    return { job, bot };
+  }
   owns(id: string, botId: string, lease: number): boolean {
     const job = this.jobs.get(id);
     return !!job && job.botId === botId && job.lease === lease && ['ASSIGNED', 'RUNNING'].includes(job.state);
