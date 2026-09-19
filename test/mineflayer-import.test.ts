@@ -27,3 +27,12 @@ test('movement planner prefers full-block footing but keeps slab routes availabl
   assert.match(source,/\? 12 : 0/);
   assert.doesNotMatch(source,/blocksToAvoid\.add\([^\n]*slab/i);
 });
+
+
+test('movement planner continues partial A-star slices instead of treating them as timeout', async () => {
+  const source = await readFile('src/bot/mineflayer.ts','utf8');
+  assert.match(source,/getPathFromTo\(/);
+  assert.match(source,/plan\.status !== 'partial'/);
+  assert.match(source,/setImmediate\(/);
+  assert.doesNotMatch(source,/const plan = bot\.pathfinder\.getPathTo\(/);
+});
