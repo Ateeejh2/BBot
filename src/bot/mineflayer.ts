@@ -49,6 +49,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let correctionSequence = 0;
   let lastWireYaw: number | undefined;
   let pendingCorrectionAckYaw: number | undefined;
+  let legacyReportedPosition: { x:number; y:number; z:number } | undefined;
+  let legacyPositionUpdateTicks = 0;
   let lastCorrectionAt = 0;
   let lastBotVelocityAt = 0;
   let lastBotVelocity: { x:number; y:number; z:number } | undefined;
@@ -513,6 +515,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   runtimeClient.write = (name:string, params:Record<string, unknown>) => {
     const isMovementPacket=['position','position_look','look','flying'].includes(name);
     const isCorrectionAck=isMovementPacket&&correctionAckPending>0&&name==='position_look';
+    let wireName=name;
     let wireParams=params;
     if(config.version==='1.8.9' && (name==='position_look'||name==='look') && typeof params.yaw==='number' && Number.isFinite(params.yaw)){
       let wireYaw=params.yaw;
@@ -526,17 +529,67 @@ export function createMineflayerTransport(config: Config, index: number, events:
       lastWireYaw=wireYaw;
       if(wireYaw!==params.yaw)wireParams={...params,yaw:wireYaw};
     }
+
+    // Vanilla 1.8.9 does not include position in every movement packet.
+    // EntityPlayerSP only reports coordinates when the squared delta from the
+    // last reported position exceeds 9e-4, or after 20 position-update ticks.
+    // Mineflayer 4.39 otherwise emits position for any non-zero coordinate
+    // change, which produces a different legacy packet stream than Forge/Vanilla.
+    if(config.version==='1.8.9' && isMovementPacket && !isCorrectionAck){
+      const current=bot.entity?.position;
+      const hasLook=wireName==='look'||wireName==='position_look';
+      const hasPosition=wireName==='position'||wireName==='position_look';
+      const x=hasPosition&&typeof wireParams.x==='number'&&Number.isFinite(wireParams.x) ? wireParams.x : current?.x;
+      const y=hasPosition&&typeof wireParams.y==='number'&&Number.isFinite(wireParams.y) ? wireParams.y : current?.y;
+      const z=hasPosition&&typeof wireParams.z==='number'&&Number.isFinite(wireParams.z) ? wireParams.z : current?.z;
+
+      if(x!==undefined&&y!==undefined&&z!==undefined){
+        if(!legacyReportedPosition){
+          if(hasPosition){
+            legacyReportedPosition={x,y,z};
+            legacyPositionUpdateTicks=0;
+          }else{
+            legacyPositionUpdateTicks++;
+          }
+        }else{
+          const dx=x-legacyReportedPosition.x;
+          const dy=y-legacyReportedPosition.y;
+          const dz=z-legacyReportedPosition.z;
+          const positionUpdated=dx*dx+dy*dy+dz*dz>9.0e-4 || legacyPositionUpdateTicks>=20;
+
+          if(positionUpdated){
+            if(!hasPosition){
+              wireName=hasLook?'position_look':'position';
+              wireParams=hasLook
+                ? {x,y,z,yaw:wireParams.yaw,pitch:wireParams.pitch,onGround:wireParams.onGround}
+                : {x,y,z,onGround:wireParams.onGround};
+            }
+            legacyReportedPosition={x,y,z};
+            legacyPositionUpdateTicks=0;
+          }else{
+            if(hasPosition){
+              wireName=hasLook?'look':'flying';
+              wireParams=hasLook
+                ? {yaw:wireParams.yaw,pitch:wireParams.pitch,onGround:wireParams.onGround}
+                : {onGround:wireParams.onGround};
+            }
+            legacyPositionUpdateTicks++;
+          }
+        }
+      }
+    }
+
     if(isCorrectionAck)correctionAckPending--;
     if(!closed && isMovementPacket && !isCorrectionAck){
       const now=Date.now();
       movementPacketTimes.push(now);
       while(movementPacketTimes.length>48||movementPacketTimes[0]!<now-2000)movementPacketTimes.shift();
-      if((name==='position'||name==='position_look') &&
+      if((wireName==='position'||wireName==='position_look') &&
           typeof wireParams.x==='number'&&Number.isFinite(wireParams.x)&&
           typeof wireParams.y==='number'&&Number.isFinite(wireParams.y)&&
           typeof wireParams.z==='number'&&Number.isFinite(wireParams.z)){
         movementHistory.push({
-          at:now,packet:name,x:wireParams.x,y:wireParams.y,z:wireParams.z,
+          at:now,packet:wireName,x:wireParams.x,y:wireParams.y,z:wireParams.z,
           yaw:typeof wireParams.yaw==='number'&&Number.isFinite(wireParams.yaw)?wireParams.yaw:null,
           onGround:typeof wireParams.onGround==='boolean'?wireParams.onGround:null
         });
@@ -555,7 +608,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       correctionTraceRemaining--;
       const numeric = (value:unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.round(value*1000)/1000 : null;
       events.diagnostic?.('movement packet after correction', {
-        packet:name,
+        packet:wireName,
         x:numeric(wireParams.x), y:numeric(wireParams.y), z:numeric(wireParams.z),
         yaw:numeric(wireParams.yaw), pitch:numeric(wireParams.pitch),
         onGround:typeof wireParams.onGround === 'boolean' ? wireParams.onGround : null,
@@ -565,7 +618,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         sinceCorrectionMs:lastCorrectionAt?Date.now()-lastCorrectionAt:null
       });
     }
-    return originalClientWrite(name,wireParams);
+    return originalClientWrite(wireName,wireParams);
   };
   const velocityPacket = (packet:{entityId:number;velocity:{x:number;y:number;z:number}}) => {
     if(closed||packet.entityId!==bot.entity?.id)return;
