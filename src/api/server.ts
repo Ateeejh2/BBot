@@ -56,7 +56,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug path started|movement debug path completed|movement debug path failed)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
@@ -71,7 +71,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
       carePackages: carePackages?.snapshot(),
-      carePackageTracking: manager.carePackageTrackingSnapshot(),
+      carePackageTracking: manager.carePackageTrackingSnapshot(), movementDebug: manager.movementDebugEnabled(),
       logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
@@ -112,6 +112,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const sessionToken = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/session-token$/.exec(req.url ?? '');
     const accountDelete = /^\/api\/v1\/accounts\/([0-9a-f-]{36})$/.exec(req.url ?? '');
     const settingsWrite = !!controls && req.method === 'PUT' && req.url === '/api/v1/settings/server';
+    const movementDebugWrite = req.method === 'PUT' && req.url === '/api/v1/settings/movement-debug';
     const accountWrite = !!controls && req.method === 'POST' && req.url === '/api/v1/accounts';
     const assignmentWrite = !!controls && req.method === 'PUT' && !!assignment;
     const retryWrite = !!controls && req.method === 'POST' && !!retry;
@@ -128,7 +129,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       return;
     }
     const fleetWrite = !!controls && req.method === 'POST' && !!fleetAction;
-    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite && !jobWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
+    if (!(req.method === 'POST' && match) && !settingsWrite && !movementDebugWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite && !jobWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
     const bodyLimit = accountWrite || sessionTokenWrite ? 8192 : jobWrite ? 2048 : 1024;
@@ -139,6 +140,14 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         let data: unknown;
         try { data = JSON.parse(body); } catch { throw Error('INVALID_INPUT'); }
         if (settingsWrite) { const result = await controls!.saveServer(data); broadcast(); send(res, 200, result); return; }
+        if (movementDebugWrite) {
+          if (!data || typeof data !== 'object' || Array.isArray(data) ||
+              Object.keys(data as Record<string,unknown>).join(',') !== 'enabled' ||
+              typeof (data as {enabled?:unknown}).enabled !== 'boolean') throw Error('INVALID_INPUT');
+          if (!manager.allStopped()) throw Error('INVALID_STATE');
+          manager.setMovementDebug((data as {enabled:boolean}).enabled);
+          broadcast(); send(res, 200, { enabled: manager.movementDebugEnabled() }); return;
+        }
         if (accountWrite) { const result = await controls!.addAccount(data); broadcast(); send(res, 201, result); return; }
         if (jobWrite) {
           const now = Date.now();
