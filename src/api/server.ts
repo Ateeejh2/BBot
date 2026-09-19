@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { BotManager } from '../bot/manager.js';
+import { validEvent, type GameEvent, type Job } from '../core/types.js';
 import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
 import type { ControlStore } from '../runtime/control.js';
@@ -18,6 +20,30 @@ function runtimeViewerUrl(config: Config): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function publicJob(job: Job) {
+  return { id: job.id, eventType: job.event.type, instanceId: job.event.instanceId, state: job.state, botId: job.botId,
+    x: job.event.target.x, y: job.event.target.y, z: job.event.target.z, expiresAt: job.event.expiresAt };
+}
+
+function manualJob(value: unknown, now: number): GameEvent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('INVALID_INPUT');
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).sort().join(',') !== 'eventType,expiresAt,instanceId,target') throw Error('INVALID_INPUT');
+  if (!body.target || typeof body.target !== 'object' || Array.isArray(body.target)) throw Error('INVALID_INPUT');
+  const target = body.target as Record<string, unknown>;
+  if (Object.keys(target).sort().join(',') !== 'x,y,z') throw Error('INVALID_INPUT');
+  const event: GameEvent = {
+    id: `manual-${randomUUID()}`,
+    instanceId: typeof body.instanceId === 'string' ? body.instanceId : '',
+    type: typeof body.eventType === 'string' ? body.eventType : '',
+    target: { x: Number(target.x), y: Number(target.y), z: Number(target.z) },
+    expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : NaN,
+    metadata: { source: 'manual' }
+  };
+  if (!validEvent(event) || event.expiresAt <= now || !/^[A-Za-z0-9_.:-]{1,64}$/.test(event.type)) throw Error('INVALID_INPUT');
+  return event;
 }
 
 // Only fixed, operator-facing fields cross the API boundary. Never serialize transports or config.
@@ -37,6 +63,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
     return { version: 1, bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
+      jobs: manager.scheduler.snapshot().map(publicJob),
       logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
@@ -81,6 +108,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const assignmentWrite = !!controls && req.method === 'PUT' && !!assignment;
     const retryWrite = !!controls && req.method === 'POST' && !!retry;
     const sessionTokenWrite = !!controls && req.method === 'PUT' && !!sessionToken;
+    const jobWrite = req.method === 'POST' && req.url === '/api/v1/jobs';
     const deleteWrite = !!controls && req.method === 'DELETE' && !!accountDelete;
     if (deleteWrite) {
       void controls!.deleteAccount(accountDelete![1]!).then(result => { broadcast(); send(res, 200, result); }).catch(error => {
@@ -92,10 +120,10 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       return;
     }
     const fleetWrite = !!controls && req.method === 'POST' && !!fleetAction;
-    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
+    if (!(req.method === 'POST' && match) && !settingsWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite && !jobWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
-    const bodyLimit = accountWrite || sessionTokenWrite ? 8192 : 1024;
+    const bodyLimit = accountWrite || sessionTokenWrite ? 8192 : jobWrite ? 2048 : 1024;
     req.on('data', chunk => { size += chunk.length; if (size <= bodyLimit) body += chunk.toString(); });
     req.on('end', () => { void (async () => {
       if (size > bodyLimit) { send(res, 413, { error: 'INVALID_BODY' }); return; }
@@ -104,6 +132,13 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         try { data = JSON.parse(body); } catch { throw Error('INVALID_INPUT'); }
         if (settingsWrite) { const result = await controls!.saveServer(data); broadcast(); send(res, 200, result); return; }
         if (accountWrite) { const result = await controls!.addAccount(data); broadcast(); send(res, 201, result); return; }
+        if (jobWrite) {
+          const now = Date.now();
+          const event = manualJob(data, now);
+          if (!manager.scheduler.enqueue(event, now)) throw Error('JOB_REJECTED');
+          const job = manager.scheduler.jobs.get(event.id)!;
+          broadcast(); send(res, 201, publicJob(job)); return;
+        }
         if (assignmentWrite) { const result = await controls!.assign(assignment![1]!, data); broadcast(); send(res, 200, result); return; }
         if (sessionTokenWrite) { const result = await controls!.replaceSessionToken(sessionToken![1]!, data); broadcast(); send(res, 200, result); return; }
         if (retryWrite) { if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT'); const result = await controls!.retryAccount(retry![1]!); broadcast(); send(res, 200, result); return; }
@@ -127,7 +162,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         const code = error instanceof Error ? error.message : '';
         const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED'].includes(code) ? 422 :
           ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
-          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH'].includes(code) ? 409 : 500;
+          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH', 'JOB_REJECTED'].includes(code) ? 409 : 500;
         if (code === 'SESSION_AUTH_REQUIRED') broadcast();
         send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
       }
