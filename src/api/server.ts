@@ -9,7 +9,7 @@ import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
 import type { ControlStore } from '../runtime/control.js';
 import { RuntimePerformanceMonitor } from '../runtime/performance.js';
-import { carePackageRefreshMs, type CarePackageSchedule } from '../events/brooke.js';
+import type { CarePackageSchedule } from '../events/brooke.js';
 
 function runtimeViewerUrl(config: Config): string | undefined {
   try {
@@ -56,7 +56,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined });
@@ -70,6 +70,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
       carePackages: carePackages?.snapshot(),
+      carePackageTracking: manager.carePackageTrackingSnapshot(),
       logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
@@ -84,12 +85,6 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     }
   }
   const timer = setInterval(broadcast, 500);
-  const refreshCarePackages = () => {
-    if (!carePackages) return;
-    void carePackages.refresh().then(broadcast, broadcast);
-  };
-  refreshCarePackages();
-  const carePackageTimer = carePackages ? setInterval(refreshCarePackages, carePackageRefreshMs) : undefined;
   const send = (res: ServerResponse, status: number, data: object) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
       'access-control-allow-origin': origin, 'vary': 'Origin', 'x-content-type-options': 'nosniff' });
@@ -187,7 +182,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   wss.on('connection', ws => { ws.send(JSON.stringify({ type: 'snapshot', data: snapshot() })); });
   return {
     listen: () => new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(config.api.port, config.api.host, resolve); }),
-    close: () => new Promise<void>(resolve => { clearInterval(timer); if (carePackageTimer) clearInterval(carePackageTimer); unsubscribe(); performance.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { clearInterval(timer); unsubscribe(); performance.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
     address: () => server.address()
   };
 }
