@@ -189,6 +189,23 @@ test('Care Package starts from the live announcement and keeps the launched bot 
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
   f.manager.stop();
 });
+test('manual Care Package test runs launch then same-bot synthetic chest path without a live event', async () => {
+  const f=fixture();f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
+  let finishLaunch!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finishLaunch=resolve;});
+  const result=f.manager.testCarePackage('bot-1');
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
+  assert.deepEqual(result.launchTarget,{x:128,z:0});
+  assert.deepEqual(t.launches,[{x:128,z:0}]);
+  assert.deepEqual(t.launchCompletions,['LANDING']);
+  assert.throws(()=>f.manager.testCarePackage('bot-1'),{message:'INVALID_STATE'});
+  finishLaunch();await delay(0);await delay(0);await delay(0);
+  assert.deepEqual(t.navigations.at(-1),{x:4,y:64,z:0});
+  assert.equal(f.scheduler.snapshot().some(job=>job.event.type==='care-package-test'),true);
+  assert.equal(f.scheduler.snapshot().find(job=>job.event.type==='care-package-test')?.state,'COMPLETED');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  f.manager.stop();
+});
+
 test('manual launch-pad test uses outward direction and blocks duplicate preparation', async () => {
   const f=fixture();f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
   let finish!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finish=resolve;});
