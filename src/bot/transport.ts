@@ -15,8 +15,8 @@ export interface BotTransport {
   ping?(): number | undefined;
   chat(command: string): void;
   navigate(target: Position, signal: AbortSignal): Promise<void>;
-  /** Use a spawn launch pad aligned with the target X/Z and wait until the bot lands. */
-  launchToward?(target: Pick<Position, 'x' | 'z'>, signal: AbortSignal): Promise<void>;
+  /** Use a spawn launch pad aligned with the target X/Z. Default waits for landing; event mode can return once launch is confirmed. */
+  launchToward?(target: Pick<Position, 'x' | 'z'>, signal: AbortSignal, completion?: 'LAUNCH' | 'LANDING'): Promise<void>;
   stopPath(): void;
   close(): void;
 }
