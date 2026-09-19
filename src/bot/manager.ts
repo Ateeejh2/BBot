@@ -115,6 +115,55 @@ export class BotManager {
     if (this.movementDebug || b.machine.state !== 'LOBBY' || !b.ready) throw new Error('INVALID_STATE');
     this.join(b);
   }
+  testCarePackage(id:string):{ launchTarget:{x:number;z:number} } {
+    const b=this.controlled(id);
+    if(this.movementDebug||b.machine.state!=='IN_PIT_IDLE'||!b.instanceId||b.execution||b.preparation)throw new Error('INVALID_STATE');
+    const transport=b.transport;
+    if(!transport?.launchToward)throw new Error('UNSUPPORTED_ACTION');
+    const position=transport.position();
+    if(!position)throw new Error('INVALID_STATE');
+    const radius=Math.hypot(position.x,position.z);
+    const outwardX=radius>=1?position.x/radius:1;
+    const outwardZ=radius>=1?position.z/radius:0;
+    const launchTarget={x:position.x+outwardX*128,z:position.z+outwardZ*128};
+    const preparation:EventPreparation={timestamp:this.now(),generation:b.generation.current,abort:new AbortController(),expiresAt:this.now()+60_000};
+    b.preparation=preparation;b.machine.transition('PREPARING_EVENT');
+    this.log(b,'care package test started',{targetX:launchTarget.x,targetZ:launchTarget.z});
+    void(async()=>{
+      try{
+        await transport.launchToward!(launchTarget,preparation.abort.signal,'LANDING');
+        if(b.preparation!==preparation||!b.generation.isCurrent(preparation.generation)||!b.instanceId)return;
+        const landing=transport.position();
+        if(!landing)throw new Error('Position unavailable');
+        const chestTarget={x:landing.x+outwardX*4,y:landing.y,z:landing.z+outwardZ*4};
+        const event:GameEvent={
+          id:`care-package-test:${b.id}:${preparation.timestamp}:${preparation.generation}`,
+          instanceId:b.instanceId,
+          type:'care-package-test',
+          target:chestTarget,
+          expiresAt:this.now()+60_000,
+          metadata:{source:'manual-test'}
+        };
+        b.preparation=undefined;
+        if(b.machine.state==='PREPARING_EVENT')b.machine.transition('IN_PIT_IDLE');
+        if(!this.scheduler.enqueue(event,this.now()))throw new Error('JOB_REJECTED');
+        const assignment=this.scheduler.assignTo(event.id,this.view(b),this.now());
+        if(!assignment){this.scheduler.jobs.delete(event.id);throw new Error('RESERVATION_FAILED');}
+        this.log(b,'care package test chest generated',{eventId:event.id,x:chestTarget.x,y:chestTarget.y,z:chestTarget.z});
+        this.log(b,'care package test chest path started',{eventId:event.id});
+        this.execute(b,assignment.job.id,assignment.job.lease,assignment.job.event);
+      }catch(error){
+        if(b.preparation===preparation&&b.generation.isCurrent(preparation.generation))
+          this.log(b,'care package test failed',{reason:this.movementFailure(error)});
+      }finally{
+        if(b.preparation===preparation&&b.generation.isCurrent(preparation.generation)){
+          b.preparation=undefined;
+          if(b.machine.state==='PREPARING_EVENT')b.machine.transition('IN_PIT_IDLE');
+        }
+      }
+    })();
+    return {launchTarget};
+  }
   testLaunchPad(id: string): { target: { x:number; z:number } } {
     const b = this.controlled(id);
     if (this.movementDebug || b.machine.state !== 'IN_PIT_IDLE' || !b.instanceId || b.execution || b.preparation) throw new Error('INVALID_STATE');
@@ -181,7 +230,7 @@ export class BotManager {
     const message=error instanceof Error?error.message:'';
     const allowed=new Set(['No path to the goal!','Path planning timeout','Control walk timeout','Position unavailable','Control walk stuck',
       'Control walk ended before arrival','Control turn timeout','Launch pad not found','Launch pad unavailable','Launch cancelled',
-      'Launch landing timeout','Launch pad did not trigger','Landing wait timeout']);
+      'Launch landing timeout','Launch pad did not trigger','Landing wait timeout','JOB_REJECTED','RESERVATION_FAILED']);
     return allowed.has(message)?message:'Movement failed';
   }
   tick(): void {
