@@ -23,9 +23,10 @@ function runtimeViewerUrl(config: Config): string | undefined {
   }
 }
 
-function publicJob(job: Job) {
+function publicJob(job: Job, maxAttempts: number) {
   return { id: job.id, eventType: job.event.type, instanceId: job.event.instanceId, state: job.state, botId: job.botId,
-    x: job.event.target.x, y: job.event.target.y, z: job.event.target.z, expiresAt: job.event.expiresAt };
+    x: job.event.target.x, y: job.event.target.y, z: job.event.target.z, expiresAt: job.event.expiresAt,
+    attempts: job.attempts, maxAttempts, lastFailure: job.lastFailure, lastFailureAt: job.lastFailureAt, retryAt: job.retryAt };
 }
 
 function manualJob(value: unknown, now: number): GameEvent {
@@ -54,7 +55,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\))$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined });
@@ -65,7 +66,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
     return { version: 1, bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
-      jobs: manager.scheduler.snapshot().map(publicJob),
+      jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
       logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
@@ -140,7 +141,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
           const event = manualJob(data, now);
           if (!manager.scheduler.enqueue(event, now)) throw Error('JOB_REJECTED');
           const job = manager.scheduler.jobs.get(event.id)!;
-          broadcast(); send(res, 201, publicJob(job)); return;
+          broadcast(); send(res, 201, publicJob(job, manager.scheduler.attemptLimit)); return;
         }
         if (assignmentWrite) { const result = await controls!.assign(assignment![1]!, data); broadcast(); send(res, 200, result); return; }
         if (sessionTokenWrite) { const result = await controls!.replaceSessionToken(sessionToken![1]!, data); broadcast(); send(res, 200, result); return; }
