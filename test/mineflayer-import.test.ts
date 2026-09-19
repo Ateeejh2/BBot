@@ -18,3 +18,12 @@ test('live movement executor uses controls without pathfinder execution or direc
   assert.match(source,/setControlState\(['"]forward['"],\s*true\)/);
   assert.match(source,/setControlState\(['"]jump['"],/);
 });
+
+
+test('movement planner prefers full-block footing but keeps slab routes available', async () => {
+  const source = await readFile('src/bot/mineflayer.ts','utf8');
+  assert.match(source,/exclusionAreasStep\.push/);
+  assert.match(source,/isPartialSlab/);
+  assert.match(source,/\? 12 : 0/);
+  assert.doesNotMatch(source,/blocksToAvoid\.add\([^\n]*slab/i);
+});
