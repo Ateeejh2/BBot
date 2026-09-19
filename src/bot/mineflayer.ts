@@ -176,12 +176,21 @@ export function createMineflayerTransport(config: Config, index: number, events:
               break;
             }
 
-            const canSprint = aligned && !collided && !needsJump;
+            // Keep W+sprint latched through small waypoint steering changes.
+            // Requiring <=0.28 rad every tick made short path segments alternate
+            // START/STOP_SPRINTING many times per second. A vanilla player keeps
+            // the keys held while making ordinary gentle turns; only pause them
+            // for a genuinely sharp turn, collision, or jump setup.
+            const keepTurn = remainingTurn <= 0.70;
+            const wasForward = bot.getControlState('forward');
+            const wasSprint = bot.getControlState('sprint');
+            const moveForward = !collided && (aligned || (!needsJump && wasForward && keepTurn));
+            const canSprint = moveForward && !needsJump && (aligned || (wasSprint && keepTurn));
             bot.setControlState('sneak',false);
             bot.setControlState('back',false);
             bot.setControlState('left',false);
             bot.setControlState('right',false);
-            bot.setControlState('forward',aligned && !collided);
+            bot.setControlState('forward',moveForward);
             bot.setControlState('sprint',canSprint);
             bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
             await bot.waitForTicks(1);
