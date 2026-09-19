@@ -407,32 +407,48 @@ export class BotManager {
     const debug:DebugWalk={generation:b.generation.current,abort:new AbortController()};
     b.debugWalk=debug;b.debugWalkDone=true;b.machine.transition('PATHFINDING');
     const transport=b.transport;
-    const targets=[
-      {x:start.x+6,y:start.y,z:start.z},{x:start.x-6,y:start.y,z:start.z},
-      {x:start.x,y:start.y,z:start.z+6},{x:start.x,y:start.y,z:start.z-6}
-    ];
+    const directions=[{x:6,z:0},{x:0,z:6},{x:-6,z:0},{x:0,z:-6}];
     this.log(b,'movement debug path started',{startX:start.x,startY:start.y,startZ:start.z});
     void(async()=>{
-      let lastError:unknown;
+      let directionIndex=0;
       try{
-        for(const [attempt,target] of targets.entries()){
-          if(b.debugWalk!==debug||debug.abort.signal.aborted||!b.generation.isCurrent(debug.generation))return;
-          try{
-            b.pathAttempts++;
-            const queuedAt=this.now();
-            await this.paths.submit(`debug:${b.id}:${debug.generation}:${attempt}`,debug.abort.signal,async signal=>{
-              const startedAt=this.now();b.pathStartedAt=startedAt;b.lastPathQueueMs=Math.max(0,startedAt-queuedAt);
-              try{await transport.navigate(target,signal);b.pathCompleted++;}
-              catch(error){b.pathFailed++;throw error;}
-              finally{if(b.pathStartedAt===startedAt){b.lastPathMs=Math.max(0,this.now()-startedAt);b.pathStartedAt=undefined;}}
-            },()=>transport.stopPath());
-            if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation))
+        while(this.movementDebug&&b.debugWalk===debug&&!debug.abort.signal.aborted&&b.generation.isCurrent(debug.generation)){
+          const position=transport.position();
+          if(!position)throw new Error('Position unavailable');
+          let moved=false;
+          let lastError:unknown;
+          for(let offset=0;offset<directions.length;offset++){
+            if(b.debugWalk!==debug||debug.abort.signal.aborted||!b.generation.isCurrent(debug.generation))return;
+            const selected=(directionIndex+offset)%directions.length;
+            const direction=directions[selected]!;
+            const target={x:position.x+direction.x,y:position.y,z:position.z+direction.z};
+            try{
+              b.pathAttempts++;
+              const queuedAt=this.now();
+              await this.paths.submit(`debug:${b.id}:${debug.generation}:${b.pathAttempts}`,debug.abort.signal,async signal=>{
+                const startedAt=this.now();b.pathStartedAt=startedAt;b.lastPathQueueMs=Math.max(0,startedAt-queuedAt);
+                try{await transport.navigate(target,signal);b.pathCompleted++;}
+                catch(error){b.pathFailed++;throw error;}
+                finally{if(b.pathStartedAt===startedAt){b.lastPathMs=Math.max(0,this.now()-startedAt);b.pathStartedAt=undefined;}}
+              },()=>transport.stopPath());
+              if(b.debugWalk!==debug||debug.abort.signal.aborted||!b.generation.isCurrent(debug.generation))return;
+              directionIndex=(selected+1)%directions.length;
+              moved=true;
               this.log(b,'movement debug path completed',{targetX:target.x,targetY:target.y,targetZ:target.z});
-            return;
-          }catch(error){lastError=error;if(debug.abort.signal.aborted)return;}
+              break;
+            }catch(error){
+              lastError=error;
+              if(debug.abort.signal.aborted)return;
+            }
+          }
+          if(moved)continue;
+          if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation))
+            this.log(b,'movement debug path failed',{reason:lastError instanceof PathfindingError?lastError.code:this.movementFailure(lastError)});
+          await new Promise(resolve=>setTimeout(resolve,1000));
         }
-        if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation))
-          this.log(b,'movement debug path failed',{reason:lastError instanceof PathfindingError?lastError.code:this.movementFailure(lastError)});
+      }catch(error){
+        if(!debug.abort.signal.aborted&&b.debugWalk===debug&&b.generation.isCurrent(debug.generation))
+          this.log(b,'movement debug path failed',{reason:error instanceof PathfindingError?error.code:this.movementFailure(error)});
       }finally{
         if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation)){
           b.debugWalk=undefined;
