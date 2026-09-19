@@ -368,6 +368,24 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const vertical = target.y-before.y;
     const feetBlock = bot.blockAt(before);
     const floorBlock = bot.blockAt(before.offset(0,-0.01,0));
+    const supportSummary = (point:{x:number;y:number;z:number}) => {
+      const seen=new Set<string>();
+      const parts:string[]=[];
+      for(const ox of [-0.31,0,0.31]) for(const oz of [-0.31,0,0.31]) for(const oy of [-0.01,-0.51,-1.01]){
+        const block=bot.blockAt(point.offset ? point.offset(ox,oy,oz) : before.offset(
+          point.x-before.x+ox, point.y-before.y+oy, point.z-before.z+oz
+        )) as unknown as { name?:string; metadata?:number; position?:{x:number;y:number;z:number}; shapes?:number[][] } | null;
+        if(!block?.position||block.name==='air')continue;
+        const key=`${block.position.x},${block.position.y},${block.position.z}`;
+        if(seen.has(key))continue;
+        seen.add(key);
+        const shapes=(block.shapes??[]).map(shape=>shape.map(value=>Math.round(value*100)/100).join(',')).join('|');
+        parts.push(`${block.name}:${block.metadata??'?'}@${key}[${shapes||'no-shape'}]`);
+      }
+      return parts.slice(0,12).join(';')||'none';
+    };
+    const beforeSupport=supportSummary(before);
+    const targetSupport=supportSummary(target);
     const runtimeEntity = bot.entity as typeof bot.entity & { attributes?: Record<string, unknown> };
     const runtimeBot = bot as typeof bot & { abilities?: { walkingSpeed?: number } };
     const effects = runtimeEntity.effects ?? {};
@@ -458,6 +476,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
       feetMeta: typeof feetBlock?.metadata === 'number' ? feetBlock.metadata : null,
       floorBlock: floorBlock?.name ?? null,
       floorMeta: typeof floorBlock?.metadata === 'number' ? floorBlock.metadata : null,
+      beforeSupport,
+      targetSupport,
       beforeX: Math.round(before.x*1000)/1000,
       beforeY: Math.round(before.y*1000)/1000,
       beforeZ: Math.round(before.z*1000)/1000,
