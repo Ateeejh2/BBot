@@ -44,14 +44,12 @@ function parseBrookeEvents(value: unknown): BrookeEvent[] {
 export class BrookeCarePackageSchedule implements CarePackageSchedule {
   private timestamps: number[] = [];
   private updatedAt?: number;
-  private attemptedAt?: number;
   private pending?: Promise<void>;
 
   constructor(private request: typeof fetch = fetch, private now = Date.now) {}
 
   refresh(): Promise<void> {
     if (this.pending) return this.pending;
-    this.attemptedAt = this.now();
     this.pending = this.load().finally(() => { this.pending = undefined; });
     return this.pending;
   }
