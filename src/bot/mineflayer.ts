@@ -34,6 +34,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let lastSpawnAt = 0;
   let correctionTraceUntil = 0;
   let correctionTraceRemaining = 0;
+  const movementPacketTimes:number[] = [];
+  const sprintActionTimes:number[] = [];
   const stopPath = () => { bot.clearControlStates(); };
   const isPartialSlab = (block: { name?: string } | null | undefined) =>
     typeof block?.name === 'string' && block.name.includes('slab') && !block.name.includes('double');
@@ -152,7 +154,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
               break;
             }
 
-            const canSprint = aligned && !collided && !needsJump && horizontal > 0.55;
+            const canSprint = aligned && !collided && !needsJump;
             bot.setControlState('sneak',false);
             bot.setControlState('back',false);
             bot.setControlState('left',false);
@@ -340,8 +342,17 @@ export function createMineflayerTransport(config: Config, index: number, events:
       for (const modifier of modifiers) if (modifier.operation===2) value += value * (modifier.amount ?? 0);
       effectiveMovementSpeed = value;
     }
+    const now=Date.now();
+    const packetTimes=movementPacketTimes.filter(at=>now-at<=1000);
+    const packetGaps=packetTimes.slice(1).map((at,i)=>at-packetTimes[i]!);
+    const sprintActions=sprintActionTimes.filter(at=>now-at<=2000);
     events.diagnostic?.('server position correction', {
-      sinceSpawnMs: lastSpawnAt ? Date.now()-lastSpawnAt : null,
+      sinceSpawnMs: lastSpawnAt ? now-lastSpawnAt : null,
+      movementPackets1s:packetTimes.length,
+      minMovementPacketGapMs:packetGaps.length?Math.min(...packetGaps):null,
+      maxMovementPacketGapMs:packetGaps.length?Math.max(...packetGaps):null,
+      movementPacketBursts:packetGaps.filter(gap=>gap<20).length,
+      sprintActions2s:sprintActions.length,
       horizontal: Math.round(horizontal*1000)/1000,
       vertical: Math.round(vertical*1000)/1000,
       relativeX: relative.x, relativeY: relative.y, relativeZ: relative.z,
@@ -374,6 +385,16 @@ export function createMineflayerTransport(config: Config, index: number, events:
   const runtimeClient = bot._client as unknown as { write(name:string, params:Record<string, unknown>): unknown };
   const originalClientWrite = runtimeClient.write.bind(bot._client);
   runtimeClient.write = (name:string, params:Record<string, unknown>) => {
+    if(!closed && ['position','position_look','look','flying'].includes(name)){
+      const now=Date.now();
+      movementPacketTimes.push(now);
+      while(movementPacketTimes.length>24||movementPacketTimes[0]!<now-2000)movementPacketTimes.shift();
+    }
+    if(!closed && name==='entity_action' && (params.actionId===3||params.actionId===4)){
+      const now=Date.now();
+      sprintActionTimes.push(now);
+      while(sprintActionTimes.length>16||sprintActionTimes[0]!<now-4000)sprintActionTimes.shift();
+    }
     if (!closed && correctionTraceRemaining > 0 && Date.now() <= correctionTraceUntil &&
         ['position','position_look','look','flying','teleport_confirm'].includes(name)) {
       correctionTraceRemaining--;
