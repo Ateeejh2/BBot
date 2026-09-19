@@ -14,13 +14,15 @@ import { CarePackageCoordinator } from '../src/events/care-package.js';
 class ControlledTransport implements BotTransport {
   commands: string[] = []; closed = false; stopped = 0;
   navigation: (target: Position, signal: AbortSignal) => Promise<void> = async () => {};
-  launcher: (target: Pick<Position,'x'|'z'>, signal: AbortSignal) => Promise<void> = async () => {};
+  launcher: (target: Pick<Position,'x'|'z'>, signal: AbortSignal, completion?: 'LAUNCH'|'LANDING') => Promise<void> = async () => {};
   launches: Array<Pick<Position,'x'|'z'>> = [];
+  launchCompletions: Array<'LAUNCH'|'LANDING'> = [];
+  navigations: Position[] = [];
   constructor(readonly events: TransportEvents) {}
   position() { return { x: 0, y: 64, z: 0 }; }
   chat(command: string) { this.commands.push(command); }
-  navigate(target: Position, signal: AbortSignal) { return this.navigation(target, signal); }
-  launchToward(target: Pick<Position,'x'|'z'>, signal: AbortSignal) { this.launches.push({...target}); return this.launcher(target,signal); }
+  navigate(target: Position, signal: AbortSignal) { this.navigations.push({...target}); return this.navigation(target, signal); }
+  launchToward(target: Pick<Position,'x'|'z'>, signal: AbortSignal, completion: 'LAUNCH'|'LANDING' = 'LANDING') { this.launches.push({...target}); this.launchCompletions.push(completion); return this.launcher(target,signal,completion); }
   stopPath() { this.stopped++; }
   close() { this.closed = true; }
 }
@@ -151,7 +153,7 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
   f.manager.stop();
 });
-test('Care Package carrier detection launches from spawn before chest Job assignment', async () => {
+test('Care Package keeps the launched bot reserved and hands it directly to the chest path', async () => {
   const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
   const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
   const f=fixture(1,new MockTaskHandler(),false,coordinator);
@@ -162,20 +164,20 @@ test('Care Package carrier detection launches from spawn before chest Job assign
   t.events.chickenSpawn?.({x:81,y:109,z:-29});
   assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
   assert.equal(t.launches.length,1);
+  assert.deepEqual(t.launchCompletions,['LAUNCH']);
   assert.ok(Math.abs(t.launches[0]!.x-81)<0.01);
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'LAUNCHING');
 
-  t.events.chestAppeared?.({x:79,y:64,z:-32});
-  const job=f.scheduler.jobs.get('care-package:1000:mega-a');
-  assert.equal(job?.state,'QUEUED');
-  assert.deepEqual(job?.event.target,{x:79,y:64,z:-32});
-  f.tick(1001);assert.equal(job?.state,'QUEUED');
+  const chest={x:79,y:64,z:-32};
+  t.events.chestAppeared?.(chest);
+  assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a'),undefined);
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
 
-  finishLaunch();await delay(0);
-  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  finishLaunch();await delay(0);await delay(0);await delay(0);
+  assert.deepEqual(t.navigations.at(-1),chest);
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'CHEST_DETECTED');
-  f.tick(1002);await delay(0);await delay(0);
   assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
   f.manager.stop();
 });
 test('manual launch-pad test uses outward direction and blocks duplicate preparation', async () => {
@@ -185,6 +187,7 @@ test('manual launch-pad test uses outward direction and blocks duplicate prepara
   assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
   assert.deepEqual(result.target,{x:128,z:0});
   assert.deepEqual(t.launches,[{x:128,z:0}]);
+  assert.deepEqual(t.launchCompletions,['LANDING']);
   assert.throws(()=>f.manager.testLaunchPad('bot-1'),{message:'INVALID_STATE'});
   finish();await delay(0);
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
