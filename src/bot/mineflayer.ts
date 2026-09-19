@@ -337,7 +337,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         signal.removeEventListener('abort', abort);
       }
     },
-    launchToward: async (target, signal) => {
+    launchToward: async (target, signal, completion = 'LANDING') => {
       signal.throwIfAborted();
       const start = bot.entity?.position;
       if (!start) throw new Error('Launch position unavailable');
@@ -402,7 +402,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
             const entity=bot.entity,p=entity?.position;
             if(!p)return;
             const horizontal=Math.hypot(p.x-launchedFrom.x,p.z-launchedFrom.z);
-            if(!launched&&(horizontal>7||Math.abs(p.y-launchedFrom.y)>4)){launched=true;bot.setControlState('forward',false);}
+            if(!launched&&(horizontal>7||Math.abs(p.y-launchedFrom.y)>4)){
+              launched=true;bot.setControlState('forward',false);
+              if(completion==='LAUNCH'){clearInterval(timer);signal.removeEventListener('abort',onAbort);resolve();return;}
+            }
             if(launched){groundSamples=(entity as {onGround?:boolean}).onGround?groundSamples+1:0;if(groundSamples>=2&&horizontal>7){clearInterval(timer);signal.removeEventListener('abort',onAbort);resolve();return;}}
             if(Date.now()-started>10_000){clearInterval(timer);signal.removeEventListener('abort',onAbort);reject(new Error(launched?'Launch landing timeout':'Launch pad did not trigger'));}
           },50);
