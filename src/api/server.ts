@@ -56,7 +56,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined });
@@ -104,7 +104,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       send(res, 200, { challenge: controls.getAuthChallenge(authChallenge[1]!) ?? null });
       return;
     }
-    const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect)$/.exec(req.url ?? '');
+    const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect|test-launch-pad)$/.exec(req.url ?? '');
     const fleetAction = /^\/api\/v1\/fleet\/actions\/(start-assigned|stop-all)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
@@ -163,11 +163,12 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
           manager.connectBot(id!);
         }
         else if (action === 'join-pit') manager.joinPit(id!);
+        else if (action === 'test-launch-pad') manager.testLaunchPad(id!);
         else manager.disconnectBot(id!);
         broadcast(); send(res, 200, snapshot());
       } catch (error) {
         const code = error instanceof Error ? error.message : '';
-        const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED'].includes(code) ? 422 :
+        const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','UNSUPPORTED_ACTION','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED'].includes(code) ? 422 :
           ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
           ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH', 'JOB_REJECTED'].includes(code) ? 409 : 500;
         if (code === 'SESSION_AUTH_REQUIRED') broadcast();
