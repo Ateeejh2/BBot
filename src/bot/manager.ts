@@ -181,7 +181,7 @@ export class BotManager {
     const message=error instanceof Error?error.message:'';
     const allowed=new Set(['No path to the goal!','Path planning timeout','Control walk timeout','Position unavailable','Control walk stuck',
       'Control walk ended before arrival','Control turn timeout','Launch pad not found','Launch pad unavailable','Launch cancelled',
-      'Launch landing timeout','Launch pad did not trigger']);
+      'Launch landing timeout','Launch pad did not trigger','Landing wait timeout']);
     return allowed.has(message)?message:'Movement failed';
   }
   tick(): void {
