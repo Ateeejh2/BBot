@@ -6,7 +6,7 @@ import { InstanceRegistry } from '../src/instances/registry.js';
 import { DistributionManager } from '../src/instances/distribution.js';
 import { Scheduler } from '../src/scheduler/scheduler.js';
 import { backoff } from '../src/recovery/backoff.js';
-import { MockEventProvider } from '../src/events/provider.js';
+import { MockEventProvider, parseEventFeedV1 } from '../src/events/provider.js';
 import { loadConfig } from '../src/config/index.js';
 import { UnknownReturnClassifier, type BotView, type GameEvent } from '../src/core/types.js';
 const event = (id = 'e1'): GameEvent => ({ id, instanceId: 'mega10c', target: { x: 1, y: 64, z: 2 }, type: 'mock', expiresAt: 100000 });
@@ -113,10 +113,27 @@ test('MockEventProvider filters expiry and does not share mutable results', asyn
   assert.equal((await provider.fetchEvents())[0]!.target.x, 1);
   await assert.rejects(provider.fetchEvents(AbortSignal.abort()));
 });
+test('external event feed V1 is strict and cloned', () => {
+  const feed = { version: 1 as const, events: [event()] };
+  const parsed = parseEventFeedV1(feed);
+  assert.deepEqual(parsed, feed.events);
+  parsed[0]!.target.x = 999;
+  assert.equal(feed.events[0]!.target.x, 1);
+  for (const invalid of [
+    [event()],
+    { version: 2, events: [event()] },
+    { version: 1, events: [{}] },
+    { version: 1, events: [event()], extra: true }
+  ]) assert.throws(() => parseEventFeedV1(invalid));
+});
 test('configuration defaults are safe and malformed values fail closed', () => {
   assert.equal(loadConfig({}).mode, 'mock'); assert.equal(loadConfig({}).count, 1); assert.equal(loadConfig({}).pathConcurrency, 2);
   assert.equal(loadConfig({}).version, '1.8.9'); assert.equal(loadConfig({ MC_VERSION: '' }).version, '1.8.9');
   assert.equal(loadConfig({ MC_VERSION: '1.16.5' }).version, '1.16.5');
   assert.equal(loadConfig({}).transferMessageChannel, 'system');
-  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }, { TRANSFER_MESSAGE_CHANNEL: 'title' }]) assert.throws(() => loadConfig(env));
+  assert.equal(loadConfig({}).eventProviderUrl, undefined);
+  assert.equal(loadConfig({ EVENT_PROVIDER_URL: 'https://events.example.test/feed?region=jp' }).eventProviderUrl, 'https://events.example.test/feed?region=jp');
+  assert.equal(loadConfig({ EVENT_PROVIDER_URL: 'http://127.0.0.1:8080/feed' }).eventProviderUrl, 'http://127.0.0.1:8080/feed');
+  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }, { TRANSFER_MESSAGE_CHANNEL: 'title' },
+    { EVENT_PROVIDER_URL: 'http://events.example.test/feed' }, { EVENT_PROVIDER_URL: 'https://user:pass@events.example.test/feed' }, { EVENT_PROVIDER_URL: 'https://events.example.test/feed#secret' }]) assert.throws(() => loadConfig(env));
 });
