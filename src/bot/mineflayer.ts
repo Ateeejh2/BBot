@@ -186,7 +186,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
                     bot.setControlState('forward',true);
                     bot.setControlState('sprint',true);
                     bot.setControlState('jump',false);
-                    void bot.lookAt(waypoint.offset(0,current.y-waypoint.y,0),false);
+                    const targetYaw=Math.atan2(-(waypoint.x-current.x),-(waypoint.z-current.z));
+                    void bot.look(targetYaw,bot.entity.pitch,false);
                     finish();
                   }catch(error){finish(error);}
                 };
@@ -516,9 +517,13 @@ export function createMineflayerTransport(config: Config, index: number, events:
       onGround:Boolean(bot.entity.onGround)
     });
   };
+  const attachStandingRestore = () => bot._client.on('position', restoreStandingAfterPosition);
   bot._client.prependListener('entity_velocity', velocityPacket);
   bot._client.prependListener('position', positionPacket);
-  bot._client.on('position', restoreStandingAfterPosition);
+  // createBot() injects Mineflayer's internal plugins on the next inject_allowed turn.
+  // Register the restore listener only after that injection, otherwise the physics
+  // plugin's position handler runs later and overwrites the restored standing state.
+  bot.once('inject_allowed', attachStandingRestore);
   bot.on('physicsTick', physicsTickTrace);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
@@ -622,6 +627,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
+      bot.removeListener('inject_allowed', attachStandingRestore);
       bot._client.removeListener('position', restoreStandingAfterPosition);
       bot.removeListener('physicsTick', physicsTickTrace);
       runtimeClient.write = originalClientWrite;
