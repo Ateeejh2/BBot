@@ -1,18 +1,19 @@
 import { instanceKey, type GameEvent, type Position } from '../core/types.js';
 import type { CarePackageSchedule } from './brooke.js';
 
-export type CarePackageInstanceState = 'ARMED' | 'CARRIER_DETECTED' | 'LAUNCHING' | 'DROPPED' | 'CHEST_DETECTED' | 'LAUNCH_FAILED';
+export type CarePackageInstanceState = 'ARMED' | 'STARTED' | 'CARRIER_DETECTED' | 'LAUNCHING' | 'DROPPED' | 'CHEST_DETECTED' | 'LAUNCH_FAILED';
 
 interface Observation { at:number; position:Position }
 interface TrackedInstance {
   timestamp:number; instanceId:string; state:CarePackageInstanceState;
-  observations:Observation[]; carrier?:Position; chest?:Position;
+  observations:Observation[]; startedAt?:number; area?:string; carrier?:Position; chest?:Position;
 }
 
 export interface CarePackageCarrierDetection { timestamp:number; instanceId:string; target:Position }
+export interface CarePackageStartDetection { timestamp:number; instanceId:string; startedAt:number; area:string; target?:Position }
 export interface CarePackageTrackingSnapshot {
   timestamp?:number;
-  instances:Array<{instanceId:string;state:CarePackageInstanceState;target?:Position}>;
+  instances:Array<{instanceId:string;state:CarePackageInstanceState;startedAt?:number;area?:string;target?:Position}>;
 }
 
 export class CarePackageCoordinator {
@@ -23,26 +24,40 @@ export class CarePackageCoordinator {
 
   trackingSnapshot(now:number):CarePackageTrackingSnapshot {
     this.prune(now);
+    const scheduled=this.activeTimestamp(now);
+    const active=[...this.tracked.values()].filter(v =>
+      v.startedAt!==undefined ? now<=v.startedAt+this.activeAfterMs : scheduled!==undefined&&v.timestamp===scheduled);
+    const timestamp=active.find(v=>v.startedAt!==undefined)?.timestamp??scheduled;
+    return { timestamp, instances:active
+      .filter(v=>timestamp===undefined||v.timestamp===timestamp)
+      .map(v=>({instanceId:v.instanceId,state:v.state,startedAt:v.startedAt,area:v.area,target:v.chest??v.carrier})) };
+  }
+
+  observeAnnouncement(instanceId:string,text:string,now:number):CarePackageStartDetection|undefined {
+    const announcement=parseCarePackageAnnouncement(text);
+    if(!announcement)return;
     const timestamp=this.activeTimestamp(now);
-    return { timestamp, instances:[...this.tracked.values()]
-      .filter(v=>timestamp!==undefined&&v.timestamp===timestamp)
-      .map(v=>({instanceId:v.instanceId,state:v.state,target:v.chest??v.carrier})) };
+    if(timestamp===undefined)return;
+    const tracked=this.get(timestamp,instanceId);
+    if(tracked.startedAt!==undefined)return;
+    tracked.startedAt=now; tracked.area=announcement.area; tracked.state='STARTED';
+    tracked.observations=tracked.observations.filter(v=>now-v.at<=this.clusterWindowMs);
+    const target=this.clusterTarget(tracked.observations);
+    if(target){tracked.carrier=target;tracked.state='CARRIER_DETECTED';tracked.observations=[];}
+    return {timestamp,instanceId:tracked.instanceId,startedAt:now,area:announcement.area,target:target?{...target}:undefined};
   }
 
   observeChicken(instanceId:string, position:Position, now:number):CarePackageCarrierDetection|undefined {
-    const timestamp=this.activeTimestamp(now);
+    const timestamp=this.activeTimestampForInstance(instanceId,now);
     if(timestamp===undefined)return;
     const tracked=this.get(timestamp,instanceId);
     if(tracked.carrier)return;
     tracked.observations=tracked.observations.filter(v=>now-v.at<=this.clusterWindowMs);
     tracked.observations.push({at:now,position:{...position}});
+    if(tracked.startedAt===undefined)return;
     const nearby=tracked.observations.filter(v=>horizontal(v.position,position)<=this.clusterRadius);
     if(nearby.length<this.clusterMin)return;
-    const target={
-      x:nearby.reduce((sum,v)=>sum+v.position.x,0)/nearby.length,
-      y:nearby.reduce((sum,v)=>sum+v.position.y,0)/nearby.length,
-      z:nearby.reduce((sum,v)=>sum+v.position.z,0)/nearby.length
-    };
+    const target=average(nearby);
     tracked.carrier=target; tracked.state='CARRIER_DETECTED'; tracked.observations=[];
     return {timestamp,instanceId:tracked.instanceId,target:{...target}};
   }
@@ -54,19 +69,40 @@ export class CarePackageCoordinator {
   }
 
   observeChest(instanceId:string, position:Position, now:number):GameEvent|undefined {
-    const timestamp=this.activeTimestamp(now);
+    const timestamp=this.activeTimestampForInstance(instanceId,now);
     if(timestamp===undefined)return;
     const tracked=this.get(timestamp,instanceId);
-    if(tracked.chest)return;
+    if(tracked.startedAt===undefined||tracked.chest)return;
     tracked.chest={...position}; tracked.state='CHEST_DETECTED';
     return {
       id:`care-package:${timestamp}:${tracked.instanceId}`,
       instanceId:tracked.instanceId,
       type:'care-package',
       target:{...position},
-      expiresAt:timestamp+this.activeAfterMs,
-      metadata:{source:'brookeafk.com',scheduledAt:timestamp}
+      expiresAt:tracked.startedAt+this.activeAfterMs,
+      metadata:{source:'brookeafk.com',scheduledAt:timestamp,startedAt:tracked.startedAt,area:tracked.area}
     };
+  }
+
+  expiresAt(instanceId:string,timestamp:number):number {
+    const tracked=this.get(timestamp,instanceId);
+    return (tracked.startedAt??timestamp)+this.activeAfterMs;
+  }
+
+  private activeTimestampForInstance(instanceId:string,now:number):number|undefined {
+    const normalized=instanceKey(instanceId);
+    const started=[...this.tracked.values()]
+      .filter(v=>v.instanceId===normalized&&v.startedAt!==undefined&&now<=v.startedAt+this.activeAfterMs)
+      .sort((a,b)=>(b.startedAt??0)-(a.startedAt??0))[0];
+    return started?.timestamp??this.activeTimestamp(now);
+  }
+
+  private clusterTarget(observations:Observation[]):Position|undefined {
+    for(const observation of observations){
+      const nearby=observations.filter(v=>horizontal(v.position,observation.position)<=this.clusterRadius);
+      if(nearby.length>=this.clusterMin)return average(nearby);
+    }
+    return;
   }
 
   private activeTimestamp(now:number):number|undefined {
@@ -82,7 +118,24 @@ export class CarePackageCoordinator {
     return value;
   }
   private prune(now:number):void {
-    for(const [key,value] of this.tracked)if(now>value.timestamp+this.activeAfterMs)this.tracked.delete(key);
+    for(const [key,value] of this.tracked){
+      const expiresAt=(value.startedAt??value.timestamp)+this.activeAfterMs;
+      if(now>expiresAt)this.tracked.delete(key);
+    }
   }
+}
+export function parseCarePackageAnnouncement(text:string):{area:string}|undefined {
+  const normalized=text.replace(/§[0-9A-FK-OR]/gi,'').replace(/\s+/g,' ').trim();
+  const match=/^MINOR EVENT!\s+CARE PACKAGE\s+in\s+(.+? Area)$/i.exec(normalized);
+  const area=match?.[1]?.trim();
+  if(!area||area.length>80)return;
+  return {area};
+}
+function average(values:Observation[]):Position {
+  return {
+    x:values.reduce((sum,v)=>sum+v.position.x,0)/values.length,
+    y:values.reduce((sum,v)=>sum+v.position.y,0)/values.length,
+    z:values.reduce((sum,v)=>sum+v.position.z,0)/values.length
+  };
 }
 function horizontal(a:Position,b:Position):number{return Math.hypot(a.x-b.x,a.z-b.z)}
