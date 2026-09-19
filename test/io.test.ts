@@ -4,10 +4,41 @@ import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { HttpEventProvider, parseEventFeedV1 } from '../src/events/provider.js';
+import { BrookeCarePackageSchedule } from '../src/events/brooke.js';
 import { JsonStore } from '../src/core/store.js';
 import { Logger } from '../src/logging/logger.js';
 const options = { timeoutMs: 50, retries: 0, minIntervalMs: 1, maxBytes: 1000, maxRetryMs: 1 };
 const url = new URL('https://example.invalid/events');
+test('Brooke schedule returns the nearest five future Care Packages and keeps last good data', async () => {
+  let now = 1_000_000;
+  let fail = false;
+  const feed = [
+    { event:'Care Package', timestamp:900_000, type:'minor' },
+    { event:'Auction', timestamp:1_010_000, type:'minor' },
+    { event:'Care Package', timestamp:1_060_000, type:'minor' },
+    { event:'Care Package', timestamp:1_020_000, type:'minor' },
+    { event:'Care Package', timestamp:1_050_000, type:'minor' },
+    { event:'Care Package', timestamp:1_030_000, type:'minor' },
+    { event:'Care Package', timestamp:1_040_000, type:'minor' },
+    { event:'Care Package', timestamp:1_070_000, type:'minor' }
+  ];
+  const schedule = new BrookeCarePackageSchedule((async () => {
+    if (fail) throw new Error('offline');
+    return new Response(JSON.stringify(feed));
+  }) as typeof fetch, () => now);
+  await schedule.refresh();
+  assert.deepEqual(schedule.snapshot().events.map(event => event.timestamp),
+    [1_020_000,1_030_000,1_040_000,1_050_000,1_060_000]);
+  assert.equal(schedule.snapshot().status,'OK');
+
+  fail = true; now += 61_000;
+  await assert.rejects(schedule.refresh());
+  assert.equal(schedule.snapshot().events.length,5);
+  assert.equal(schedule.snapshot().status,'OK');
+  now += 60_000;
+  assert.equal(schedule.snapshot().status,'STALE');
+});
+
 test('HTTP provider accepts canonical event feed V1', async () => {
   const expiresAt = Date.now() + 60_000;
   const body = JSON.stringify({ version: 1, events: [{
