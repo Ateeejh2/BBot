@@ -53,10 +53,14 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     assert.equal((await createJob({instanceId:'mega',eventType:'manual.test',target:{x:1,y:64,z:2},expiresAt,command:'/stop'})).status,400);
     const createdJobResponse=await createJob({instanceId:'Mega-A',eventType:'manual.test',target:{x:1.5,y:64,z:-2},expiresAt});
     assert.equal(createdJobResponse.status,201);
-    const createdJob=await createdJobResponse.json() as {id:string;instanceId:string;eventType:string;state:string;x:number;y:number;z:number};
+    const createdJob=await createdJobResponse.json() as {id:string;instanceId:string;eventType:string;state:string;x:number;y:number;z:number;attempts:number;maxAttempts:number;lastFailure?:string;retryAt?:number};
     assert.match(createdJob.id,/^manual-[0-9a-f-]{36}$/);
     assert.deepEqual({instanceId:createdJob.instanceId,eventType:createdJob.eventType,state:createdJob.state,x:createdJob.x,y:createdJob.y,z:createdJob.z},
       {instanceId:'mega-a',eventType:'manual.test',state:'QUEUED',x:1.5,y:64,z:-2});
+    assert.equal(createdJob.attempts,0);
+    assert.equal(createdJob.maxAttempts,3);
+    assert.equal(createdJob.lastFailure,undefined);
+    assert.equal(createdJob.retryAt,undefined);
     const jobStatus=await (await request('/api/v1/status')).json() as {jobs:Array<{id:string}>};
     assert.equal(jobStatus.jobs.some(job=>job.id===createdJob.id),true);
     const ws = new WebSocket(base.replace('http:', 'ws:') + '/api/v1/events', {origin:'http://localhost:5173'});
