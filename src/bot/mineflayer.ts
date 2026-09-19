@@ -25,7 +25,6 @@ export function createBotOptions(config: Config, index: number): BotOptions {
     onMsaCode: data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`) };
 }
 export function createMineflayerTransport(config: Config, index: number, events: TransportEvents): BotTransport {
-  const legacyMovement = process.env.BBOT_LEGACY_MOVEMENT === '1';
   const account = config.accounts[index]!;
   const bot = createBot(createBotOptions(config, index));
   bot.loadPlugin(pathfinder);
@@ -37,7 +36,6 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let correctionTraceRemaining = 0;
   let correctionAckPending = 0;
   let correctionSequence = 0;
-  let standingBeforePosition: boolean | undefined;
   let lastCorrectionAt = 0;
   let lastBotVelocityAt = 0;
   let lastBotVelocity: { x:number; y:number; z:number } | undefined;
@@ -139,8 +137,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
 
             const yaw = Math.atan2(-dx,-dz);
             const turn = angleDelta(yaw,bot.entity.yaw);
-            const needsJump = dy > 0.35;
-            if ((!legacyMovement || needsJump) && Math.abs(turn) > 0.04) {
+            if (Math.abs(turn) > 0.04) {
               const step = Math.max(-0.12,Math.min(0.12,turn));
               void bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
             }
@@ -148,10 +145,11 @@ export function createMineflayerTransport(config: Config, index: number, events:
 
             const remainingTurn = Math.abs(angleDelta(yaw,bot.entity.yaw));
             const aligned = remainingTurn <= 0.28;
+            const needsJump = dy > 0.35;
             const runtimeEntity = bot.entity as typeof bot.entity & { isCollidedHorizontally?:boolean };
             const collided = Boolean(runtimeEntity.isCollidedHorizontally);
 
-            if (collided && !needsJump && (legacyMovement || aligned)) {
+            if (collided && !needsJump && aligned) {
               bot.clearControlStates();
               events.diagnostic?.('control walk collision',{
                 waypointX:waypoint.x,waypointY:waypoint.y,waypointZ:waypoint.z,
@@ -161,51 +159,15 @@ export function createMineflayerTransport(config: Config, index: number, events:
               break;
             }
 
-            if (legacyMovement && !needsJump) {
-              // Reproduce the old bot.js control timing: its deprecated "physicTick"
-              // listener ran after simulation but before Mineflayer sent that tick's
-              // movement packet. Controls affect the next physics step while lookAt()
-              // updates the yaw carried by the current outgoing packet.
-              await new Promise<void>((resolve,reject) => {
-                let settled=false;
-                const finish=(error?:unknown)=>{
-                  if(settled)return;settled=true;
-                  signal.removeEventListener('abort',onAbort);
-                  bot.removeListener('physicTick',onTick);
-                  if(error)reject(error);else resolve();
-                };
-                const onAbort=()=>finish(signal.reason instanceof Error?signal.reason:new Error('Movement aborted'));
-                const onTick=()=>{
-                  try{
-                    const current=bot.entity?.position;
-                    if(!current)throw new Error('Position unavailable');
-                    bot.setControlState('sneak',false);
-                    bot.setControlState('back',false);
-                    bot.setControlState('left',false);
-                    bot.setControlState('right',false);
-                    bot.setControlState('forward',true);
-                    bot.setControlState('sprint',true);
-                    bot.setControlState('jump',false);
-                    const targetYaw=Math.atan2(-(waypoint.x-current.x),-(waypoint.z-current.z));
-                    void bot.look(targetYaw,bot.entity.pitch,false);
-                    finish();
-                  }catch(error){finish(error);}
-                };
-                signal.addEventListener('abort',onAbort,{once:true});
-                bot.once('physicTick',onTick);
-              });
-            } else {
-              const moveForward = aligned && !collided;
-              const canSprint = aligned && !collided && !needsJump;
-              bot.setControlState('sneak',false);
-              bot.setControlState('back',false);
-              bot.setControlState('left',false);
-              bot.setControlState('right',false);
-              bot.setControlState('forward',moveForward);
-              bot.setControlState('sprint',canSprint);
-              bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
-              await bot.waitForTicks(1);
-            }
+            const canSprint = aligned && !collided && !needsJump;
+            bot.setControlState('sneak',false);
+            bot.setControlState('back',false);
+            bot.setControlState('left',false);
+            bot.setControlState('right',false);
+            bot.setControlState('forward',aligned && !collided);
+            bot.setControlState('sprint',canSprint);
+            bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
+            await bot.waitForTicks(1);
           }
           bot.setControlState('jump',false);
           if (collisionReplan) break;
@@ -347,12 +309,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     events.chestAppeared?.({ x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z });
   };
   const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
-    standingBeforePosition = undefined;
     if (closed || !bot.entity?.position) return;
-    // Mineflayer 4.39.0 forces entity.onGround=false for every clientbound position packet.
-    // Vanilla 1.8 keeps the local standing state and only replies to the teleport with onGround=false.
-    // Preserve standing only after the initial spawn so login still begins airborne.
-    if (lastSpawnAt > 0) standingBeforePosition = Boolean(bot.entity.onGround);
     const receivedAt=Date.now();
     correctionTraceUntil = receivedAt + 500;
     correctionTraceRemaining = 10;
@@ -474,12 +431,6 @@ export function createMineflayerTransport(config: Config, index: number, events:
     }
     return originalClientWrite(name,params);
   };
-  const restoreStandingAfterPosition = () => {
-    if(closed)return;
-    const standing=standingBeforePosition;
-    standingBeforePosition=undefined;
-    if(standing!==undefined && bot.entity) bot.entity.onGround=standing;
-  };
   const velocityPacket = (packet:{entityId:number;velocity:{x:number;y:number;z:number}}) => {
     if(closed||packet.entityId!==bot.entity?.id)return;
     const now=Date.now();
@@ -517,13 +468,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
       onGround:Boolean(bot.entity.onGround)
     });
   };
-  const attachStandingRestore = () => bot._client.on('position', restoreStandingAfterPosition);
   bot._client.prependListener('entity_velocity', velocityPacket);
   bot._client.prependListener('position', positionPacket);
-  // createBot() injects Mineflayer's internal plugins on the next inject_allowed turn.
-  // Register the restore listener only after that injection, otherwise the physics
-  // plugin's position handler runs later and overwrites the restored standing state.
-  bot.once('inject_allowed', attachStandingRestore);
   bot.on('physicsTick', physicsTickTrace);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
   bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
@@ -627,8 +573,6 @@ export function createMineflayerTransport(config: Config, index: number, events:
       stopPath();
       bot._client.removeListener('entity_velocity', velocityPacket);
       bot._client.removeListener('position', positionPacket);
-      bot.removeListener('inject_allowed', attachStandingRestore);
-      bot._client.removeListener('position', restoreStandingAfterPosition);
       bot.removeListener('physicsTick', physicsTickTrace);
       runtimeClient.write = originalClientWrite;
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
