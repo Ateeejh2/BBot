@@ -25,6 +25,7 @@ export function createBotOptions(config: Config, index: number): BotOptions {
     onMsaCode: data => process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`) };
 }
 export function createMineflayerTransport(config: Config, index: number, events: TransportEvents): BotTransport {
+  const legacyMovement = process.env.BBOT_LEGACY_MOVEMENT === '1';
   const account = config.accounts[index]!;
   const bot = createBot(createBotOptions(config, index));
   bot.loadPlugin(pathfinder);
@@ -160,12 +161,21 @@ export function createMineflayerTransport(config: Config, index: number, events:
               break;
             }
 
-            const canSprint = aligned && !collided && !needsJump;
+            // A/B compatibility mode based on the old control-only script:
+            // keep forward+sprint latched through flat turns instead of toggling them
+            // whenever steering briefly falls outside the alignment threshold.
+            // Jumps still wait for alignment so pathfinder step-up behavior stays safe.
+            const moveForward = legacyMovement
+              ? !collided && (!needsJump || aligned)
+              : aligned && !collided;
+            const canSprint = legacyMovement
+              ? !collided && !needsJump
+              : aligned && !collided && !needsJump;
             bot.setControlState('sneak',false);
             bot.setControlState('back',false);
             bot.setControlState('left',false);
             bot.setControlState('right',false);
-            bot.setControlState('forward',aligned && !collided);
+            bot.setControlState('forward',moveForward);
             bot.setControlState('sprint',canSprint);
             bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
             await bot.waitForTicks(1);
