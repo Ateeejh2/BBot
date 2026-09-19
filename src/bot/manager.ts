@@ -1,12 +1,12 @@
 import { StateMachine, Generation } from '../core/state.js';
-import { UnknownReturnClassifier, type BotView, type GameEvent, type ReturnClassifier, type ReturnReason } from '../core/types.js';
+import { UnknownReturnClassifier, type BotView, type GameEvent, type JobFailureReason, type ReturnClassifier, type ReturnReason } from '../core/types.js';
 import type { Config } from '../config/index.js';
 import { Logger, safeKickReason } from '../logging/logger.js';
 import { parseInstance } from '../instances/parser.js';
 import { InstanceRegistry } from '../instances/registry.js';
 import { DistributionManager } from '../instances/distribution.js';
 import { Scheduler } from '../scheduler/scheduler.js';
-import { PathfindingController } from '../pathfinding/controller.js';
+import { PathfindingController, PathfindingError } from '../pathfinding/controller.js';
 import { backoff } from '../recovery/backoff.js';
 import type { TaskHandler } from '../events/task.js';
 import type { BotTransport, TransportFactory } from './transport.js';
@@ -293,11 +293,11 @@ export class BotManager {
     b.dueAt = this.now() + backoff(b.reconnectAttempts++, this.config.reconnect, this.random);
     try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
   }
-  private cancelExecution(b: ManagedBot, idle: boolean): void {
+  private cancelExecution(b: ManagedBot, idle: boolean, reason: JobFailureReason = 'INSTANCE_LOST'): void {
     const execution = b.execution;
     b.execution = undefined; execution?.abort.abort();
     try { b.transport?.stopPath(); } catch { this.log(b, 'path stop failed'); }
-    if (execution) this.scheduler.release(execution.id, b.id, execution.lease, this.now());
+    if (execution) this.scheduler.release(execution.id, b.id, execution.lease, this.now(), reason);
     if (idle && ['PATHFINDING', 'WORKING'].includes(b.machine.state)) b.machine.transition('IN_PIT_IDLE');
   }
   private execute(b: ManagedBot, id: string, lease: number, event: GameEvent): void {
@@ -310,6 +310,8 @@ export class BotManager {
       b.generation.isCurrent(execution.generation) && b.instanceId === event.instanceId && this.scheduler.owns(id, b.id, lease);
     void (async () => {
       let pathRan = false;
+      let stage: 'PATH' | 'TASK' = 'PATH';
+      let taskTimedOut = false;
       try {
         await this.paths.submit(`${b.id}:${id}:${lease}`, execution.abort.signal,
           async signal => {
@@ -331,9 +333,10 @@ export class BotManager {
             }
           }, () => transport.stopPath());
         if (!current()) return;
-        if (event.expiresAt <= this.now()) throw new Error('Expired');
+        if (event.expiresAt <= this.now()) throw new Error('JOB_EXPIRED');
+        stage = 'TASK';
         this.scheduler.running(id, b.id, lease, this.now()); b.machine.transition('WORKING');
-        const timer = setTimeout(() => execution.abort.abort(), this.config.taskTimeoutMs);
+        const timer = setTimeout(() => { taskTimedOut = true; execution.abort.abort(); }, this.config.taskTimeoutMs);
         let taskAbort: (() => void) | undefined;
         try {
           await new Promise<void>((resolve, reject) => {
@@ -345,9 +348,16 @@ export class BotManager {
           });
         } finally { clearTimeout(timer); if (taskAbort) execution.abort.signal.removeEventListener('abort', taskAbort); }
         if (current()) { this.scheduler.complete(id, b.id, lease, this.now()); this.log(b, 'job completed', { eventId: event.id }); }
-      } catch {
+      } catch (error) {
         if (!pathRan) b.pathFailed++;
-        if (b.execution === execution) { this.scheduler.release(id, b.id, lease, this.now()); this.log(b, 'job returned or failed', { eventId: event.id }); }
+        if (b.execution === execution) {
+          const reason: JobFailureReason = error instanceof Error && error.message === 'JOB_EXPIRED' ? 'JOB_EXPIRED' :
+            stage === 'PATH' && error instanceof PathfindingError ? error.code :
+            stage === 'TASK' ? (taskTimedOut ? 'TASK_TIMEOUT' : 'TASK_FAILED') : 'PATH_FAILED';
+          this.scheduler.release(id, b.id, lease, this.now(), reason);
+          const job = this.scheduler.jobs.get(id);
+          this.log(b, 'job returned or failed', { eventId: event.id, failureReason: reason, attempt: job?.attempts, jobState: job?.state });
+        }
       } finally {
         if (b.execution === execution && b.generation.isCurrent(execution.generation)) {
           b.execution = undefined;
