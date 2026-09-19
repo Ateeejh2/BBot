@@ -1,0 +1,26 @@
+name: Windows unit and mock tests
+on:
+  pull_request:
+  push:
+    branches: [main, feature/windows-bbot]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm.cmd ci
+      - run: npm.cmd test
+      - run: npm.cmd run test:soak

@@ -1,0 +1,51 @@
+# 設計と拡張点
+
+## ライフサイクル
+
+BotManagerがStateMachineを通して状態を変更する。接続イベントは接続世代番号、Job処理はBot generationとJob leaseで保護する。Instance所属喪失・切断でgenerationを進め、実行をabortし、所属を解除する。古い接続のmessage/spawn/endは無視する。
+
+JobはBotとは別にSchedulerが所有する。同じIDの重複イベントは、期限まで保持したJobにより除外する。SchedulerはQUEUED→ASSIGNED→RUNNING→COMPLETED、失敗時は試行上限以内ならQUEUED、上限到達ならFAILED、期限到達ならEXPIREDにする。割当とlease更新は単一イベントループ内で同期実行し、同じJobを複数Botへ同時割当しない。TaskHandlerの外部効果を含むexactly-onceは保証しない。
+
+Schedulerの移動コストは現在位置からの3D直線距離。全候補の経路探索は行わず、低コスト近似で選ぶ。実際の障害物を考慮した最短経路順とは限らない。対象instance所属が確定し、IN_PIT_IDLEかつ位置を持つBotだけを候補にする。
+
+## 転送通知と未知のLobby復帰
+
+独立parserは色コードと大小文字を許容し、文全体の構造に一致した場合だけinstance IDを小文字へ正規化する。mini/megaを固定しない。instance IDは英数字・underscore・dot・hyphen、最大128文字を現在の明示的な形式制約とする。別形式が実測されたらparserとテストを変更する。
+
+Mineflayer adapterは既定でsystem messageだけをparserへ渡す。1.8.9ではchat positionにサーバー通知が届くか未確認のため、debug時は通知形式の候補をchannel別に記録し、ユーザーが実測して`TRANSFER_MESSAGE_CHANNEL=chat`を明示したときだけ送信者情報なしのchatも扱う。chatは送信元認証の証拠ではなく、完全一致文章のspoofリスクがある。Titleは使わない。通知受信で「確認済みinstance」を登録するが、Bot所属はその後のspawnで確定する。転送先の通知と到着の区別を保つ。この順序は安全側の初期実装であり、実ネットワークの保証ではない。サーバーがsystem扱いでプレイヤー文章を送る場合は、構造一致だけでは送信元を認証できない。
+
+respawnはPit→Lobbyの証拠にはならない。未知のワールド変更はUNKNOWN_RETURNとして再同期する。AFK判定は`ReturnClassifier`の未実装placeholderであり、`UnknownReturnClassifier`は常に未判定。正しいAFKメッセージが判明後、parserを追加してBotManagerへ注入する。Titleで推定しない。verified lobby detectorは`notifyLobbyReturn`を呼べる。respawnも既知通知もない無言の復帰は自動検出できない。
+
+## 動的instanceと配置
+
+Registryは観測結果の集合であり全instance一覧ではない。ACTIVE/SUSPECT/INACTIVEを保持し、単独異常でINACTIVEにはしない。10秒以内に同instanceの異なる2 Bot以上が未知復帰/切断するとSUSPECT。AFKとplanned移動は相関計算から除外。これは障害の疑いでありcrash断定ではない。再接続直後の大規模なネットワーク断もSUSPECTになり得る。
+
+所属が確認済みのBotがいる間はlastSeenを更新。疑いはheartbeatだけでは解除せず、新たな転送観測でACTIVEへ戻す。空instanceは観測経過時間で状態変更。容量到達時だけ古いINACTIVEかつ空の履歴を退避せず削除し、全て保持中なら新規登録を拒否してログに残す。履歴削除後に同IDが現れた場合はfirstSeenを新しい観測時刻とする。
+
+DistributionManagerはACTIVE集合に対するceil平均超過と最小配置数との差を評価する。実Botよりinstanceが多い場合はBotを1体ずつに近づけるところで止める。空の観測済み新instanceも評価対象。再抽選は1体ずつ、全体cooldownとBot別backoff、起動期間内の有限budgetで止める。新instanceを必ず発見する保証も完全均等の保証もない。配置済みBot数が既に均等なら定期探索目的で移動させない。
+
+## 経路探索とタスク
+
+PathfindingControllerのslotは探索だけでなく移動全体を含む。pathfinderが障害物やchunkに応じて自動再探索しても全20 Botが同時計算しない。キュー上限100、既定同時数2。探索の1 tick時間を10msに設定し、全体timeout30秒。同期的に`setGoal(null)`とcontrol state解除を行ってからslotを返す。GoalNear半径1、ブロック座標で実際に到達したかも確認する。
+
+Mineflayer adapterのmovementではdigging、ブロック設置用scaffolding、1x1 tower、parkourを無効化している。サーバーの地形変更を行わない。ゲーム内のあらゆる危険な地形を回避できる保証はないため、実機移動試験は管理された座標で行う。
+
+`TaskHandler.onArrive(BotView, event, signal)`は現在Mockだけ。BotViewは読み取り用でMineflayer本体を渡さない。実動作追加時は必要な操作だけをBotTransportの能力interfaceへ追加し、世代確認・AbortSignal・冪等性を維持する。無制限の処理やsignalを無視するpluginは同一プロセスでは強制停止できない。信頼できない/CPU負荷の重いタスクは将来worker境界を導入する。
+
+## Event API
+
+`EventProvider.fetchEvents(signal?)`をアプリ全体で1つ使う。Mockは期限付きイベントを返す。HttpEventProviderはURLとresponse parserをコンストラクタで注入し、サイト固有仕様を持たない。fetch timeout、有限retry、429/5xx、Retry-After（秒/HTTP日付）、最小リクエスト間隔、同時呼出し共有、bodyサイズ制限、JSON/schema errorを扱う。parse error/通常4xxは即失敗。Retry-Afterが長い場合は省略して早期リトライせず待つ。AbortSignalで待機を終了できる。
+
+イベントはid、instanceId、target{x,y,z}、type、expiresAt（UTC epochミリ秒）、任意metadata。Provider追加時の仕様調整はここで行う。Event API認証情報をJob metadataやURLへ埋め込まない。現在のHTTP interfaceは認証header注入を提供していないため、正式APIで必要なら専用Providerを追加する。
+
+## 長時間運用と永続化
+
+共有250msタイマーで最大20 Botの状態を確認。各Botのphysics tickへ独自のscheduler処理は追加しない。Fetcherは非重複で共有、snapshot5秒、metrics60秒。path/job/HTTP待機のtimerとlistenerはfinally/abortで解除する。ログはローテーション、registry/jobは容量制限。TaskHandlerの非協調的PromiseやMineflayer内部listenerの長期挙動はWindows実機で別途確認する。
+
+JSON snapshotは単一writer、temp/flush/renameとbackupを使用。電源断に対するtransactional exactly-onceを提供するものではない。プラットフォーム固有のrename失敗・ウイルス対策ソフトによるロックはログに残し、次回保存を再試行する。破損はbackup復旧、両方破損なら起動を停止する。
+
+現在の同一プロセスのメリットは共有Fetcher/キューとWindowsでのデバッグ容易性。将来worker化する場合もScheduler/Registryを中央に置き、BotTransportのメッセージへconnection generation/job leaseを含める。今回worker分割、クラウド運用、サーバー側変更は含めない。
+
+1.8.9の静的な対応確認: lockfileのmineflayer 4.39.0、mineflayer-pathfinder 2.4.5、minecraft-protocol 1.68.0、minecraft-data 3.116.0を確認。mineflayerの公式READMEはMinecraft 1.8系列を対応対象に挙げ、version指定例に1.8.9を示している。minecraft-protocolの代表サポート一覧は1.8.8であり、導入済みminecraft-dataは1.8.9指定に対して1.8.8系データ/プロトコル47を解決する。serializer/deserializerとpathfinder API exportのオフラインスモークテストを行う。これらは1.8.9実ネットワークでの互換性を保証しない。pathfinder READMEに1.8.9の個別動作保証は見当たらず、移動・physics・server切替・inventoryは実機検証待ち。
+
+参照: [Mineflayer API](https://github.com/PrismarineJS/mineflayer/blob/master/docs/api.md)、[mineflayer-pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder)。実装時にはlockfileで導入したライブラリの型定義とコードも確認した。
