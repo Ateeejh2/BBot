@@ -24,6 +24,7 @@ export interface CarePackageScheduleSnapshot {
 export interface CarePackageSchedule {
   refresh(): Promise<void>;
   snapshot(): CarePackageScheduleSnapshot;
+  eventsBetween?(from:number,to:number): UpcomingCarePackage[];
 }
 
 function parseBrookeEvents(value: unknown): BrookeEvent[] {
@@ -52,6 +53,10 @@ export class BrookeCarePackageSchedule implements CarePackageSchedule {
     if (this.pending) return this.pending;
     this.pending = this.load().finally(() => { this.pending = undefined; });
     return this.pending;
+  }
+
+  eventsBetween(from:number,to:number): UpcomingCarePackage[] {
+    return this.timestamps.filter(timestamp=>timestamp>=from&&timestamp<=to).map(timestamp=>({timestamp}));
   }
 
   snapshot(): CarePackageScheduleSnapshot {
