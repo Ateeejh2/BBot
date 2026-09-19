@@ -20,7 +20,7 @@ interface ManagedBot {
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
-  preparation?: EventPreparation; debugWalk?: DebugWalk; debugWalkDone: boolean;
+  preparation?: EventPreparation; debugWalk?: DebugWalk; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -202,7 +202,10 @@ export class BotManager {
         this.log(b, 'join timed out; no confirmed instance');
       }
       if (b.machine.state === 'RECOVERING' && !b.ready && now >= b.deadline) { this.disconnected(b); continue; }
-      if (this.movementDebug && b.machine.state === 'LOBBY' && b.ready && !b.debugWalkDone) this.startDebugWalk(b);
+      if (this.movementDebug && b.machine.state === 'LOBBY' && b.ready && !b.debugWalkDone) {
+        const quietSince = Math.max(b.debugSpawnAt ?? now, b.lastPositionCorrectionAt ?? Number.NEGATIVE_INFINITY);
+        if (now - quietSince >= 1500) this.startDebugWalk(b);
+      }
       if (!this.movementDebug && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
@@ -265,6 +268,7 @@ export class BotManager {
         },
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
+          if (name === 'server position correction') b.lastPositionCorrectionAt = this.now();
           const level = name.startsWith('viewer ') || name === 'server position correction' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...fields });
@@ -298,7 +302,8 @@ export class BotManager {
       else if (b.machine.state === 'PATHFINDING') this.cancelDebugWalk(b, true);
       else if (b.machine.state !== 'LOBBY') return;
       b.debugWalkDone = false;
-      this.startDebugWalk(b);
+      b.debugSpawnAt = this.now();
+      this.log(b,'movement debug waiting for position settle',{quietMs:1500});
       return;
     }
     if (b.machine.state === 'CONNECTING') {
@@ -314,7 +319,7 @@ export class BotManager {
   }
   private worldReset(b: ManagedBot): void {
     b.ready = false;
-    if (this.movementDebug) { this.cancelDebugWalk(b, true); b.debugWalkDone = false; return; }
+    if (this.movementDebug) { this.cancelDebugWalk(b, true); b.debugWalkDone = false; b.debugSpawnAt = undefined; return; }
     if (b.machine.state === 'JOINING_PIT' || b.machine.state === 'CONNECTING') return;
     this.recover(b, 'UNKNOWN_RETURN'); b.deadline = this.now() + this.config.joinTimeoutMs;
   }
@@ -364,6 +369,7 @@ export class BotManager {
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
+    b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined;
     b.machine.transition('DISCONNECTED');
     b.dueAt = this.now() + backoff(b.reconnectAttempts++, this.config.reconnect, this.random);
     try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
