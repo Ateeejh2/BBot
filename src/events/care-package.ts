@@ -49,6 +49,7 @@ export class CarePackageCoordinator {
 
   markLaunch(instanceId:string,timestamp:number,state:'LAUNCHING'|'DROPPED'|'LAUNCH_FAILED'):void {
     const tracked=this.get(timestamp,instanceId);
+    if (tracked.chest) return;
     tracked.state=state;
   }
 
