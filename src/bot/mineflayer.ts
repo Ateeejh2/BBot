@@ -31,6 +31,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let viewerStarted = false;
   let viewerStarting = false;
   let lastSpawnAt = 0;
+  let correctionTraceUntil = 0;
+  let correctionTraceRemaining = 0;
   const stopPath = () => { bot.clearControlStates(); };
   const walkingMovements = () => {
     const movements = new Movements(bot);
@@ -219,6 +221,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   };
   const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
     if (closed || !bot.entity?.position) return;
+    correctionTraceUntil = Date.now() + 200;
+    correctionTraceRemaining = 4;
     const before = bot.entity.position;
     const relative = typeof packet.flags === 'object'
       ? { x:Boolean(packet.flags.x), y:Boolean(packet.flags.y), z:Boolean(packet.flags.z) }
@@ -284,6 +288,23 @@ export function createMineflayerTransport(config: Config, index: number, events:
       sprint: bot.getControlState('sprint'),
       onGround: Boolean(bot.entity.onGround)
     });
+  };
+  const runtimeClient = bot._client as unknown as { write(name:string, params:Record<string, unknown>): unknown };
+  const originalClientWrite = runtimeClient.write.bind(bot._client);
+  runtimeClient.write = (name:string, params:Record<string, unknown>) => {
+    if (!closed && correctionTraceRemaining > 0 && Date.now() <= correctionTraceUntil &&
+        ['position','position_look','look','flying','teleport_confirm'].includes(name)) {
+      correctionTraceRemaining--;
+      const numeric = (value:unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.round(value*1000)/1000 : null;
+      events.diagnostic?.('movement packet after correction', {
+        packet:name,
+        x:numeric(params.x), y:numeric(params.y), z:numeric(params.z),
+        yaw:numeric(params.yaw), pitch:numeric(params.pitch),
+        onGround:typeof params.onGround === 'boolean' ? params.onGround : null,
+        teleportId:typeof params.teleportId === 'number' ? params.teleportId : null
+      });
+    }
+    return originalClientWrite(name,params);
   };
   bot._client.prependListener('position', positionPacket);
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
@@ -383,6 +404,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       if (closed) return; closed = true;
       stopPath();
       bot._client.removeListener('position', positionPacket);
+      runtimeClient.write = originalClientWrite;
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
       bot.removeListener('entitySpawn', entitySpawn); bot.removeListener('blockUpdate', blockUpdate);
       bot.removeListener('kicked', kicked); bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
