@@ -4,7 +4,7 @@ export interface GameEvent {
   expiresAt: number; metadata?: Record<string, unknown>;
 }
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'LOBBY' | 'JOINING_PIT' |
-  'IN_PIT_IDLE' | 'PATHFINDING' | 'WORKING' | 'RECOVERING';
+  'IN_PIT_IDLE' | 'PREPARING_EVENT' | 'PATHFINDING' | 'WORKING' | 'RECOVERING';
 export type JobState = 'QUEUED' | 'ASSIGNED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED';
 export type JobFailureReason =
   | 'PATH_NOT_FOUND' | 'PATH_TIMEOUT' | 'PATH_CANCELLED' | 'PATH_REJECTED' | 'PATH_FAILED'
