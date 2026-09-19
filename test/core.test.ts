@@ -72,6 +72,16 @@ test('scheduler chooses nearest eligible same-instance bot without double assign
   const assigned = s.assign([bot('far', 20), bot('near', 1), busy, wrong], 1);
   assert.deepEqual(assigned.map(a => a.bot.id), ['near', 'far']); assert.equal(s.assign([bot('near')], 2).length, 0);
 });
+test('scheduler can pin a queued job to a specific eligible bot', () => {
+  const s = new Scheduler(); s.enqueue(event(),0);
+  const pinned = bot('pinned',20);
+  const nearer = bot('nearer',1);
+  const assignment = s.assignTo('e1',pinned,1);
+  assert.equal(assignment?.bot.id,'pinned');
+  assert.equal(s.jobs.get('e1')?.botId,'pinned');
+  assert.equal(s.assign([nearer],2).length,0);
+});
+
 test('job return records reason and retry time; stale completion cannot finish reassigned job', () => {
   const s = new Scheduler(3, 100, 10); s.enqueue(event(), 0);
   const a = s.assign([bot('a')], 1)[0]!; const lease = a.job.lease;
