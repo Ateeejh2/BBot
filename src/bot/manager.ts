@@ -125,9 +125,9 @@ export class BotManager {
     void transport.launchToward(target, preparation.abort.signal).then(() => {
       if (b.preparation !== preparation || !b.generation.isCurrent(preparation.generation)) return;
       this.log(b, 'launch pad test completed');
-    }, () => {
+    }, error => {
       if (b.preparation !== preparation || !b.generation.isCurrent(preparation.generation)) return;
-      this.log(b, 'launch pad test failed');
+      this.log(b, 'launch pad test failed', { reason:this.movementFailure(error) });
     }).finally(() => {
       if (b.preparation !== preparation || !b.generation.isCurrent(preparation.generation)) return;
       b.preparation = undefined;
@@ -168,6 +168,13 @@ export class BotManager {
   private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, jobId: b.execution?.id, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
+  }
+  private movementFailure(error:unknown):string {
+    const message=error instanceof Error?error.message:'';
+    const allowed=new Set(['No path to the goal!','Path planning timeout','Control walk timeout','Position unavailable','Control walk stuck',
+      'Control walk ended before arrival','Control turn timeout','Launch pad not found','Launch pad unavailable','Launch cancelled',
+      'Launch landing timeout','Launch pad did not trigger']);
+    return allowed.has(message)?message:'Movement failed';
   }
   tick(): void {
     if (this.stopped) return;
