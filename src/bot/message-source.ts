@@ -11,3 +11,15 @@ export function eligibleTransferChannel(
   if (!sender) return true;
   return selected === 'chat' && exactTransfer;
 }
+
+
+/** Exact server event announcements may arrive as chat or system on legacy protocol.
+ * Require sender-less text so ordinary player chat cannot trigger server event automation.
+ */
+export function eligibleServerAnnouncementChannel(
+  position: string,
+  sender: string | null | undefined,
+  exactAnnouncement: boolean
+): boolean {
+  return exactAnnouncement && !sender && (position === 'system' || position === 'chat');
+}
