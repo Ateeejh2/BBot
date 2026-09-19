@@ -112,7 +112,7 @@ export class BotManager {
   }
   joinPit(id: string): void {
     const b = this.controlled(id);
-    if (b.machine.state !== 'LOBBY' || !b.ready) throw new Error('INVALID_STATE');
+    if (this.movementDebug || b.machine.state !== 'LOBBY' || !b.ready) throw new Error('INVALID_STATE');
     this.join(b);
   }
   testLaunchPad(id: string): { target: { x:number; z:number } } {
@@ -202,6 +202,7 @@ export class BotManager {
         this.log(b, 'join timed out; no confirmed instance');
       }
       if (b.machine.state === 'RECOVERING' && !b.ready && now >= b.deadline) { this.disconnected(b); continue; }
+      if (this.movementDebug && b.machine.state === 'LOBBY' && b.ready && !b.debugWalkDone) this.startDebugWalk(b);
       if (!this.movementDebug && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
