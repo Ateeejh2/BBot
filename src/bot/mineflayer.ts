@@ -372,9 +372,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
       const seen=new Set<string>();
       const parts:string[]=[];
       for(const ox of [-0.31,0,0.31]) for(const oz of [-0.31,0,0.31]) for(const oy of [-0.01,-0.51,-1.01]){
-        const block=bot.blockAt(point.offset ? point.offset(ox,oy,oz) : before.offset(
-          point.x-before.x+ox, point.y-before.y+oy, point.z-before.z+oz
-        )) as unknown as { name?:string; metadata?:number; position?:{x:number;y:number;z:number}; shapes?:number[][] } | null;
+        const sample=before.offset(point.x-before.x+ox, point.y-before.y+oy, point.z-before.z+oz);
+        const block=bot.blockAt(sample) as unknown as { name?:string; metadata?:number; position?:{x:number;y:number;z:number}; shapes?:number[][] } | null;
         if(!block?.position||block.name==='air')continue;
         const key=`${block.position.x},${block.position.y},${block.position.z}`;
         if(seen.has(key))continue;
