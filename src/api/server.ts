@@ -53,13 +53,14 @@ function manualJob(value: unknown, now: number): GameEvent {
 export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore, carePackages?: CarePackageSchedule) {
   const origin = config.api.origin!;
   const performance = new RuntimePerformanceMonitor();
-  const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
+  const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
     if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package launch started|care package launch completed|care package launch failed|care package chest detected|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
-      kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined });
+      kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
+      detail: message === 'launch pad test failed' && typeof fields.reason === 'string' ? fields.reason : undefined });
     if (logs.length > 100) logs.shift();
     broadcast();
   });
