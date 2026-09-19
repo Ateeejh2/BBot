@@ -50,6 +50,7 @@ export class BotManager {
       concurrency: this.paths.concurrency,
       bots: this.bots.map(b => ({
         botId: b.id,
+        pingMs: b.transport?.ping?.(),
         pathAttempts: b.pathAttempts,
         pathCompleted: b.pathCompleted,
         pathFailed: b.pathFailed,
