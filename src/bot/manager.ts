@@ -12,7 +12,7 @@ import type { TaskHandler } from '../events/task.js';
 import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
-interface EventPreparation { timestamp:number; generation:number; abort:AbortController }
+interface EventPreparation { timestamp:number; generation:number; abort:AbortController; launched?:boolean; chestEvent?:GameEvent }
 interface DebugWalk { generation:number; abort:AbortController }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
@@ -263,6 +263,14 @@ export class BotManager {
           if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages) return;
           const event=this.carePackages.observeChest(b.instanceId,position,this.now());
           if(!event)return;
+          const scheduledAt=typeof event.metadata?.scheduledAt==='number'?event.metadata.scheduledAt:undefined;
+          const reserved=this.bots.find(bot=>bot.instanceId===event.instanceId&&bot.preparation&&bot.preparation.timestamp===scheduledAt);
+          if(reserved?.preparation){
+            reserved.preparation.chestEvent=event;
+            this.log(b,'care package chest detected',{eventId:event.id,x:position.x,y:position.y,z:position.z,reservedBotId:reserved.id});
+            this.continuePreparedCarePackage(reserved,reserved.preparation);
+            return;
+          }
           const accepted=this.scheduler.enqueue(event,this.now());
           this.log(b,'care package chest detected',{eventId:event.id,x:position.x,y:position.y,z:position.z,accepted});
         },
@@ -384,19 +392,41 @@ export class BotManager {
     bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
     this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
     this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
-    void transport.launchToward!({x:target.x,z:target.z},preparation.abort.signal).then(()=>{
+    void transport.launchToward!({x:target.x,z:target.z},preparation.abort.signal,'LAUNCH').then(()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
+      preparation.launched=true;
       this.carePackages?.markLaunch(bot.instanceId,timestamp,'DROPPED');
-      this.log(bot,'care package launch completed',{scheduledAt:timestamp});
+      this.log(bot,'care package launch completed',{scheduledAt:timestamp,completion:'LAUNCH'});
+      if(!preparation.chestEvent)this.log(bot,'care package waiting for chest',{scheduledAt:timestamp});
+      this.continuePreparedCarePackage(bot,preparation);
     },()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
       this.carePackages?.markLaunch(bot.instanceId,timestamp,'LAUNCH_FAILED');
       this.log(bot,'care package launch failed',{scheduledAt:timestamp});
-    }).finally(()=>{
-      if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation))return;
+      const fallback=preparation.chestEvent;
       bot.preparation=undefined;
       if(bot.machine.state==='PREPARING_EVENT')bot.machine.transition('IN_PIT_IDLE');
+      if(fallback)this.scheduler.enqueue(fallback,this.now());
     });
+  }
+  private continuePreparedCarePackage(bot:ManagedBot,preparation:EventPreparation):void {
+    const event=preparation.chestEvent;
+    if(!preparation.launched||!event||bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||bot.instanceId!==event.instanceId)return;
+    bot.preparation=undefined;
+    if(bot.machine.state==='PREPARING_EVENT')bot.machine.transition('IN_PIT_IDLE');
+    const now=this.now();
+    const accepted=this.scheduler.enqueue(event,now);
+    if(!accepted){
+      this.log(bot,'care package chest handoff failed',{eventId:event.id,reason:'ENQUEUE_REJECTED'});
+      return;
+    }
+    const assignment=this.scheduler.assignTo(event.id,this.view(bot),now);
+    if(!assignment){
+      this.log(bot,'care package chest handoff failed',{eventId:event.id,reason:'RESERVATION_FAILED'});
+      return;
+    }
+    this.log(bot,'care package chest path started',{eventId:event.id,targetX:event.target.x,targetY:event.target.y,targetZ:event.target.z});
+    this.execute(bot,assignment.job.id,assignment.job.lease,assignment.job.event);
   }
   private cancelDebugWalk(b:ManagedBot,idle:boolean):void {
     const debug=b.debugWalk;
