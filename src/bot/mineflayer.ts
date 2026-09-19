@@ -34,6 +34,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let correctionTraceUntil = 0;
   let correctionTraceRemaining = 0;
   const stopPath = () => { bot.clearControlStates(); };
+  const isPartialSlab = (block: { name?: string } | null | undefined) =>
+    typeof block?.name === 'string' && block.name.includes('slab') && !block.name.includes('double');
   const walkingMovements = () => {
     const movements = new Movements(bot);
     movements.canDig = false;
@@ -42,6 +44,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
     movements.allowSprinting = false;
     movements.scafoldingBlocks = [];
     movements.allowFreeMotion = false;
+    // Prefer full-block footing without making slab-only routes impossible.
+    // Pathfinder step exclusions are costs below 100; a hard 100+ would make Pit slab routes unroutable.
+    movements.exclusionAreasStep.push(block => {
+      const support = block?.position ? bot.blockAt(block.position.offset(0,-1,0)) : null;
+      return isPartialSlab(block) || isPartialSlab(support) ? 12 : 0;
+    });
     return movements;
   };
   const angleDelta = (target:number,current:number) => {
@@ -70,7 +78,11 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const movements = walkingMovements();
     const plan = bot.pathfinder.getPathTo(movements, new goals.GoalNear(target.x,target.y,target.z,range), config.pathTimeoutMs);
     if (plan.status !== 'success') throw new Error(plan.status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
-    events.diagnostic?.('control path planned',{nodes:plan.path.length,targetX:target.x,targetY:target.y,targetZ:target.z});
+    const slabNodes = plan.path.reduce((count, waypoint) => {
+      const footing = bot.blockAt(waypoint.offset(0,-0.01,0));
+      return count + (isPartialSlab(footing) ? 1 : 0);
+    },0);
+    events.diagnostic?.('control path planned',{nodes:plan.path.length,slabNodes,targetX:target.x,targetY:target.y,targetZ:target.z});
     const started = Date.now();
     try {
       bot.setControlState('sprint',false);
