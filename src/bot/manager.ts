@@ -9,14 +9,17 @@ import { Scheduler } from '../scheduler/scheduler.js';
 import { PathfindingController, PathfindingError } from '../pathfinding/controller.js';
 import { backoff } from '../recovery/backoff.js';
 import type { TaskHandler } from '../events/task.js';
+import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
+interface EventPreparation { timestamp:number; generation:number; abort:AbortController }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
+  preparation?: EventPreparation;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -30,7 +33,8 @@ export class BotManager {
     readonly registry: InstanceRegistry, readonly scheduler: Scheduler,
     readonly paths: PathfindingController, private task: TaskHandler, private logger: Logger,
     private now = Date.now, private random = Math.random,
-    private classifier: ReturnClassifier = new UnknownReturnClassifier()) {
+    private classifier: ReturnClassifier = new UnknownReturnClassifier(),
+    private carePackages?: CarePackageCoordinator) {
     this.distribution = new DistributionManager(config.rerollMaxAttempts, config.rerollCooldownMs);
     this.bots = config.accounts.map((a, i) => {
       const bot: ManagedBot = { id: `bot-${i + 1}`, accountLabel: a.label,
@@ -42,6 +46,9 @@ export class BotManager {
     });
   }
   views(): BotView[] { return this.bots.map(b => this.view(b)); }
+  carePackageTrackingSnapshot() {
+    return this.carePackages?.trackingSnapshot(this.now());
+  }
   performanceSnapshot() {
     const now = this.now();
     return {
@@ -199,6 +206,18 @@ export class BotManager {
           b.minecraftName = username;
         },
         message: text => { if (!this.stopped && b.connection === connection) this.message(b, text); },
+        chickenSpawn: position => {
+          if (this.stopped || b.connection !== connection || !b.instanceId || !this.carePackages) return;
+          const detection=this.carePackages.observeChicken(b.instanceId,position,this.now());
+          if(detection)this.prepareCarePackage(b,detection.timestamp,detection.target);
+        },
+        chestAppeared: position => {
+          if (this.stopped || b.connection !== connection || !b.instanceId || !this.carePackages) return;
+          const event=this.carePackages.observeChest(b.instanceId,position,this.now());
+          if(!event)return;
+          const accepted=this.scheduler.enqueue(event,this.now());
+          this.log(b,'care package chest detected',{eventId:event.id,x:position.x,y:position.y,z:position.z,accepted});
+        },
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
           this.logger.log('debug', name, { botId: b.id, accountLabel: b.accountLabel,
@@ -235,7 +254,7 @@ export class BotManager {
       // from the same join attempt, but accept either observation order.
       b.joinSpawnObserved = true;
       this.confirmJoinedInstance(b);
-    } else if (b.machine.state !== 'RECOVERING' && b.machine.state !== 'LOBBY') {
+    } else if (b.machine.state !== 'RECOVERING' && b.machine.state !== 'LOBBY' && b.machine.state !== 'PREPARING_EVENT') {
       this.recover(b, 'UNKNOWN_RETURN');
     }
   }
@@ -270,7 +289,7 @@ export class BotManager {
     try { b.transport?.chat('/play pit'); } catch { this.disconnected(b); }
   }
   private recover(b: ManagedBot, reason: ReturnReason): void {
-    this.cancelExecution(b, false); b.generation.invalidate();
+    this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined;
     b.machine.transition('RECOVERING');
@@ -285,13 +304,41 @@ export class BotManager {
   }
   private disconnected(b: ManagedBot): void {
     if (b.machine.state === 'DISCONNECTED') return;
-    this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
+    this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false;
     const transport = b.transport; b.transport = undefined;
     b.machine.transition('DISCONNECTED');
     b.dueAt = this.now() + backoff(b.reconnectAttempts++, this.config.reconnect, this.random);
     try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
+  }
+  private prepareCarePackage(source:ManagedBot,timestamp:number,target:{x:number;y:number;z:number}):void {
+    if(!source.instanceId||!this.carePackages)return;
+    const candidates=this.bots.filter(bot=>bot.instanceId===source.instanceId&&bot.machine.state==='IN_PIT_IDLE'&&!bot.execution&&!bot.preparation&&bot.transport?.launchToward);
+    const bot=candidates.find(value=>value.id===source.id)??candidates[0];
+    if(!bot)return;
+    const launch=bot.transport!.launchToward!;
+    const preparation:EventPreparation={timestamp,generation:bot.generation.current,abort:new AbortController()};
+    bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
+    this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
+    this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
+    void launch({x:target.x,z:target.z},preparation.abort.signal).then(()=>{
+      if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
+      this.carePackages?.markLaunch(bot.instanceId,timestamp,'DROPPED');
+      this.log(bot,'care package launch completed',{scheduledAt:timestamp});
+    },()=>{
+      if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
+      this.carePackages?.markLaunch(bot.instanceId,timestamp,'LAUNCH_FAILED');
+      this.log(bot,'care package launch failed',{scheduledAt:timestamp});
+    }).finally(()=>{
+      if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation))return;
+      bot.preparation=undefined;
+      if(bot.machine.state==='PREPARING_EVENT')bot.machine.transition('IN_PIT_IDLE');
+    });
+  }
+  private cancelPreparation(b:ManagedBot):void {
+    const preparation=b.preparation;b.preparation=undefined;preparation?.abort.abort();
+    if(b.machine.state==='PREPARING_EVENT')b.machine.transition('IN_PIT_IDLE');
   }
   private cancelExecution(b: ManagedBot, idle: boolean, reason: JobFailureReason = 'INSTANCE_LOST'): void {
     const execution = b.execution;
@@ -368,7 +415,7 @@ export class BotManager {
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;
-    for (const bot of this.bots) this.disconnected(bot);
+    for (const bot of this.bots) { this.cancelPreparation(bot); this.disconnected(bot); }
     this.paths.cancelAll();
   }
 }
