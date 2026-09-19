@@ -154,7 +154,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         .filter(pos => Math.abs(pos.y - start.y) <= 6);
       if (!slime.length) throw new Error('Launch pad not found');
 
-      const remaining = [...slime], clusters: typeof slime[] = [];
+      const remaining = [...slime], clusters: Array<typeof slime> = [];
       while (remaining.length) {
         const seed = remaining.pop()!, cluster = [seed];
         for (let changed = true; changed;) {
@@ -210,7 +210,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
             if(!p)return;
             const horizontal=Math.hypot(p.x-launchedFrom.x,p.z-launchedFrom.z);
             if(!launched&&(horizontal>7||Math.abs(p.y-launchedFrom.y)>4)){launched=true;bot.setControlState('forward',false);}
-            if(launched){groundSamples=entity.onGround?groundSamples+1:0;if(groundSamples>=2&&horizontal>7){clearInterval(timer);signal.removeEventListener('abort',onAbort);resolve();return;}}
+            if(launched){groundSamples=(entity as {onGround?:boolean}).onGround?groundSamples+1:0;if(groundSamples>=2&&horizontal>7){clearInterval(timer);signal.removeEventListener('abort',onAbort);resolve();return;}}
             if(Date.now()-started>10_000){clearInterval(timer);signal.removeEventListener('abort',onAbort);reject(new Error(launched?'Launch landing timeout':'Launch pad did not trigger'));}
           },50);
           signal.addEventListener('abort',onAbort,{once:true});
