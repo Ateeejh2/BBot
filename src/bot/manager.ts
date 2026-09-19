@@ -107,6 +107,34 @@ export class BotManager {
     if (b.machine.state !== 'LOBBY' || !b.ready) throw new Error('INVALID_STATE');
     this.join(b);
   }
+  testLaunchPad(id: string): { target: { x:number; z:number } } {
+    const b = this.controlled(id);
+    if (b.machine.state !== 'IN_PIT_IDLE' || !b.instanceId || b.execution || b.preparation) throw new Error('INVALID_STATE');
+    const transport = b.transport;
+    if (!transport?.launchToward) throw new Error('UNSUPPORTED_ACTION');
+    const position = transport.position();
+    if (!position) throw new Error('INVALID_STATE');
+    const radius = Math.hypot(position.x, position.z);
+    const outwardX = radius >= 1 ? position.x / radius : 1;
+    const outwardZ = radius >= 1 ? position.z / radius : 0;
+    const target = { x: position.x + outwardX * 128, z: position.z + outwardZ * 128 };
+    const preparation: EventPreparation = { timestamp: this.now(), generation: b.generation.current, abort: new AbortController() };
+    b.preparation = preparation;
+    b.machine.transition('PREPARING_EVENT');
+    this.log(b, 'launch pad test started', { targetX: target.x, targetZ: target.z });
+    void transport.launchToward(target, preparation.abort.signal).then(() => {
+      if (b.preparation !== preparation || !b.generation.isCurrent(preparation.generation)) return;
+      this.log(b, 'launch pad test completed');
+    }, () => {
+      if (b.preparation !== preparation || !b.generation.isCurrent(preparation.generation)) return;
+      this.log(b, 'launch pad test failed');
+    }).finally(() => {
+      if (b.preparation !== preparation || !b.generation.isCurrent(preparation.generation)) return;
+      b.preparation = undefined;
+      if (b.machine.state === 'PREPARING_EVENT') b.machine.transition('IN_PIT_IDLE');
+    });
+    return { target };
+  }
   disconnectBot(id: string): void {
     const b = this.controlled(id);
     if (b.machine.state === 'DISCONNECTED') {
