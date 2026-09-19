@@ -42,7 +42,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     movements.canDig = false;
     movements.allow1by1towers = false;
     movements.allowParkour = false;
-    movements.allowSprinting = false;
+    movements.allowSprinting = true;
     movements.scafoldingBlocks = [];
     movements.allowFreeMotion = false;
     // Prefer full-block footing without making slab-only routes impossible.
@@ -76,79 +76,114 @@ export function createMineflayerTransport(config: Config, index: number, events:
   };
   const controlWalk = async (target:{x:number;y:number;z:number}, range:number, signal:AbortSignal) => {
     signal.throwIfAborted();
-    const movements = walkingMovements();
-    const goal = new goals.GoalNear(target.x,target.y,target.z,range);
-    const planner = bot.pathfinder.getPathFromTo(movements, bot.entity.position, goal, {
-      timeout: config.pathTimeoutMs,
-      tickTimeout: bot.pathfinder.tickTimeout
-    });
-    let plan: ReturnType<typeof bot.pathfinder.getPathTo> | undefined;
-    while (true) {
-      signal.throwIfAborted();
-      const next = planner.next();
-      if (next.done) break;
-      plan = next.value.result;
-      if (plan.status !== 'partial') break;
-      // getPathTo only consumes the first A* slice. Continue partial searches without
-      // blocking the Node event loop until success/noPath/real timeout.
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
-    if (!plan || plan.status !== 'success') {
-      const status = plan?.status ?? 'noPath';
-      events.diagnostic?.('control path planning failed',{
-        status,visitedNodes:plan?.visitedNodes??null,generatedNodes:plan?.generatedNodes??null,
-        planningMs:plan?.time??null,targetX:target.x,targetY:target.y,targetZ:target.z
-      });
-      throw new Error(status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
-    }
-    const slabNodes = plan.path.reduce((count, waypoint) => {
-      const origin = bot.entity.position;
-      const footing = bot.blockAt(origin.offset(waypoint.x-origin.x,waypoint.y-0.01-origin.y,waypoint.z-origin.z));
-      return count + (isPartialSlab(footing) ? 1 : 0);
-    },0);
-    events.diagnostic?.('control path planned',{nodes:plan.path.length,slabNodes,targetX:target.x,targetY:target.y,targetZ:target.z});
     const started = Date.now();
-    try {
-      bot.setControlState('sprint',false);
-      for (const waypoint of plan.path) {
-        let best = Number.POSITIVE_INFINITY;
-        let lastProgress = Date.now();
-        while (true) {
-          signal.throwIfAborted();
-          if (Date.now()-started > config.pathTimeoutMs) throw new Error('Control walk timeout');
-          const p = bot.entity?.position;
-          if (!p) throw new Error('Position unavailable');
-          const dx = waypoint.x-p.x, dz = waypoint.z-p.z, dy = waypoint.y-p.y;
-          const horizontal = Math.hypot(dx,dz);
-          if (horizontal <= 0.42 && Math.abs(dy) < 1.05) break;
-          if (horizontal < best-0.03) { best=horizontal; lastProgress=Date.now(); }
-          else if (Date.now()-lastProgress > 3000) throw new Error('Control walk stuck');
-
-          const yaw = Math.atan2(-dx,-dz);
-          const turn = angleDelta(yaw,bot.entity.yaw);
-          if (Math.abs(turn) > 0.04) {
-            const step = Math.max(-0.12,Math.min(0.12,turn));
-            if (Math.abs(turn) > 0.6) bot.setControlState('forward',false);
-            void bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
-          }
-          signal.throwIfAborted();
-          const aligned = Math.abs(angleDelta(yaw,bot.entity.yaw)) <= 0.55;
-          bot.setControlState('sprint',false);
-          bot.setControlState('sneak',false);
-          bot.setControlState('back',false);
-          bot.setControlState('left',false);
-          bot.setControlState('right',false);
-          bot.setControlState('forward',aligned);
-          bot.setControlState('jump',aligned && dy > 0.35 && bot.entity.onGround);
-          await bot.waitForTicks(1);
-        }
-        bot.setControlState('jump',false);
+    const maxReplans = 3;
+    for (let replan = 0; replan <= maxReplans; replan++) {
+      signal.throwIfAborted();
+      const movements = walkingMovements();
+      const goal = new goals.GoalNear(target.x,target.y,target.z,range);
+      const planner = bot.pathfinder.getPathFromTo(movements, bot.entity.position, goal, {
+        timeout: Math.max(1, config.pathTimeoutMs - (Date.now()-started)),
+        tickTimeout: bot.pathfinder.tickTimeout
+      });
+      let plan: ReturnType<typeof bot.pathfinder.getPathTo> | undefined;
+      while (true) {
+        signal.throwIfAborted();
+        const next = planner.next();
+        if (next.done) break;
+        plan = next.value.result;
+        if (plan.status !== 'partial') break;
+        await new Promise<void>(resolve => setImmediate(resolve));
       }
+      if (!plan || plan.status !== 'success') {
+        const status = plan?.status ?? 'noPath';
+        events.diagnostic?.('control path planning failed',{
+          status,visitedNodes:plan?.visitedNodes??null,generatedNodes:plan?.generatedNodes??null,
+          planningMs:plan?.time??null,targetX:target.x,targetY:target.y,targetZ:target.z,replan
+        });
+        throw new Error(status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
+      }
+      const slabNodes = plan.path.reduce((count, waypoint) => {
+        const origin = bot.entity.position;
+        const footing = bot.blockAt(origin.offset(waypoint.x-origin.x,waypoint.y-0.01-origin.y,waypoint.z-origin.z));
+        return count + (isPartialSlab(footing) ? 1 : 0);
+      },0);
+      events.diagnostic?.('control path planned',{nodes:plan.path.length,slabNodes,targetX:target.x,targetY:target.y,targetZ:target.z,replan});
+
+      let collisionReplan = false;
+      try {
+        for (const waypoint of plan.path) {
+          let best = Number.POSITIVE_INFINITY;
+          let lastProgress = Date.now();
+          let collisionTicks = 0;
+          while (true) {
+            signal.throwIfAborted();
+            if (Date.now()-started > config.pathTimeoutMs) throw new Error('Control walk timeout');
+            const p = bot.entity?.position;
+            if (!p) throw new Error('Position unavailable');
+            const dx = waypoint.x-p.x, dz = waypoint.z-p.z, dy = waypoint.y-p.y;
+            const horizontal = Math.hypot(dx,dz);
+            // A one-block-up waypoint must not be treated as reached before the jump.
+            if (horizontal <= 0.42 && Math.abs(dy) < 0.35) break;
+            const spatial = Math.hypot(horizontal,dy);
+            if (spatial < best-0.03) { best=spatial; lastProgress=Date.now(); }
+            else if (Date.now()-lastProgress > 3000) throw new Error('Control walk stuck');
+
+            const yaw = Math.atan2(-dx,-dz);
+            const turn = angleDelta(yaw,bot.entity.yaw);
+            if (Math.abs(turn) > 0.04) {
+              const step = Math.max(-0.12,Math.min(0.12,turn));
+              void bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
+            }
+            signal.throwIfAborted();
+
+            const remainingTurn = Math.abs(angleDelta(yaw,bot.entity.yaw));
+            const aligned = remainingTurn <= 0.28;
+            const needsJump = dy > 0.35;
+            const runtimeEntity = bot.entity as typeof bot.entity & { isCollidedHorizontally?:boolean };
+            const collided = Boolean(runtimeEntity.isCollidedHorizontally);
+
+            if (collided && !needsJump && aligned) collisionTicks++;
+            else collisionTicks = 0;
+
+            if (collisionTicks >= 3) {
+              bot.clearControlStates();
+              events.diagnostic?.('control walk collision',{
+                waypointX:waypoint.x,waypointY:waypoint.y,waypointZ:waypoint.z,
+                x:p.x,y:p.y,z:p.z,replan
+              });
+              collisionReplan = true;
+              break;
+            }
+
+            const canSprint = aligned && !collided && !needsJump && horizontal > 1.15;
+            bot.setControlState('sneak',false);
+            bot.setControlState('back',false);
+            bot.setControlState('left',false);
+            bot.setControlState('right',false);
+            bot.setControlState('forward',aligned && !collided);
+            bot.setControlState('sprint',canSprint);
+            bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
+            await bot.waitForTicks(1);
+          }
+          bot.setControlState('jump',false);
+          if (collisionReplan) break;
+        }
+      } finally {
+        bot.clearControlStates();
+      }
+
+      if (collisionReplan) {
+        if (replan >= maxReplans) throw new Error('Control walk collision');
+        await bot.waitForTicks(1);
+        continue;
+      }
+
       const p = bot.entity?.position;
       if (!p || Math.hypot(p.x-target.x,p.z-target.z) > range+0.9 || Math.abs(p.y-target.y) > 1.5) throw new Error('Control walk ended before arrival');
-    } finally {
-      bot.clearControlStates();
+      return;
     }
+    throw new Error('Control walk collision');
   };
   const waitUntilGrounded = async (signal:AbortSignal) => {
     const started=Date.now();
