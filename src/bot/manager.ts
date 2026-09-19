@@ -13,13 +13,14 @@ import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
 interface EventPreparation { timestamp:number; generation:number; abort:AbortController }
+interface DebugWalk { generation:number; abort:AbortController }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
-  preparation?: EventPreparation;
+  preparation?: EventPreparation; debugWalk?: DebugWalk; debugWalkDone: boolean;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -27,6 +28,7 @@ export class BotManager {
   private configurationLocked = false;
   private nextConnectAt = 0;
   private nextRerollAt = 0;
+  private movementDebug = false;
   private sessionFailureHandler?: (botId: string, accountId: string) => Promise<boolean>;
   readonly distribution: DistributionManager;
   constructor(readonly config: Config, private factory: TransportFactory,
@@ -41,11 +43,17 @@ export class BotManager {
         machine: new StateMachine((_from, to) => this.log(bot, 'state changed', { state: to })),
         generation: new Generation(), connection: 0, ready: false, dueAt: 0, deadline: 0,
         reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, paused: config.api.enabled,
-        pathAttempts: 0, pathCompleted: 0, pathFailed: 0 };
+        pathAttempts: 0, pathCompleted: 0, pathFailed: 0, debugWalkDone: false };
       return bot;
     });
   }
   views(): BotView[] { return this.bots.map(b => this.view(b)); }
+  movementDebugEnabled(): boolean { return this.movementDebug; }
+  setMovementDebug(enabled: boolean): void {
+    if (this.movementDebug === enabled) return;
+    this.movementDebug = enabled;
+    for (const b of this.bots) b.debugWalkDone = false;
+  }
   carePackageTrackingSnapshot() {
     return this.carePackages?.trackingSnapshot(this.now());
   }
@@ -109,7 +117,7 @@ export class BotManager {
   }
   testLaunchPad(id: string): { target: { x:number; z:number } } {
     const b = this.controlled(id);
-    if (b.machine.state !== 'IN_PIT_IDLE' || !b.instanceId || b.execution || b.preparation) throw new Error('INVALID_STATE');
+    if (this.movementDebug || b.machine.state !== 'IN_PIT_IDLE' || !b.instanceId || b.execution || b.preparation) throw new Error('INVALID_STATE');
     const transport = b.transport;
     if (!transport?.launchToward) throw new Error('UNSUPPORTED_ACTION');
     const position = transport.position();
@@ -179,7 +187,7 @@ export class BotManager {
   tick(): void {
     if (this.stopped) return;
     const now = this.now();
-    for (const expired of this.scheduler.expire(now)) {
+    if (!this.movementDebug) for (const expired of this.scheduler.expire(now)) {
       const bot = this.bots.find(b => b.id === expired.botId);
       if (bot?.execution?.id === expired.id) this.cancelExecution(bot, true);
     }
@@ -194,10 +202,11 @@ export class BotManager {
         this.log(b, 'join timed out; no confirmed instance');
       }
       if (b.machine.state === 'RECOVERING' && !b.ready && now >= b.deadline) { this.disconnected(b); continue; }
-      if (['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
+      if (!this.movementDebug && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
     }
+    if (this.movementDebug) return;
     this.registry.maintain(now, this.config.suspectMs, this.config.inactiveMs);
     for (const { job, bot } of this.scheduler.assign(this.views(), now)) {
       const managed = this.bots.find(b => b.id === bot.id)!;
@@ -242,12 +251,12 @@ export class BotManager {
         },
         message: text => { if (!this.stopped && b.connection === connection) this.message(b, text); },
         chickenSpawn: position => {
-          if (this.stopped || b.connection !== connection || !b.instanceId || !this.carePackages) return;
+          if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages) return;
           const detection=this.carePackages.observeChicken(b.instanceId,position,this.now());
           if(detection)this.prepareCarePackage(b,detection.timestamp,detection.target);
         },
         chestAppeared: position => {
-          if (this.stopped || b.connection !== connection || !b.instanceId || !this.carePackages) return;
+          if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages) return;
           const event=this.carePackages.observeChest(b.instanceId,position,this.now());
           if(!event)return;
           const accepted=this.scheduler.enqueue(event,this.now());
@@ -283,6 +292,14 @@ export class BotManager {
   }
   private spawn(b: ManagedBot): void {
     b.ready = true;
+    if (this.movementDebug) {
+      if (b.machine.state === 'CONNECTING') b.machine.transition('LOBBY');
+      else if (b.machine.state === 'PATHFINDING') this.cancelDebugWalk(b, true);
+      else if (b.machine.state !== 'LOBBY') return;
+      b.debugWalkDone = false;
+      this.startDebugWalk(b);
+      return;
+    }
     if (b.machine.state === 'CONNECTING') {
       b.machine.transition('LOBBY'); b.dueAt = this.now() + this.config.playCooldownMs;
     } else if (b.machine.state === 'JOINING_PIT') {
@@ -296,10 +313,12 @@ export class BotManager {
   }
   private worldReset(b: ManagedBot): void {
     b.ready = false;
+    if (this.movementDebug) { this.cancelDebugWalk(b, true); b.debugWalkDone = false; return; }
     if (b.machine.state === 'JOINING_PIT' || b.machine.state === 'CONNECTING') return;
     this.recover(b, 'UNKNOWN_RETURN'); b.deadline = this.now() + this.config.joinTimeoutMs;
   }
   private message(b: ManagedBot, text: string): void {
+    if (this.movementDebug) return;
     const instance = parseInstance(text);
     if (instance && !['DISCONNECTED', 'CONNECTING'].includes(b.machine.state)) {
       if (b.machine.state !== 'JOINING_PIT') {
@@ -325,7 +344,7 @@ export class BotManager {
     try { b.transport?.chat('/play pit'); } catch { this.disconnected(b); }
   }
   private recover(b: ManagedBot, reason: ReturnReason): void {
-    this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
+    this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined;
     b.machine.transition('RECOVERING');
@@ -340,16 +359,16 @@ export class BotManager {
   }
   private disconnected(b: ManagedBot): void {
     if (b.machine.state === 'DISCONNECTED') return;
-    this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
+    this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
-    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
     b.machine.transition('DISCONNECTED');
     b.dueAt = this.now() + backoff(b.reconnectAttempts++, this.config.reconnect, this.random);
     try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
   }
   private prepareCarePackage(source:ManagedBot,timestamp:number,target:{x:number;y:number;z:number}):void {
-    if(!source.instanceId||!this.carePackages)return;
+    if(this.movementDebug||!source.instanceId||!this.carePackages)return;
     const candidates=this.bots.filter(bot=>bot.instanceId===source.instanceId&&bot.machine.state==='IN_PIT_IDLE'&&!bot.execution&&!bot.preparation&&bot.transport?.launchToward);
     const bot=candidates.find(value=>value.id===source.id)??candidates[0];
     if(!bot)return;
@@ -371,6 +390,55 @@ export class BotManager {
       bot.preparation=undefined;
       if(bot.machine.state==='PREPARING_EVENT')bot.machine.transition('IN_PIT_IDLE');
     });
+  }
+  private cancelDebugWalk(b:ManagedBot,idle:boolean):void {
+    const debug=b.debugWalk;
+    if(!debug)return;
+    b.debugWalk=undefined;
+    debug.abort.abort();
+    try{b.transport?.stopPath();}catch{this.log(b,'path stop failed');}
+    if(idle&&b.machine.state==='PATHFINDING')b.machine.transition('LOBBY');
+  }
+  private startDebugWalk(b:ManagedBot):void {
+    if(!this.movementDebug||b.debugWalk||b.debugWalkDone||b.machine.state!=='LOBBY'||!b.ready||!b.transport)return;
+    const start=b.transport.position();
+    if(!start)return;
+    const debug:DebugWalk={generation:b.generation.current,abort:new AbortController()};
+    b.debugWalk=debug;b.debugWalkDone=true;b.machine.transition('PATHFINDING');
+    const transport=b.transport;
+    const targets=[
+      {x:start.x+6,y:start.y,z:start.z},{x:start.x-6,y:start.y,z:start.z},
+      {x:start.x,y:start.y,z:start.z+6},{x:start.x,y:start.y,z:start.z-6}
+    ];
+    this.log(b,'movement debug path started',{startX:start.x,startY:start.y,startZ:start.z});
+    void(async()=>{
+      let lastError:unknown;
+      try{
+        for(const [attempt,target] of targets.entries()){
+          if(b.debugWalk!==debug||debug.abort.signal.aborted||!b.generation.isCurrent(debug.generation))return;
+          try{
+            b.pathAttempts++;
+            const queuedAt=this.now();
+            await this.paths.submit(`debug:${b.id}:${debug.generation}:${attempt}`,debug.abort.signal,async signal=>{
+              const startedAt=this.now();b.pathStartedAt=startedAt;b.lastPathQueueMs=Math.max(0,startedAt-queuedAt);
+              try{await transport.navigate(target,signal);b.pathCompleted++;}
+              catch(error){b.pathFailed++;throw error;}
+              finally{if(b.pathStartedAt===startedAt){b.lastPathMs=Math.max(0,this.now()-startedAt);b.pathStartedAt=undefined;}}
+            },()=>transport.stopPath());
+            if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation))
+              this.log(b,'movement debug path completed',{targetX:target.x,targetY:target.y,targetZ:target.z});
+            return;
+          }catch(error){lastError=error;if(debug.abort.signal.aborted)return;}
+        }
+        if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation))
+          this.log(b,'movement debug path failed',{reason:lastError instanceof PathfindingError?lastError.code:this.movementFailure(lastError)});
+      }finally{
+        if(b.debugWalk===debug&&b.generation.isCurrent(debug.generation)){
+          b.debugWalk=undefined;
+          if(b.machine.state==='PATHFINDING')b.machine.transition('LOBBY');
+        }
+      }
+    })();
   }
   private cancelPreparation(b:ManagedBot):void {
     const preparation=b.preparation;b.preparation=undefined;preparation?.abort.abort();
@@ -451,7 +519,7 @@ export class BotManager {
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;
-    for (const bot of this.bots) { this.cancelPreparation(bot); this.disconnected(bot); }
+    for (const bot of this.bots) { this.cancelDebugWalk(bot, true); this.cancelPreparation(bot); this.disconnected(bot); }
     this.paths.cancelAll();
   }
 }
