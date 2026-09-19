@@ -153,20 +153,29 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
   f.manager.stop();
 });
-test('Care Package keeps the launched bot reserved and hands it directly to the chest path', async () => {
+test('Care Package starts from the live announcement and keeps the launched bot for the chest path', async () => {
   const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
   const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
   const f=fixture(1,new MockTaskHandler(),false,coordinator);
   f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
   let finishLaunch!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finishLaunch=resolve;});
+
+  // Schedule time only arms detection. Carrier entities alone must not launch the bot.
   t.events.chickenSpawn?.({x:80,y:110,z:-30});
   t.events.chickenSpawn?.({x:82,y:111,z:-31});
   t.events.chickenSpawn?.({x:81,y:109,z:-29});
+  assert.equal(t.launches.length,0);
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+
+  // The real event can begin after the scheduled time.
+  f.tick(1100);
+  t.events.message('MINOR EVENT! CARE PACKAGE in Water Area');
   assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
   assert.equal(t.launches.length,1);
   assert.deepEqual(t.launchCompletions,['LAUNCH']);
   assert.ok(Math.abs(t.launches[0]!.x-81)<0.01);
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'LAUNCHING');
+  assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.area,'Water Area');
 
   const chest={x:79,y:64,z:-32};
   t.events.chestAppeared?.(chest);
