@@ -127,6 +127,14 @@ export function createMineflayerTransport(config: Config, index: number, events:
       bot.clearControlStates();
     }
   };
+  const waitUntilGrounded = async (signal:AbortSignal) => {
+    const started=Date.now();
+    while(!bot.entity?.onGround){
+      signal.throwIfAborted();
+      if(Date.now()-started>Math.min(config.pathTimeoutMs,10_000))throw new Error('Landing wait timeout');
+      await bot.waitForTicks(1);
+    }
+  };
   const reportIdentity = () => {
     const username = bot.username;
     if (typeof username === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(username)) events.identity?.(username);
@@ -332,6 +340,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       const abort = () => stopPath();
       signal.addEventListener('abort', abort, { once: true });
       try {
+        await waitUntilGrounded(signal);
         await controlWalk(target,1,signal);
       } finally {
         signal.removeEventListener('abort', abort);
