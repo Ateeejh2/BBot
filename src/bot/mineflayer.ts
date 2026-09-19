@@ -270,6 +270,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
     // On legacy protocol, the network may deliver server text in chat (unverified).
     // Observe likely transfer messages without recording their contents. Chat requires explicit opt-in.
     const clean = text.replace(/§[0-9a-fk-or]/gi, '').trim();
+    const chatText = clean.replace(/[\r\n]+/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 500);
+    if (chatText) events.diagnostic?.('chat message received', {
+      channel: position,
+      senderPresent: Boolean(sender),
+      chatText
+    });
     const lower = clean.toLowerCase();
     const candidate = parseInstance(text);
     const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel, candidate !== undefined);
