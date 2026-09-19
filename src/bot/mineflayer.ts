@@ -36,6 +36,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let correctionTraceRemaining = 0;
   let correctionAckPending = 0;
   let correctionSequence = 0;
+  let lastWireYaw: number | undefined;
+  let pendingCorrectionAckYaw: number | undefined;
   let lastCorrectionAt = 0;
   let lastBotVelocityAt = 0;
   let lastBotVelocity: { x:number; y:number; z:number } | undefined;
@@ -312,7 +314,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     if (closed || !newBlock?.position || newBlock.name !== 'chest' || oldBlock?.name === 'chest') return;
     events.chestAppeared?.({ x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z });
   };
-  const positionPacket = (packet: { x:number; y:number; z:number; flags:number | {x?:boolean;y?:boolean;z?:boolean} }) => {
+  const positionPacket = (packet: { x:number; y:number; z:number; yaw:number; flags:number | {x?:boolean;y?:boolean;z?:boolean;yaw?:boolean} }) => {
     if (closed || !bot.entity?.position) return;
     const receivedAt=Date.now();
     correctionTraceUntil = receivedAt + 500;
@@ -321,8 +323,11 @@ export function createMineflayerTransport(config: Config, index: number, events:
     correctionSequence++;
     const before = bot.entity.position;
     const relative = typeof packet.flags === 'object'
-      ? { x:Boolean(packet.flags.x), y:Boolean(packet.flags.y), z:Boolean(packet.flags.z) }
-      : { x:Boolean(packet.flags & 1), y:Boolean(packet.flags & 2), z:Boolean(packet.flags & 4) };
+      ? { x:Boolean(packet.flags.x), y:Boolean(packet.flags.y), z:Boolean(packet.flags.z), yaw:Boolean(packet.flags.yaw) }
+      : { x:Boolean(packet.flags & 1), y:Boolean(packet.flags & 2), z:Boolean(packet.flags & 4), yaw:Boolean(packet.flags & 8) };
+    if(config.version==='1.8.9' && Number.isFinite(packet.yaw)){
+      pendingCorrectionAckYaw=relative.yaw && lastWireYaw!==undefined ? lastWireYaw+packet.yaw : packet.yaw;
+    }
     const target = {
       x: relative.x ? before.x + packet.x : packet.x,
       y: relative.y ? before.y + packet.y : packet.y,
@@ -435,6 +440,19 @@ export function createMineflayerTransport(config: Config, index: number, events:
   runtimeClient.write = (name:string, params:Record<string, unknown>) => {
     const isMovementPacket=['position','position_look','look','flying'].includes(name);
     const isCorrectionAck=isMovementPacket&&correctionAckPending>0&&name==='position_look';
+    let wireParams=params;
+    if(config.version==='1.8.9' && (name==='position_look'||name==='look') && typeof params.yaw==='number' && Number.isFinite(params.yaw)){
+      let wireYaw=params.yaw;
+      if(isCorrectionAck && pendingCorrectionAckYaw!==undefined){
+        wireYaw=pendingCorrectionAckYaw;
+        pendingCorrectionAckYaw=undefined;
+      }else if(lastWireYaw!==undefined){
+        while(wireYaw-lastWireYaw>180)wireYaw-=360;
+        while(wireYaw-lastWireYaw<-180)wireYaw+=360;
+      }
+      lastWireYaw=wireYaw;
+      if(wireYaw!==params.yaw)wireParams={...params,yaw:wireYaw};
+    }
     if(isCorrectionAck)correctionAckPending--;
     if(!closed && isMovementPacket && !isCorrectionAck){
       const now=Date.now();
@@ -454,16 +472,16 @@ export function createMineflayerTransport(config: Config, index: number, events:
       const numeric = (value:unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.round(value*1000)/1000 : null;
       events.diagnostic?.('movement packet after correction', {
         packet:name,
-        x:numeric(params.x), y:numeric(params.y), z:numeric(params.z),
-        yaw:numeric(params.yaw), pitch:numeric(params.pitch),
-        onGround:typeof params.onGround === 'boolean' ? params.onGround : null,
-        teleportId:typeof params.teleportId === 'number' ? params.teleportId : null,
+        x:numeric(wireParams.x), y:numeric(wireParams.y), z:numeric(wireParams.z),
+        yaw:numeric(wireParams.yaw), pitch:numeric(wireParams.pitch),
+        onGround:typeof wireParams.onGround === 'boolean' ? wireParams.onGround : null,
+        teleportId:typeof wireParams.teleportId === 'number' ? wireParams.teleportId : null,
         correctionAck:isCorrectionAck,
         correctionSequence,
         sinceCorrectionMs:lastCorrectionAt?Date.now()-lastCorrectionAt:null
       });
     }
-    return originalClientWrite(name,params);
+    return originalClientWrite(name,wireParams);
   };
   const velocityPacket = (packet:{entityId:number;velocity:{x:number;y:number;z:number}}) => {
     if(closed||packet.entityId!==bot.entity?.id)return;
