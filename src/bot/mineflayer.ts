@@ -79,7 +79,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const plan = bot.pathfinder.getPathTo(movements, new goals.GoalNear(target.x,target.y,target.z,range), config.pathTimeoutMs);
     if (plan.status !== 'success') throw new Error(plan.status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
     const slabNodes = plan.path.reduce((count, waypoint) => {
-      const footing = bot.blockAt(waypoint.offset(0,-0.01,0));
+      const origin = bot.entity.position;
+      const footing = bot.blockAt(origin.offset(waypoint.x-origin.x,waypoint.y-0.01-origin.y,waypoint.z-origin.z));
       return count + (isPartialSlab(footing) ? 1 : 0);
     },0);
     events.diagnostic?.('control path planned',{nodes:plan.path.length,slabNodes,targetX:target.x,targetY:target.y,targetZ:target.z});
