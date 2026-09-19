@@ -269,7 +269,7 @@ export class BotManager {
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
           if (name === 'server position correction') b.lastPositionCorrectionAt = this.now();
-          const level = name.startsWith('viewer ') || name === 'server position correction' ? 'info' : 'debug';
+          const level = name.startsWith('viewer ') || name === 'server position correction' || name === 'movement packet after correction' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...fields });
         },
