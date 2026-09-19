@@ -199,10 +199,36 @@ test('unsolicited transfer invalidates work before new membership is confirmed',
   assert.equal(f.manager.views()[0]?.instanceId, undefined); assert.equal(f.scheduler.jobs.get('job')?.state, 'QUEUED');
   t.events.spawn(); assert.equal(f.manager.views()[0]?.instanceId, 'different'); f.manager.stop();
 });
+test('NoPath retries are bounded and retain PATH_NOT_FOUND', async () => {
+  const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000); f.join(t);
+  t.navigation = async () => { const error = new Error('No path to the goal!'); error.name = 'NoPath'; throw error; };
+  f.scheduler.enqueue({ id: 'no-path', instanceId: 'a', target: { x: 50, y: 64, z: 50 }, type: 'mock', expiresAt: 100000 }, 1000);
+
+  f.tick(1001); await delay(0);
+  assert.equal(f.scheduler.jobs.get('no-path')?.state, 'QUEUED');
+  assert.equal(f.scheduler.jobs.get('no-path')?.lastFailure, 'PATH_NOT_FOUND');
+  assert.equal(f.scheduler.jobs.get('no-path')?.retryAt, 1101);
+
+  f.tick(1101); await delay(0);
+  assert.equal(f.scheduler.jobs.get('no-path')?.state, 'QUEUED');
+  assert.equal(f.scheduler.jobs.get('no-path')?.attempts, 2);
+
+  f.tick(1201); await delay(0);
+  const job = f.scheduler.jobs.get('no-path')!;
+  assert.equal(job.state, 'FAILED');
+  assert.equal(job.attempts, 3);
+  assert.equal(job.lastFailure, 'PATH_NOT_FOUND');
+  assert.equal(job.retryAt, undefined);
+  assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE');
+  assert.equal(f.manager.performanceSnapshot().bots[0]?.pathFailed, 3);
+  f.manager.stop();
+});
+
 test('task timeout returns job and does not leave bot WORKING', async () => {
   const f = fixture(1, { onArrive: () => new Promise(() => {}) });
   f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000); f.join(t);
   f.scheduler.enqueue({ id: 'job', instanceId: 'a', target: { x: 0, y: 64, z: 0 }, type: 'mock', expiresAt: 100000 }, 1000);
   f.tick(1001); await delay(130);
-  assert.equal(f.scheduler.jobs.get('job')?.state, 'QUEUED'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); f.manager.stop();
+  assert.equal(f.scheduler.jobs.get('job')?.state, 'QUEUED'); assert.equal(f.scheduler.jobs.get('job')?.lastFailure, 'TASK_TIMEOUT');
+  assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); f.manager.stop();
 });
