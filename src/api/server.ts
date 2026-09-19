@@ -9,6 +9,7 @@ import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
 import type { ControlStore } from '../runtime/control.js';
 import { RuntimePerformanceMonitor } from '../runtime/performance.js';
+import { carePackageRefreshMs, type CarePackageSchedule } from '../events/brooke.js';
 
 function runtimeViewerUrl(config: Config): string | undefined {
   try {
@@ -49,7 +50,7 @@ function manualJob(value: unknown, now: number): GameEvent {
 }
 
 // Only fixed, operator-facing fields cross the API boundary. Never serialize transports or config.
-export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore) {
+export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore, carePackages?: CarePackageSchedule) {
   const origin = config.api.origin!;
   const performance = new RuntimePerformanceMonitor();
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string }> = [];
@@ -68,6 +69,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
+      carePackages: carePackages?.snapshot(),
       logs: [...logs], serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
         ? { botId: config.viewer.botId, url: viewerUrl } : null };
   };
@@ -82,6 +84,12 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     }
   }
   const timer = setInterval(broadcast, 500);
+  const refreshCarePackages = () => {
+    if (!carePackages) return;
+    void carePackages.refresh().then(broadcast, broadcast);
+  };
+  refreshCarePackages();
+  const carePackageTimer = carePackages ? setInterval(refreshCarePackages, carePackageRefreshMs) : undefined;
   const send = (res: ServerResponse, status: number, data: object) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
       'access-control-allow-origin': origin, 'vary': 'Origin', 'x-content-type-options': 'nosniff' });
@@ -179,7 +187,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   wss.on('connection', ws => { ws.send(JSON.stringify({ type: 'snapshot', data: snapshot() })); });
   return {
     listen: () => new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(config.api.port, config.api.host, resolve); }),
-    close: () => new Promise<void>(resolve => { clearInterval(timer); unsubscribe(); performance.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { clearInterval(timer); if (carePackageTimer) clearInterval(carePackageTimer); unsubscribe(); performance.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
     address: () => server.address()
   };
 }
