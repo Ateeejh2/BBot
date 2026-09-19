@@ -42,27 +42,26 @@ test('first connection waits for spawn and cooldown; notification alone does not
   assert.equal(f.manager.views()[0]?.instanceId, undefined);
   t.events.worldReset(); t.events.spawn(); assert.equal(f.manager.views()[0]?.instanceId, 'new-9'); f.manager.stop();
 });
-test('movement debug connects then pathfinds once without joining Pit', async () => {
+test('movement debug connects then continuously pathfinds without joining Pit', async () => {
   const f = fixture();
   f.manager.setMovementDebug(true);
   f.tick(0);
   const t = f.connections[0]!;
-  let target: Position | undefined;
-  let finish!: () => void;
-  t.navigation = (next) => new Promise<void>(resolve => { target = {...next}; finish = resolve; });
+  const targets: Position[] = [];
+  const finishes: Array<() => void> = [];
+  t.navigation = (next) => new Promise<void>(resolve => { targets.push({...next}); finishes.push(resolve); });
   t.events.spawn();
   await delay(0);
   assert.equal(f.manager.views()[0]?.state,'PATHFINDING');
-  assert.deepEqual(target,{x:6,y:64,z:0});
+  assert.deepEqual(targets[0],{x:6,y:64,z:0});
   assert.deepEqual(t.commands,[]);
   f.tick(10_000);
   assert.deepEqual(t.commands,[]);
   t.events.message('SERVER FOUND! Sending to mega-debug!');
   assert.equal(f.manager.views()[0]?.instanceId,undefined);
-  finish(); await delay(0);
-  assert.equal(f.manager.views()[0]?.state,'LOBBY');
-  f.tick(20_000);
-  assert.deepEqual(t.commands,[]);
+  finishes[0]!(); await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'PATHFINDING');
+  assert.deepEqual(targets[1],{x:0,y:64,z:6});
   assert.equal(f.manager.movementDebugEnabled(),true);
   f.manager.stop();
 });
