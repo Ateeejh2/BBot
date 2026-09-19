@@ -117,7 +117,18 @@ export function createMineflayerTransport(config: Config, index: number, events:
   };
   const end = () => { if (!closed) events.end(); };
   const error = () => { if (!closed) events.error(); };
+  const entitySpawn = (entity: { name?: string; displayName?: string; position?: { x:number;y:number;z:number } }) => {
+    if (closed || !entity.position) return;
+    if (entity.name === 'chicken' || entity.displayName === 'Chicken') {
+      events.chickenSpawn?.({ x: entity.position.x, y: entity.position.y, z: entity.position.z });
+    }
+  };
+  const blockUpdate = (oldBlock: { name?: string } | null, newBlock: { name?: string; position?: { x:number;y:number;z:number } } | null) => {
+    if (closed || !newBlock?.position || newBlock.name !== 'chest' || oldBlock?.name === 'chest') return;
+    events.chestAppeared?.({ x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z });
+  };
   bot.on('login', reportIdentity); bot.on('spawn', spawn); bot.on('respawn', reset); bot.on('messagestr', message);
+  bot.on('entitySpawn', entitySpawn); bot.on('blockUpdate', blockUpdate);
   bot.on('kicked', kicked); bot.on('end', end); bot.on('error', error);
   if (config.level === 'debug') { bot.on('windowOpen', windowOpen); bot.on('windowClose', windowClose); }
   return {
@@ -135,11 +146,85 @@ export function createMineflayerTransport(config: Config, index: number, events:
       }
       finally { signal.removeEventListener('abort', abort); }
     },
+    launchToward: async (target, signal) => {
+      signal.throwIfAborted();
+      const start = bot.entity?.position;
+      if (!start) throw new Error('Launch position unavailable');
+      const slime = bot.findBlocks({ matching: block => block.name === 'slime', maxDistance: 32, count: 96 })
+        .filter(pos => Math.abs(pos.y - start.y) <= 6);
+      if (!slime.length) throw new Error('Launch pad not found');
+
+      const remaining = [...slime], clusters: typeof slime[] = [];
+      while (remaining.length) {
+        const seed = remaining.pop()!, cluster = [seed];
+        for (let changed = true; changed;) {
+          changed = false;
+          for (let i = remaining.length - 1; i >= 0; i--) {
+            if (cluster.some(p => Math.abs(p.x - remaining[i]!.x) <= 1 && Math.abs(p.y - remaining[i]!.y) <= 1 && Math.abs(p.z - remaining[i]!.z) <= 1)) {
+              cluster.push(remaining.splice(i, 1)[0]!); changed = true;
+            }
+          }
+        }
+        if (cluster.length >= 4) clusters.push(cluster);
+      }
+      if (!clusters.length) throw new Error('Launch pad not found');
+
+      const centers = clusters.map(cluster => ({
+        x: cluster.reduce((sum,p)=>sum+p.x,0)/cluster.length + .5,
+        y: Math.max(...cluster.map(p=>p.y)) + 1,
+        z: cluster.reduce((sum,p)=>sum+p.z,0)/cluster.length + .5,
+        blocks: cluster.length
+      }));
+      const tx = target.x - start.x, tz = target.z - start.z, targetLength = Math.hypot(tx,tz) || 1;
+      centers.sort((a,b) => {
+        const score = (p: typeof a) => {
+          const px=p.x-start.x,pz=p.z-start.z,length=Math.hypot(px,pz)||1;
+          return (px*tx+pz*tz)/(length*targetLength);
+        };
+        return score(b)-score(a);
+      });
+      const pad = centers[0]!;
+      events.diagnostic?.('launch pad selected', { candidates: centers.length, blocks: pad.blocks,
+        padX: Math.round(pad.x*10)/10, padY: Math.round(pad.y*10)/10, padZ: Math.round(pad.z*10)/10 });
+
+      const dx=pad.x-start.x,dz=pad.z-start.z,distance=Math.hypot(dx,dz)||1;
+      const approach={x:pad.x-dx/distance*2.2,y:pad.y,z:pad.z-dz/distance*2.2};
+      const abort = () => stopPath();
+      signal.addEventListener('abort', abort, { once:true });
+      try {
+        await bot.pathfinder.goto(new goals.GoalNear(approach.x,approach.y,approach.z,1));
+        signal.throwIfAborted();
+        stopPath();
+        const padBlock = bot.blockAt(slime.reduce((best,p)=>Math.hypot(p.x-pad.x,p.z-pad.z)<Math.hypot(best.x-pad.x,best.z-pad.z)?p:best,slime[0]!));
+        if (!padBlock) throw new Error('Launch pad unavailable');
+        await bot.lookAt(padBlock.position.offset(.5,1,.5), true);
+        bot.clearControlStates(); bot.setControlState('forward',true);
+        const launchedFrom={x:bot.entity.position.x,y:bot.entity.position.y,z:bot.entity.position.z};
+        let launched=false, groundSamples=0;
+        await new Promise<void>((resolve,reject)=>{
+          const started=Date.now();
+          const onAbort=()=>{clearInterval(timer);reject(new Error('Launch cancelled'));};
+          const timer=setInterval(()=>{
+            if(signal.aborted){onAbort();return;}
+            const entity=bot.entity,p=entity?.position;
+            if(!p)return;
+            const horizontal=Math.hypot(p.x-launchedFrom.x,p.z-launchedFrom.z);
+            if(!launched&&(horizontal>7||Math.abs(p.y-launchedFrom.y)>4)){launched=true;bot.setControlState('forward',false);}
+            if(launched){groundSamples=entity.onGround?groundSamples+1:0;if(groundSamples>=2&&horizontal>7){clearInterval(timer);signal.removeEventListener('abort',onAbort);resolve();return;}}
+            if(Date.now()-started>10_000){clearInterval(timer);signal.removeEventListener('abort',onAbort);reject(new Error(launched?'Launch landing timeout':'Launch pad did not trigger'));}
+          },50);
+          signal.addEventListener('abort',onAbort,{once:true});
+        });
+      } finally {
+        bot.clearControlStates(); signal.removeEventListener('abort',abort);
+      }
+    },
     stopPath,
     close: () => {
       if (closed) return; closed = true;
       stopPath();
       bot.removeListener('login', reportIdentity); bot.removeListener('spawn', spawn); bot.removeListener('respawn', reset); bot.removeListener('messagestr', message);
+      bot.removeListener('entitySpawn', entitySpawn); bot.removeListener('blockUpdate', blockUpdate);
       bot.removeListener('kicked', kicked); bot.removeListener('end', end); bot.removeListener('windowOpen', windowOpen); bot.removeListener('windowClose', windowClose);
       try { (bot as ViewerBot).viewer?.close(); } catch { /* Viewer shutdown must not block bot shutdown. */ }
       viewerStarted = false;
