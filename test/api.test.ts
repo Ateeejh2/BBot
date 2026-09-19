@@ -26,9 +26,13 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     headers: { Origin: 'http://localhost:5173', ...(init.headers as Record<string,string> ?? {}) } });
   try {
     assert.equal((await fetch(base + '/api/v1/status', { headers: { Origin: 'http://evil.test' } })).status, 403);
-    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; viewer:unknown };
+    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; performance:{runtime:{cpuPercent:number;rssMb:number;eventLoopP99Ms:number};pathfinding:{active:number;queued:number;concurrency:number}}; viewer:unknown };
     assert.equal(status.bots[0]?.state, 'DISCONNECTED');
     assert.deepEqual(status.jobs, []);
+    assert.ok(Number.isFinite(status.performance.runtime.cpuPercent));
+    assert.ok(status.performance.runtime.rssMb > 0);
+    assert.ok(Number.isFinite(status.performance.runtime.eventLoopP99Ms));
+    assert.equal(status.performance.pathfinding.active,0);\n    assert.equal(status.performance.pathfinding.queued,0);\n    assert.equal(status.performance.pathfinding.concurrency,1);
     assert.equal(status.viewer, null);
     const action = (name:string, body='{}') => request(`/api/v1/bots/bot-1/actions/${name}`, {method:'POST',headers:{'Content-Type':'application/json'},body});
     assert.equal((await action('join-pit')).status, 409);
