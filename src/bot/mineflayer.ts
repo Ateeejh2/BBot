@@ -47,6 +47,21 @@ export function createMineflayerTransport(config: Config, index: number, events:
     while (value < -Math.PI) value += Math.PI*2;
     return value;
   };
+  const turnToward = async (target:{x:number;y:number;z:number}, signal:AbortSignal) => {
+    for (let ticks=0;ticks<30;ticks++) {
+      signal.throwIfAborted();
+      const p=bot.entity?.position;
+      if(!p)throw new Error('Position unavailable');
+      const dx=target.x-p.x,dz=target.z-p.z;
+      const yaw=Math.atan2(-dx,-dz);
+      const turn=angleDelta(yaw,bot.entity.yaw);
+      if(Math.abs(turn)<=0.04)return;
+      const step=Math.max(-0.12,Math.min(0.12,turn));
+      void bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
+      await bot.waitForTicks(1);
+    }
+    throw new Error('Control turn timeout');
+  };
   const controlWalk = async (target:{x:number;y:number;z:number}, range:number, signal:AbortSignal) => {
     signal.throwIfAborted();
     const movements = walkingMovements();
@@ -73,9 +88,9 @@ export function createMineflayerTransport(config: Config, index: number, events:
           const yaw = Math.atan2(-dx,-dz);
           const turn = angleDelta(yaw,bot.entity.yaw);
           if (Math.abs(turn) > 0.04) {
-            const step = Math.max(-0.22,Math.min(0.22,turn));
+            const step = Math.max(-0.12,Math.min(0.12,turn));
             if (Math.abs(turn) > 0.6) bot.setControlState('forward',false);
-            await bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
+            void bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
           }
           signal.throwIfAborted();
           const aligned = Math.abs(angleDelta(yaw,bot.entity.yaw)) <= 0.55;
@@ -267,7 +282,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         signal.throwIfAborted();
         const padBlock = bot.blockAt(slime.reduce((best,p)=>Math.hypot(p.x-pad.x,p.z-pad.z)<Math.hypot(best.x-pad.x,best.z-pad.z)?p:best,slime[0]!));
         if (!padBlock) throw new Error('Launch pad unavailable');
-        await bot.lookAt(padBlock.position.offset(.5,1,.5), false);
+        await turnToward({x:padBlock.position.x+.5,y:padBlock.position.y+1,z:padBlock.position.z+.5},signal);
         signal.throwIfAborted();
         bot.clearControlStates();
         bot.setControlState('sprint',false);
