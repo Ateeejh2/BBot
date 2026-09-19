@@ -55,7 +55,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let lastSprintActionAt = 0;
   let lastSprintAction: 'START' | 'STOP' | undefined;
   let lastServerMovementAttributeAt = 0;
-  let lastServerMovementAttribute: { value:number; effective:number; modifiers:string; sprintModifier:boolean } | undefined;
+  let lastServerMovementAttribute: { value:number; effective:number; modifiers:string; sprintModifier:boolean; x:number|null; y:number|null; z:number|null } | undefined;
   let lastServerAbilitiesAt = 0;
   let lastServerAbilities: { flags:number; flyingSpeed:number; walkingSpeed:number } | undefined;
   const movementPacketTimes:number[] = [];
@@ -436,6 +436,11 @@ export function createMineflayerTransport(config: Config, index: number, events:
       lastSprintAction:lastSprintAction??null,
       sinceSprintActionMs:lastSprintActionAt?now-lastSprintActionAt:null,
       sinceServerMovementAttributeMs:lastServerMovementAttributeAt?now-lastServerMovementAttributeAt:null,
+      serverMovementAttributeX:lastServerMovementAttribute?.x??null,
+      serverMovementAttributeY:lastServerMovementAttribute?.y??null,
+      serverMovementAttributeZ:lastServerMovementAttribute?.z??null,
+      serverMovementAttributeTargetDistance:lastServerMovementAttribute?.x!==null&&lastServerMovementAttribute?.x!==undefined&&lastServerMovementAttribute.z!==null&&lastServerMovementAttribute.z!==undefined
+        ? Math.round(Math.hypot(lastServerMovementAttribute.x-target.x,lastServerMovementAttribute.z-target.z)*1000)/1000 : null,
       serverMovementAttributeValue:lastServerMovementAttribute?.value??null,
       serverMovementEffectiveSpeed:lastServerMovementAttribute?.effective??null,
       serverMovementModifiers:lastServerMovementAttribute?.modifiers??'none',
@@ -496,7 +501,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
     effective+=baseAfterAdd*modifiers.filter(modifier=>modifier.operation===1).reduce((sum,modifier)=>sum+modifier.amount,0);
     for(const modifier of modifiers)if(modifier.operation===2)effective+=effective*modifier.amount;
     lastServerMovementAttributeAt=Date.now();
-    lastServerMovementAttribute={value:property.value,effective,modifiers:summary||'none',sprintModifier};
+    lastServerMovementAttribute={
+      value:property.value,effective,modifiers:summary||'none',sprintModifier,
+      x:bot.entity?.position?.x??null,y:bot.entity?.position?.y??null,z:bot.entity?.position?.z??null
+    };
   };
   bot._client.prependListener('update_attributes', updateAttributesPacket);
   bot._client.prependListener('entity_update_attributes', updateAttributesPacket);
