@@ -42,6 +42,30 @@ test('first connection waits for spawn and cooldown; notification alone does not
   assert.equal(f.manager.views()[0]?.instanceId, undefined);
   t.events.worldReset(); t.events.spawn(); assert.equal(f.manager.views()[0]?.instanceId, 'new-9'); f.manager.stop();
 });
+test('movement debug connects then pathfinds once without joining Pit', async () => {
+  const f = fixture();
+  f.manager.setMovementDebug(true);
+  f.tick(0);
+  const t = f.connections[0]!;
+  let target: Position | undefined;
+  let finish!: () => void;
+  t.navigation = (next) => new Promise<void>(resolve => { target = {...next}; finish = resolve; });
+  t.events.spawn();
+  await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'PATHFINDING');
+  assert.deepEqual(target,{x:6,y:64,z:0});
+  assert.deepEqual(t.commands,[]);
+  f.tick(10_000);
+  assert.deepEqual(t.commands,[]);
+  t.events.message('SERVER FOUND! Sending to mega-debug!');
+  assert.equal(f.manager.views()[0]?.instanceId,undefined);
+  finish(); await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'LOBBY');
+  f.tick(20_000);
+  assert.deepEqual(t.commands,[]);
+  assert.equal(f.manager.movementDebugEnabled(),true);
+  f.manager.stop();
+});
 test('kick reason is retained on the individual bot view', () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!;
   t.events.kicked?.('Disconnected: duplicate login', true);
