@@ -348,8 +348,12 @@ export function createMineflayerTransport(config: Config, index: number, events:
   const positionPacket = (packet: { x:number; y:number; z:number; yaw:number; flags:number | {x?:boolean;y?:boolean;z?:boolean;yaw?:boolean} }) => {
     if (closed || !bot.entity?.position) return;
     const receivedAt=Date.now();
-    correctionTraceUntil = receivedAt + 500;
-    correctionTraceRemaining = 10;
+    const previousCorrectionAt=lastCorrectionAt;
+    const startsCorrectionIncident=!previousCorrectionAt || receivedAt-previousCorrectionAt>1500;
+    if(startsCorrectionIncident){
+      correctionTraceUntil = receivedAt + 700;
+      correctionTraceRemaining = 14;
+    }
     correctionAckPending++;
     correctionSequence++;
     const before = bot.entity.position;
@@ -408,7 +412,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       effectiveMovementSpeed = value;
     }
     const now=receivedAt;
-    const sinceCorrectionMs=lastCorrectionAt?now-lastCorrectionAt:null;
+    const sinceCorrectionMs=previousCorrectionAt?now-previousCorrectionAt:null;
     lastCorrectionAt=now;
     const packetTimes=movementPacketTimes.filter(at=>now-at<=1000);
     const packetGaps=packetTimes.slice(1).map((at,i)=>at-packetTimes[i]!);
@@ -423,6 +427,9 @@ export function createMineflayerTransport(config: Config, index: number, events:
       if(distance<nearestSentDistance){nearestSentDistance=distance;nearestSent=sample;nearestSentIndex=i;}
     }
     const lastSent=recentMovement.at(-1);
+    const recentSentTrail=recentMovement.slice(-12).map(sample =>
+      `${now-sample.at}ms:${sample.packet}@${sample.x.toFixed(3)},${sample.y.toFixed(3)},${sample.z.toFixed(3)}:g${sample.onGround===null?'?':sample.onGround?'1':'0'}`
+    ).join('|');
     const recentSteps=recentMovement.slice(1).map((sample,index)=>({
       horizontal:Math.hypot(sample.x-recentMovement[index]!.x,sample.z-recentMovement[index]!.z),
       gapMs:sample.at-recentMovement[index]!.at
@@ -445,6 +452,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       nearestSentZ:nearestSent?.z??null,
       lastSentAgeMs:lastSent?now-lastSent.at:null,
       lastSentTargetDistance:lastSent?Math.round(Math.hypot(lastSent.x-target.x,lastSent.z-target.z,Math.min(4,Math.abs(lastSent.y-target.y)))*1000)/1000:null,
+      recentSentTrail,
       lastMovementStep:lastStep?Math.round(lastStep.horizontal*1000)/1000:null,
       maxMovementStep:maxStep===null?null:Math.round(maxStep*1000)/1000,
       sinceServerAbilitiesMs:lastServerAbilitiesAt?now-lastServerAbilitiesAt:null,
