@@ -21,7 +21,7 @@ test('offline dependency smoke: pinned 1.8.9 resolves protocol 47 and plugin exp
   assert.equal(typeof pathfinder.Movements, 'function');
   assert.equal(typeof pathfinder.goals.GoalNear, 'function');
 });
-import { eligibleTransferChannel } from '../src/bot/message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel } from '../src/bot/message-source.js';
 test('legacy chat is opt-in; sender metadata is accepted only for an exact transfer match', () => {
   assert.equal(eligibleTransferChannel('system', null, 'system'), true);
   assert.equal(eligibleTransferChannel('chat', null, 'system'), false);
@@ -31,4 +31,13 @@ test('legacy chat is opt-in; sender metadata is accepted only for an exact trans
   assert.equal(eligibleTransferChannel('system', 'sender', 'system', true), false);
   assert.equal(eligibleTransferChannel('game_info', null, 'chat', true), false);
   assert.equal(eligibleTransferChannel('title', null, 'system', true), false);
+});
+
+test('exact server event announcements accept sender-less legacy chat or system only', () => {
+  assert.equal(eligibleServerAnnouncementChannel('chat', null, true), true);
+  assert.equal(eligibleServerAnnouncementChannel('system', undefined, true), true);
+  assert.equal(eligibleServerAnnouncementChannel('chat', 'player-uuid', true), false);
+  assert.equal(eligibleServerAnnouncementChannel('system', 'sender', true), false);
+  assert.equal(eligibleServerAnnouncementChannel('game_info', null, true), false);
+  assert.equal(eligibleServerAnnouncementChannel('chat', null, false), false);
 });
