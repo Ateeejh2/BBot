@@ -1,6 +1,16 @@
 import { validEvent, type GameEvent } from '../core/types.js';
 import { abortableDelay, backoff } from '../recovery/backoff.js';
 export interface EventProvider { fetchEvents(signal?: AbortSignal): Promise<GameEvent[]> }
+export interface EventFeedV1 { version: 1; events: GameEvent[] }
+
+export function parseEventFeedV1(body: unknown): GameEvent[] {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid event feed');
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).sort().join(',') !== 'events,version' || record.version !== 1 || !Array.isArray(record.events) ||
+      record.events.length > 2000 || !record.events.every(validEvent)) throw new Error('Invalid event feed');
+  return structuredClone(record.events as GameEvent[]);
+}
+
 export class MockEventProvider implements EventProvider {
   constructor(private readonly events: GameEvent[] = [], private readonly now = Date.now) {}
   async fetchEvents(signal?: AbortSignal): Promise<GameEvent[]> {
