@@ -110,7 +110,7 @@ export class BotManager {
     this.configurationLocked = true;
     try { return await operation(); } finally { this.configurationLocked = false; }
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, jobId: b.execution?.id, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
