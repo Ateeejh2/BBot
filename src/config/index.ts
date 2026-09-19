@@ -29,6 +29,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (lobbyCommand && (!/^\/[a-z\d _-]{1,80}$/i.test(lobbyCommand) || /^\/server\b/i.test(lobbyCommand))) throw new Error('Invalid LOBBY_COMMAND');
   const transferMessageChannel = env.TRANSFER_MESSAGE_CHANNEL ?? 'system';
   if (!['system', 'chat'].includes(transferMessageChannel)) throw new Error('Invalid TRANSFER_MESSAGE_CHANNEL');
+  const eventProviderUrl = env.EVENT_PROVIDER_URL?.trim() || undefined;
+  if (eventProviderUrl) {
+    let url: URL;
+    try { url = new URL(eventProviderUrl); } catch { throw new Error('Invalid EVENT_PROVIDER_URL'); }
+    const localHttp = url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+    if ((url.protocol !== 'https:' && !localHttp) || url.username || url.password || url.hash) throw new Error('Invalid EVENT_PROVIDER_URL');
+  }
   const distributionEnabled = bool('DISTRIBUTION_ENABLED', false);
   if (mode === 'live' && distributionEnabled && !lobbyCommand) throw new Error('Distribution requires a verified LOBBY_COMMAND');
   const suspectMs = integer('INSTANCE_SUSPECT_MS', 300000, 1000, 86400000);
@@ -82,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     pathTimeoutMs: integer('PATH_TIMEOUT_MS', 30000, 100, 600000),
     taskTimeoutMs: integer('TASK_TIMEOUT_MS', 10000, 100, 600000),
     eventPollMs: integer('EVENT_POLL_MS', 10000, 100, 3600000),
+    eventProviderUrl,
     jobMaxAttempts: integer('JOB_MAX_ATTEMPTS', 3, 1, 100),
     jobRetryMs: integer('JOB_RETRY_MS', 5000, 100, 600000),
     maxJobs: integer('MAX_JOBS', 2000, 20, 100000),
