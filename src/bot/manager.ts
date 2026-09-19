@@ -20,7 +20,7 @@ interface ManagedBot {
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
-  preparation?: EventPreparation; debugWalk?: DebugWalk; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number;
+  preparation?: EventPreparation; debugWalk?: DebugWalk; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -329,11 +329,19 @@ export class BotManager {
         },
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
-          if (name === 'server position correction') b.lastPositionCorrectionAt = this.now();
+          const now=this.now();
+          let correlated=fields;
+          if(name==='control walk collision'){
+            b.lastHorizontalCollisionAt=now;
+          } else if(name==='server position correction'){
+            b.lastPositionCorrectionAt=now;
+            correlated={...fields,
+              sinceHorizontalCollisionMs:b.lastHorizontalCollisionAt===undefined?null:Math.max(0,now-b.lastHorizontalCollisionAt)};
+          }
           const level = name.startsWith('viewer ') || name === 'server position correction' || name === 'movement packet after correction' ||
             name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
-            instance: b.instanceId, state: b.machine.state, ...fields });
+            instance: b.instanceId, state: b.machine.state, ...correlated });
         },
         kicked: (reason, loggedIn) => {
           if (this.stopped || b.connection !== connection) return;
@@ -438,7 +446,7 @@ export class BotManager {
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
-    b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined;
+    b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
     b.dueAt = this.now() + backoff(b.reconnectAttempts++, this.config.reconnect, this.random);
     try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
