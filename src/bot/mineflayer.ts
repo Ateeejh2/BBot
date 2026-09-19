@@ -45,11 +45,21 @@ export function createMineflayerTransport(config: Config, index: number, events:
       const loaded = require('prismarine-viewer') as ViewerModule;
       const mineflayerViewer = loaded.mineflayer;
       if (typeof mineflayerViewer !== 'function') throw new Error('mineflayer viewer export missing');
+      events.diagnostic?.('viewer start requested', { botId, port: config.viewer.port });
       mineflayerViewer(bot, {
         port: config.viewer.port,
         firstPerson: config.viewer.firstPerson,
         viewDistance: config.viewer.viewDistance
       });
+      let ready = false;
+      for (let attempt = 0; attempt < 15 && !closed; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        try {
+          const response = await fetch(`http://127.0.0.1:${config.viewer.port}/`, { signal: AbortSignal.timeout(500) });
+          if (response.ok) { ready = true; break; }
+        } catch { /* Viewer may still be binding. */ }
+      }
+      if (!ready) throw new Error('viewer port did not become ready');
       viewerStarted = true;
       events.diagnostic?.('viewer started', { botId, port: config.viewer.port, firstPerson: config.viewer.firstPerson, viewDistance: config.viewer.viewDistance });
     } catch (error) {
