@@ -69,9 +69,10 @@ export class CarePackageCoordinator {
   }
 
   private activeTimestamp(now:number):number|undefined {
-    return this.schedule.snapshot().events
-      .map(v=>v.timestamp)
-      .find(timestamp=>now>=timestamp-this.armLeadMs&&now<=timestamp+this.activeAfterMs);
+    const source=this.schedule.eventsBetween?.(now-this.activeAfterMs,now+this.armLeadMs)??this.schedule.snapshot().events;
+    return source.map(v=>v.timestamp)
+      .filter(timestamp=>now>=timestamp-this.armLeadMs&&now<=timestamp+this.activeAfterMs)
+      .sort((a,b)=>Math.abs(now-a)-Math.abs(now-b))[0];
   }
   private get(timestamp:number,instanceId:string):TrackedInstance {
     const normalized=instanceKey(instanceId),key=`${timestamp}:${normalized}`;
