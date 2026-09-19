@@ -38,7 +38,7 @@ function manualJob(value: unknown, now: number): GameEvent {
     id: `manual-${randomUUID()}`,
     instanceId: typeof body.instanceId === 'string' ? body.instanceId : '',
     type: typeof body.eventType === 'string' ? body.eventType : '',
-    target: { x: Number(target.x), y: Number(target.y), z: Number(target.z) },
+    target: { x: typeof target.x === 'number' ? target.x : NaN, y: typeof target.y === 'number' ? target.y : NaN, z: typeof target.z === 'number' ? target.z : NaN },
     expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : NaN,
     metadata: { source: 'manual' }
   };
