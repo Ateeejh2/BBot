@@ -9,6 +9,8 @@ export interface TransportEvents {
 }
 export interface BotTransport {
   position(): Position | undefined;
+  /** Server-reported ping for this player. May be unavailable briefly after login. */
+  ping?(): number | undefined;
   chat(command: string): void;
   navigate(target: Position, signal: AbortSignal): Promise<void>;
   stopPath(): void;
