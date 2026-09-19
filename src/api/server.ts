@@ -60,7 +60,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
-      detail: message === 'launch pad test failed' && typeof fields.reason === 'string' ? fields.reason : undefined });
+      detail: ['launch pad test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason : undefined });
     if (logs.length > 100) logs.shift();
     broadcast();
   });
