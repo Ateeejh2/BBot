@@ -139,7 +139,8 @@ export function createMineflayerTransport(config: Config, index: number, events:
 
             const yaw = Math.atan2(-dx,-dz);
             const turn = angleDelta(yaw,bot.entity.yaw);
-            if (Math.abs(turn) > 0.04) {
+            const needsJump = dy > 0.35;
+            if ((!legacyMovement || needsJump) && Math.abs(turn) > 0.04) {
               const step = Math.max(-0.12,Math.min(0.12,turn));
               void bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
             }
@@ -147,11 +148,10 @@ export function createMineflayerTransport(config: Config, index: number, events:
 
             const remainingTurn = Math.abs(angleDelta(yaw,bot.entity.yaw));
             const aligned = remainingTurn <= 0.28;
-            const needsJump = dy > 0.35;
             const runtimeEntity = bot.entity as typeof bot.entity & { isCollidedHorizontally?:boolean };
             const collided = Boolean(runtimeEntity.isCollidedHorizontally);
 
-            if (collided && !needsJump && aligned) {
+            if (collided && !needsJump && (legacyMovement || aligned)) {
               bot.clearControlStates();
               events.diagnostic?.('control walk collision',{
                 waypointX:waypoint.x,waypointY:waypoint.y,waypointZ:waypoint.z,
@@ -161,24 +161,50 @@ export function createMineflayerTransport(config: Config, index: number, events:
               break;
             }
 
-            // A/B compatibility mode based on the old control-only script:
-            // keep forward+sprint latched through flat turns instead of toggling them
-            // whenever steering briefly falls outside the alignment threshold.
-            // Jumps still wait for alignment so pathfinder step-up behavior stays safe.
-            const moveForward = legacyMovement
-              ? !collided && (!needsJump || aligned)
-              : aligned && !collided;
-            const canSprint = legacyMovement
-              ? !collided && !needsJump
-              : aligned && !collided && !needsJump;
-            bot.setControlState('sneak',false);
-            bot.setControlState('back',false);
-            bot.setControlState('left',false);
-            bot.setControlState('right',false);
-            bot.setControlState('forward',moveForward);
-            bot.setControlState('sprint',canSprint);
-            bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
-            await bot.waitForTicks(1);
+            if (legacyMovement && !needsJump) {
+              // Reproduce the old bot.js control timing: its deprecated "physicTick"
+              // listener ran after simulation but before Mineflayer sent that tick's
+              // movement packet. Controls affect the next physics step while lookAt()
+              // updates the yaw carried by the current outgoing packet.
+              await new Promise<void>((resolve,reject) => {
+                let settled=false;
+                const finish=(error?:unknown)=>{
+                  if(settled)return;settled=true;
+                  signal.removeEventListener('abort',onAbort);
+                  bot.removeListener('physicTick',onTick);
+                  if(error)reject(error);else resolve();
+                };
+                const onAbort=()=>finish(signal.reason instanceof Error?signal.reason:new Error('Movement aborted'));
+                const onTick=()=>{
+                  try{
+                    const current=bot.entity?.position;
+                    if(!current)throw new Error('Position unavailable');
+                    bot.setControlState('sneak',false);
+                    bot.setControlState('back',false);
+                    bot.setControlState('left',false);
+                    bot.setControlState('right',false);
+                    bot.setControlState('forward',true);
+                    bot.setControlState('sprint',true);
+                    bot.setControlState('jump',false);
+                    void bot.lookAt(waypoint.offset(0,current.y-waypoint.y,0),false);
+                    finish();
+                  }catch(error){finish(error);}
+                };
+                signal.addEventListener('abort',onAbort,{once:true});
+                bot.once('physicTick',onTick);
+              });
+            } else {
+              const moveForward = aligned && !collided;
+              const canSprint = aligned && !collided && !needsJump;
+              bot.setControlState('sneak',false);
+              bot.setControlState('back',false);
+              bot.setControlState('left',false);
+              bot.setControlState('right',false);
+              bot.setControlState('forward',moveForward);
+              bot.setControlState('sprint',canSprint);
+              bot.setControlState('jump',aligned && needsJump && bot.entity.onGround);
+              await bot.waitForTicks(1);
+            }
           }
           bot.setControlState('jump',false);
           if (collisionReplan) break;
