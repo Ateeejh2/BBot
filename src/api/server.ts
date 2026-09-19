@@ -128,7 +128,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       send(res, 200, { challenge: controls.getAuthChallenge(authChallenge[1]!) ?? null });
       return;
     }
-    const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect|test-launch-pad|test-care-package)$/.exec(req.url ?? '');
+    const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect|test-launch-pad|test-care-package|oof)$/.exec(req.url ?? '');
     const fleetAction = /^\/api\/v1\/fleet\/actions\/(start-assigned|stop-all)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
     const retry = /^\/api\/v1\/accounts\/([0-9a-f-]{36})\/actions\/retry-auth$/.exec(req.url ?? '');
@@ -198,6 +198,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         else if (action === 'join-pit') manager.joinPit(id!);
         else if (action === 'test-launch-pad') manager.testLaunchPad(id!);
         else if (action === 'test-care-package') manager.testCarePackage(id!);
+        else if (action === 'oof') manager.oofBot(id!);
         else manager.disconnectBot(id!);
         broadcast(); send(res, 200, snapshot());
       } catch (error) {
