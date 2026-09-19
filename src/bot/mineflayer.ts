@@ -71,15 +71,21 @@ export function createMineflayerTransport(config: Config, index: number, events:
           else if (Date.now()-lastProgress > 3000) throw new Error('Control walk stuck');
 
           const yaw = Math.atan2(-dx,-dz);
-          if (Math.abs(angleDelta(yaw,bot.entity.yaw)) > 0.04) await bot.look(yaw,bot.entity.pitch,false);
+          const turn = angleDelta(yaw,bot.entity.yaw);
+          if (Math.abs(turn) > 0.04) {
+            const step = Math.max(-0.22,Math.min(0.22,turn));
+            if (Math.abs(turn) > 0.6) bot.setControlState('forward',false);
+            await bot.look(bot.entity.yaw+step,bot.entity.pitch,false);
+          }
           signal.throwIfAborted();
+          const aligned = Math.abs(angleDelta(yaw,bot.entity.yaw)) <= 0.55;
           bot.setControlState('sprint',false);
           bot.setControlState('sneak',false);
           bot.setControlState('back',false);
           bot.setControlState('left',false);
           bot.setControlState('right',false);
-          bot.setControlState('forward',true);
-          bot.setControlState('jump',dy > 0.35 && bot.entity.onGround);
+          bot.setControlState('forward',aligned);
+          bot.setControlState('jump',aligned && dy > 0.35 && bot.entity.onGround);
           await bot.waitForTicks(1);
         }
         bot.setControlState('jump',false);
