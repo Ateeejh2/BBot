@@ -118,6 +118,12 @@ export class BotManager {
     if (this.movementDebug || b.machine.state !== 'LOBBY' || !b.ready) throw new Error('INVALID_STATE');
     this.join(b);
   }
+  oofBot(id: string): void {
+    const b = this.controlled(id);
+    if (!b.transport || ['DISCONNECTED','CONNECTING'].includes(b.machine.state)) throw new Error('INVALID_STATE');
+    b.transport.chat('/oof');
+    this.log(b, 'oof command sent');
+  }
   testCarePackage(id:string):{ launchTarget:{x:number;z:number} } {
     const b=this.controlled(id);
     if(this.movementDebug||b.machine.state!=='IN_PIT_IDLE'||!b.instanceId||b.execution||b.preparation)throw new Error('INVALID_STATE');
