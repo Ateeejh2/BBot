@@ -57,6 +57,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
   let lastServerMovementAttributeAt = 0;
   let lastServerMovementAttribute: { value:number; effective:number; modifiers:string; sprintModifier:boolean } | undefined;
   const movementPacketTimes:number[] = [];
+  const movementHistory:Array<{at:number;packet:string;x:number;y:number;z:number;yaw:number|null;onGround:boolean|null}> = [];
   const sprintActionTimes:number[] = [];
   const stopPath = () => { bot.clearControlStates(); };
   const isPartialSlab = (block: { name?: string } | null | undefined) =>
@@ -391,6 +392,16 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const packetTimes=movementPacketTimes.filter(at=>now-at<=1000);
     const packetGaps=packetTimes.slice(1).map((at,i)=>at-packetTimes[i]!);
     const sprintActions=sprintActionTimes.filter(at=>now-at<=2000);
+    const recentMovement=movementHistory.filter(sample=>now-sample.at<=3000);
+    let nearestSent:typeof recentMovement[number] | undefined;
+    let nearestSentDistance=Number.POSITIVE_INFINITY;
+    let nearestSentIndex=-1;
+    for(let i=0;i<recentMovement.length;i++){
+      const sample=recentMovement[i]!;
+      const distance=Math.hypot(sample.x-target.x,sample.z-target.z,Math.min(4,Math.abs(sample.y-target.y)));
+      if(distance<nearestSentDistance){nearestSentDistance=distance;nearestSent=sample;nearestSentIndex=i;}
+    }
+    const lastSent=recentMovement.at(-1);
     events.diagnostic?.('server position correction', {
       sinceSpawnMs: lastSpawnAt ? now-lastSpawnAt : null,
       sinceCorrectionMs,
@@ -399,6 +410,14 @@ export function createMineflayerTransport(config: Config, index: number, events:
       minMovementPacketGapMs:packetGaps.length?Math.min(...packetGaps):null,
       maxMovementPacketGapMs:packetGaps.length?Math.max(...packetGaps):null,
       movementPacketBursts:packetGaps.filter(gap=>gap<20).length,
+      nearestSentAgeMs:nearestSent?now-nearestSent.at:null,
+      nearestSentPacketsAgo:nearestSent?recentMovement.length-1-nearestSentIndex:null,
+      nearestSentDistance:Number.isFinite(nearestSentDistance)?Math.round(nearestSentDistance*1000)/1000:null,
+      nearestSentX:nearestSent?.x??null,
+      nearestSentY:nearestSent?.y??null,
+      nearestSentZ:nearestSent?.z??null,
+      lastSentAgeMs:lastSent?now-lastSent.at:null,
+      lastSentTargetDistance:lastSent?Math.round(Math.hypot(lastSent.x-target.x,lastSent.z-target.z,Math.min(4,Math.abs(lastSent.y-target.y)))*1000)/1000:null,
       sprintActions2s:sprintActions.length,
       lastSprintAction:lastSprintAction??null,
       sinceSprintActionMs:lastSprintActionAt?now-lastSprintActionAt:null,
@@ -484,6 +503,17 @@ export function createMineflayerTransport(config: Config, index: number, events:
       const now=Date.now();
       movementPacketTimes.push(now);
       while(movementPacketTimes.length>48||movementPacketTimes[0]!<now-2000)movementPacketTimes.shift();
+      if((name==='position'||name==='position_look') &&
+          typeof wireParams.x==='number'&&Number.isFinite(wireParams.x)&&
+          typeof wireParams.y==='number'&&Number.isFinite(wireParams.y)&&
+          typeof wireParams.z==='number'&&Number.isFinite(wireParams.z)){
+        movementHistory.push({
+          at:now,packet:name,x:wireParams.x,y:wireParams.y,z:wireParams.z,
+          yaw:typeof wireParams.yaw==='number'&&Number.isFinite(wireParams.yaw)?wireParams.yaw:null,
+          onGround:typeof wireParams.onGround==='boolean'?wireParams.onGround:null
+        });
+        while(movementHistory.length>80||movementHistory[0]!.at<now-4000)movementHistory.shift();
+      }
     }
     if(!closed && name==='entity_action' && (params.actionId===3||params.actionId===4)){
       const now=Date.now();
