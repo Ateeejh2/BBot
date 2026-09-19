@@ -29,6 +29,8 @@ export class BotManager {
   private nextConnectAt = 0;
   private nextRerollAt = 0;
   private movementDebug = false;
+  private chatDebugSequence = 0;
+  private chatDebugEntries: Array<{ id:number; at:number; botId:string; instanceId?:string; channel:string; text:string }> = [];
   private sessionFailureHandler?: (botId: string, accountId: string) => Promise<boolean>;
   readonly distribution: DistributionManager;
   constructor(readonly config: Config, private factory: TransportFactory,
@@ -49,6 +51,7 @@ export class BotManager {
   }
   views(): BotView[] { return this.bots.map(b => this.view(b)); }
   movementDebugEnabled(): boolean { return this.movementDebug; }
+  chatDebugSnapshot() { return this.chatDebugEntries.map(entry => ({ ...entry })); }
   setMovementDebug(enabled: boolean): void {
     if (this.movementDebug === enabled) return;
     this.movementDebug = enabled;
@@ -330,6 +333,21 @@ export class BotManager {
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
           const now=this.now();
+          if(name==='chat message received'){
+            const text=typeof fields?.chatText==='string'?fields.chatText.replace(/[\r\n]+/g,' ').trim().slice(0,500):'';
+            if(text){
+              this.chatDebugEntries.push({
+                id:++this.chatDebugSequence,
+                at:now,
+                botId:b.id,
+                instanceId:b.instanceId,
+                channel:typeof fields?.channel==='string'?fields.channel.slice(0,32):'unknown',
+                text
+              });
+              if(this.chatDebugEntries.length>200)this.chatDebugEntries.shift();
+            }
+            return;
+          }
           let correlated=fields;
           if(name==='control walk collision'){
             b.lastHorizontalCollisionAt=now;
@@ -339,8 +357,7 @@ export class BotManager {
               sinceHorizontalCollisionMs:b.lastHorizontalCollisionAt===undefined?null:Math.max(0,now-b.lastHorizontalCollisionAt)};
           }
           const level = name.startsWith('viewer ') || name === 'server position correction' || name === 'movement packet after correction' ||
-            name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ||
-            name === 'chat message received' ? 'info' : 'debug';
+            name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...correlated });
         },
