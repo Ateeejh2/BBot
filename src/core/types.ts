@@ -6,9 +6,13 @@ export interface GameEvent {
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'LOBBY' | 'JOINING_PIT' |
   'IN_PIT_IDLE' | 'PATHFINDING' | 'WORKING' | 'RECOVERING';
 export type JobState = 'QUEUED' | 'ASSIGNED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED';
+export type JobFailureReason =
+  | 'PATH_NOT_FOUND' | 'PATH_TIMEOUT' | 'PATH_CANCELLED' | 'PATH_REJECTED' | 'PATH_FAILED'
+  | 'INSTANCE_LOST' | 'JOB_EXPIRED' | 'TASK_TIMEOUT' | 'TASK_FAILED';
 export interface Job {
   id: string; event: GameEvent; state: JobState; attempts: number; lease: number;
   botId?: string; updatedAt: number; availableAt: number;
+  lastFailure?: JobFailureReason; lastFailureAt?: number; retryAt?: number;
 }
 export interface BotView {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; state: BotState; instanceId?: string;
