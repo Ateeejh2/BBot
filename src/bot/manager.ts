@@ -16,6 +16,7 @@ interface ManagedBot {
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
+  pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -35,11 +36,29 @@ export class BotManager {
       const bot: ManagedBot = { id: `bot-${i + 1}`, accountLabel: a.label,
         machine: new StateMachine((_from, to) => this.log(bot, 'state changed', { state: to })),
         generation: new Generation(), connection: 0, ready: false, dueAt: 0, deadline: 0,
-        reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, paused: config.api.enabled };
+        reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, paused: config.api.enabled,
+        pathAttempts: 0, pathCompleted: 0, pathFailed: 0 };
       return bot;
     });
   }
   views(): BotView[] { return this.bots.map(b => this.view(b)); }
+  performanceSnapshot() {
+    const now = this.now();
+    return {
+      active: this.paths.active,
+      queued: this.paths.queued,
+      concurrency: this.paths.concurrency,
+      bots: this.bots.map(b => ({
+        botId: b.id,
+        pathAttempts: b.pathAttempts,
+        pathCompleted: b.pathCompleted,
+        pathFailed: b.pathFailed,
+        activePathMs: b.pathStartedAt === undefined ? undefined : Math.max(0, now - b.pathStartedAt),
+        lastPathMs: b.lastPathMs,
+        lastPathQueueMs: b.lastPathQueueMs
+      }))
+    };
+  }
   setSessionFailureHandler(handler: (botId: string, accountId: string) => Promise<boolean>): void {
     this.sessionFailureHandler = handler;
   }
@@ -284,12 +303,32 @@ export class BotManager {
     const execution: Execution = { id, lease, generation: b.generation.current, abort: new AbortController() };
     b.execution = execution; b.machine.transition('PATHFINDING');
     const transport = b.transport!;
+    const queuedAt = this.now();
+    b.pathAttempts++;
     const current = () => b.execution === execution && !execution.abort.signal.aborted &&
       b.generation.isCurrent(execution.generation) && b.instanceId === event.instanceId && this.scheduler.owns(id, b.id, lease);
     void (async () => {
+      let pathRan = false;
       try {
         await this.paths.submit(`${b.id}:${id}:${lease}`, execution.abort.signal,
-          signal => transport.navigate(event.target, signal), () => transport.stopPath());
+          async signal => {
+            pathRan = true;
+            const startedAt = this.now();
+            b.pathStartedAt = startedAt;
+            b.lastPathQueueMs = Math.max(0, startedAt - queuedAt);
+            try {
+              await transport.navigate(event.target, signal);
+              b.pathCompleted++;
+            } catch (error) {
+              b.pathFailed++;
+              throw error;
+            } finally {
+              if (b.pathStartedAt === startedAt) {
+                b.lastPathMs = Math.max(0, this.now() - startedAt);
+                b.pathStartedAt = undefined;
+              }
+            }
+          }, () => transport.stopPath());
         if (!current()) return;
         if (event.expiresAt <= this.now()) throw new Error('Expired');
         this.scheduler.running(id, b.id, lease, this.now()); b.machine.transition('WORKING');
@@ -306,6 +345,7 @@ export class BotManager {
         } finally { clearTimeout(timer); if (taskAbort) execution.abort.signal.removeEventListener('abort', taskAbort); }
         if (current()) { this.scheduler.complete(id, b.id, lease, this.now()); this.log(b, 'job completed', { eventId: event.id }); }
       } catch {
+        if (!pathRan) b.pathFailed++;
         if (b.execution === execution) { this.scheduler.release(id, b.id, lease, this.now()); this.log(b, 'job returned or failed', { eventId: event.id }); }
       } finally {
         if (b.execution === execution && b.generation.isCurrent(execution.generation)) {
