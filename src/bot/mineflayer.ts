@@ -115,7 +115,6 @@ export function createMineflayerTransport(config: Config, index: number, events:
         for (const waypoint of plan.path) {
           let best = Number.POSITIVE_INFINITY;
           let lastProgress = Date.now();
-          let collisionTicks = 0;
           while (true) {
             signal.throwIfAborted();
             if (Date.now()-started > config.pathTimeoutMs) throw new Error('Control walk timeout');
@@ -143,10 +142,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
             const runtimeEntity = bot.entity as typeof bot.entity & { isCollidedHorizontally?:boolean };
             const collided = Boolean(runtimeEntity.isCollidedHorizontally);
 
-            if (collided && !needsJump && aligned) collisionTicks++;
-            else collisionTicks = 0;
-
-            if (collisionTicks >= 3) {
+            if (collided && !needsJump && aligned) {
               bot.clearControlStates();
               events.diagnostic?.('control walk collision',{
                 waypointX:waypoint.x,waypointY:waypoint.y,waypointZ:waypoint.z,
@@ -156,7 +152,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
               break;
             }
 
-            const canSprint = aligned && !collided && !needsJump && horizontal > 1.15;
+            const canSprint = aligned && !collided && !needsJump && horizontal > 0.55;
             bot.setControlState('sneak',false);
             bot.setControlState('back',false);
             bot.setControlState('left',false);
