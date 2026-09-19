@@ -32,7 +32,9 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     assert.ok(Number.isFinite(status.performance.runtime.cpuPercent));
     assert.ok(status.performance.runtime.rssMb > 0);
     assert.ok(Number.isFinite(status.performance.runtime.eventLoopP99Ms));
-    assert.equal(status.performance.pathfinding.active,0);\n    assert.equal(status.performance.pathfinding.queued,0);\n    assert.equal(status.performance.pathfinding.concurrency,1);
+    assert.equal(status.performance.pathfinding.active,0);
+    assert.equal(status.performance.pathfinding.queued,0);
+    assert.equal(status.performance.pathfinding.concurrency,1);
     assert.equal(status.viewer, null);
     const action = (name:string, body='{}') => request(`/api/v1/bots/bot-1/actions/${name}`, {method:'POST',headers:{'Content-Type':'application/json'},body});
     assert.equal((await action('join-pit')).status, 409);
