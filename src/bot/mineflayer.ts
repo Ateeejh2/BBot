@@ -238,6 +238,18 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const attributes = bot.entity.attributes ?? {};
     const movementEntry = Object.entries(attributes).find(([key]) => /movement.*speed|speed.*movement/i.test(key));
     const movementAttribute = movementEntry?.[1] as { value?:number; modifiers?:Array<{amount?:number;operation?:number}> } | undefined;
+    const modifiers = movementAttribute?.modifiers ?? [];
+    const modifierSummary = modifiers.map(modifier =>
+      `${typeof modifier.amount === 'number' ? Math.round(modifier.amount*10000)/10000 : '?'}:${typeof modifier.operation === 'number' ? modifier.operation : '?'}`
+    ).slice(0,8).join(',');
+    let effectiveMovementSpeed = typeof movementAttribute?.value === 'number' ? movementAttribute.value : undefined;
+    if (effectiveMovementSpeed !== undefined) {
+      const baseAfterAdd = effectiveMovementSpeed + modifiers.filter(m=>m.operation===0).reduce((sum,m)=>sum+(m.amount ?? 0),0);
+      let value = baseAfterAdd;
+      value += baseAfterAdd * modifiers.filter(m=>m.operation===1).reduce((sum,m)=>sum+(m.amount ?? 0),0);
+      for (const modifier of modifiers) if (modifier.operation===2) value += value * (modifier.amount ?? 0);
+      effectiveMovementSpeed = value;
+    }
     events.diagnostic?.('server position correction', {
       sinceSpawnMs: lastSpawnAt ? Date.now()-lastSpawnAt : null,
       horizontal: Math.round(horizontal*1000)/1000,
@@ -255,7 +267,9 @@ export function createMineflayerTransport(config: Config, index: number, events:
       walkingSpeed: typeof bot.abilities?.walkingSpeed === 'number' ? bot.abilities.walkingSpeed : null,
       movementAttributeKey: movementEntry?.[0] ?? null,
       movementAttributeValue: typeof movementAttribute?.value === 'number' ? movementAttribute.value : null,
-      movementModifierCount: movementAttribute?.modifiers?.length ?? 0,
+      movementModifierCount: modifiers.length,
+      movementModifiers: modifierSummary || 'none',
+      effectiveMovementSpeed: typeof effectiveMovementSpeed === 'number' ? effectiveMovementSpeed : null,
       effects: effectSummary || 'none',
       forward: bot.getControlState('forward'),
       jump: bot.getControlState('jump'),
