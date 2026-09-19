@@ -230,11 +230,33 @@ export function createMineflayerTransport(config: Config, index: number, events:
     };
     const horizontal = Math.hypot(target.x-before.x,target.z-before.z);
     const vertical = target.y-before.y;
+    const effects = bot.entity.effects ?? {};
+    const effectSummary = Object.values(effects).map(effect => {
+      const value = effect as { id?:number; amplifier?:number; duration?:number };
+      return `${value.id ?? '?'}:${value.amplifier ?? '?'}:${value.duration ?? '?'}`;
+    }).slice(0,8).join(',');
+    const attributes = bot.entity.attributes ?? {};
+    const movementEntry = Object.entries(attributes).find(([key]) => /movement.*speed|speed.*movement/i.test(key));
+    const movementAttribute = movementEntry?.[1] as { value?:number; modifiers?:Array<{amount?:number;operation?:number}> } | undefined;
     events.diagnostic?.('server position correction', {
       sinceSpawnMs: lastSpawnAt ? Date.now()-lastSpawnAt : null,
       horizontal: Math.round(horizontal*1000)/1000,
       vertical: Math.round(vertical*1000)/1000,
       relativeX: relative.x, relativeY: relative.y, relativeZ: relative.z,
+      beforeX: Math.round(before.x*1000)/1000,
+      beforeY: Math.round(before.y*1000)/1000,
+      beforeZ: Math.round(before.z*1000)/1000,
+      targetX: Math.round(target.x*1000)/1000,
+      targetY: Math.round(target.y*1000)/1000,
+      targetZ: Math.round(target.z*1000)/1000,
+      velocityX: Math.round(bot.entity.velocity.x*1000)/1000,
+      velocityY: Math.round(bot.entity.velocity.y*1000)/1000,
+      velocityZ: Math.round(bot.entity.velocity.z*1000)/1000,
+      walkingSpeed: typeof bot.abilities?.walkingSpeed === 'number' ? bot.abilities.walkingSpeed : null,
+      movementAttributeKey: movementEntry?.[0] ?? null,
+      movementAttributeValue: typeof movementAttribute?.value === 'number' ? movementAttribute.value : null,
+      movementModifierCount: movementAttribute?.modifiers?.length ?? 0,
+      effects: effectSummary || 'none',
       forward: bot.getControlState('forward'),
       jump: bot.getControlState('jump'),
       sprint: bot.getControlState('sprint'),
