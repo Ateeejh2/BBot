@@ -4,15 +4,18 @@ import { BotManager } from '../bot/manager.js';
 import type { EventProvider } from '../events/provider.js';
 import type { JsonStore } from './store.js';
 import type { Logger } from '../logging/logger.js';
+import { carePackageRefreshMs, type CarePackageSchedule } from '../events/brooke.js';
 export class Application {
   private timer?: ReturnType<typeof setInterval>;
   private lifetime = new AbortController();
   private polling?: Promise<void>;
+  private carePolling?: Promise<void>;
   private saving?: Promise<void>;
-  private nextPoll = 0; private nextSave = 0; private nextMetrics = 0;
+  private nextPoll = 0; private nextCarePoll = 0; private nextSave = 0; private nextMetrics = 0;
   private cpu = process.cpuUsage(); private metricsAt = performance.now();
   constructor(private manager: BotManager, private provider: EventProvider,
-    private store: JsonStore, private logger: Logger, private config: Config) {}
+    private store: JsonStore, private logger: Logger, private config: Config,
+    private carePackages?: CarePackageSchedule) {}
   async start(): Promise<void> {
     const snapshot = await this.store.load();
     if (snapshot) { this.manager.scheduler.restore(snapshot.jobs, Date.now()); this.manager.registry.restore(snapshot.instances); }
@@ -33,6 +36,12 @@ export class Application {
         this.logger.log('debug', 'event poll completed', { fetched: events.length, accepted });
       }).catch(() => { if (!this.lifetime.signal.aborted) this.logger.log('warn', 'event fetch failed; retry on next poll'); })
         .finally(() => { this.polling = undefined; });
+    }
+    if (this.carePackages && !this.carePolling && now >= this.nextCarePoll) {
+      this.nextCarePoll = now + carePackageRefreshMs;
+      this.carePolling = this.carePackages.refresh()
+        .catch(() => { if (!this.lifetime.signal.aborted) this.logger.log('warn', 'Care Package schedule refresh failed; using last good data'); })
+        .finally(() => { this.carePolling = undefined; });
     }
     if (!this.saving && now >= this.nextSave) {
       this.nextSave = now + 5000;
@@ -55,7 +64,7 @@ export class Application {
     if (this.lifetime.signal.aborted) return;
     this.lifetime.abort(); if (this.timer) clearInterval(this.timer);
     this.manager.stop();
-    await this.saving;
+    await this.saving; await this.carePolling;
     try { await this.persist(); } catch { this.logger.log('error', 'final snapshot failed'); process.exitCode = 1; }
     this.logger.log('info', 'BBot stopped');
   }
