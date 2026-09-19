@@ -230,12 +230,14 @@ export function createMineflayerTransport(config: Config, index: number, events:
     };
     const horizontal = Math.hypot(target.x-before.x,target.z-before.z);
     const vertical = target.y-before.y;
-    const effects = bot.entity.effects ?? {};
+    const runtimeEntity = bot.entity as typeof bot.entity & { attributes?: Record<string, unknown> };
+    const runtimeBot = bot as typeof bot & { abilities?: { walkingSpeed?: number } };
+    const effects = runtimeEntity.effects ?? {};
     const effectSummary = Object.values(effects).map(effect => {
       const value = effect as { id?:number; amplifier?:number; duration?:number };
       return `${value.id ?? '?'}:${value.amplifier ?? '?'}:${value.duration ?? '?'}`;
     }).slice(0,8).join(',');
-    const attributes = bot.entity.attributes ?? {};
+    const attributes = runtimeEntity.attributes ?? {};
     const movementEntry = Object.entries(attributes).find(([key]) => /movement.*speed|speed.*movement/i.test(key));
     const movementAttribute = movementEntry?.[1] as { value?:number; modifiers?:Array<{amount?:number;operation?:number}> } | undefined;
     const modifiers = movementAttribute?.modifiers ?? [];
@@ -264,7 +266,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
       velocityX: Math.round(bot.entity.velocity.x*1000)/1000,
       velocityY: Math.round(bot.entity.velocity.y*1000)/1000,
       velocityZ: Math.round(bot.entity.velocity.z*1000)/1000,
-      walkingSpeed: typeof bot.abilities?.walkingSpeed === 'number' ? bot.abilities.walkingSpeed : null,
+      walkingSpeed: typeof runtimeBot.abilities?.walkingSpeed === 'number' ? runtimeBot.abilities.walkingSpeed : null,
       movementAttributeKey: movementEntry?.[0] ?? null,
       movementAttributeValue: typeof movementAttribute?.value === 'number' ? movementAttribute.value : null,
       movementModifierCount: modifiers.length,
