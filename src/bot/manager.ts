@@ -317,12 +317,12 @@ export class BotManager {
     const candidates=this.bots.filter(bot=>bot.instanceId===source.instanceId&&bot.machine.state==='IN_PIT_IDLE'&&!bot.execution&&!bot.preparation&&bot.transport?.launchToward);
     const bot=candidates.find(value=>value.id===source.id)??candidates[0];
     if(!bot)return;
-    const launch=bot.transport!.launchToward!;
+    const transport=bot.transport!;
     const preparation:EventPreparation={timestamp,generation:bot.generation.current,abort:new AbortController()};
     bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
     this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
     this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
-    void launch({x:target.x,z:target.z},preparation.abort.signal).then(()=>{
+    void transport.launchToward!({x:target.x,z:target.z},preparation.abort.signal).then(()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
       this.carePackages?.markLaunch(bot.instanceId,timestamp,'DROPPED');
       this.log(bot,'care package launch completed',{scheduledAt:timestamp});
