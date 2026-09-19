@@ -77,8 +77,30 @@ export function createMineflayerTransport(config: Config, index: number, events:
   const controlWalk = async (target:{x:number;y:number;z:number}, range:number, signal:AbortSignal) => {
     signal.throwIfAborted();
     const movements = walkingMovements();
-    const plan = bot.pathfinder.getPathTo(movements, new goals.GoalNear(target.x,target.y,target.z,range), config.pathTimeoutMs);
-    if (plan.status !== 'success') throw new Error(plan.status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
+    const goal = new goals.GoalNear(target.x,target.y,target.z,range);
+    const planner = bot.pathfinder.getPathFromTo(movements, bot.entity.position, goal, {
+      timeout: config.pathTimeoutMs,
+      tickTimeout: bot.pathfinder.tickTimeout
+    });
+    let plan: ReturnType<typeof bot.pathfinder.getPathTo> | undefined;
+    while (true) {
+      signal.throwIfAborted();
+      const next = planner.next();
+      if (next.done) break;
+      plan = next.value.result;
+      if (plan.status !== 'partial') break;
+      // getPathTo only consumes the first A* slice. Continue partial searches without
+      // blocking the Node event loop until success/noPath/real timeout.
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    if (!plan || plan.status !== 'success') {
+      const status = plan?.status ?? 'noPath';
+      events.diagnostic?.('control path planning failed',{
+        status,visitedNodes:plan?.visitedNodes??null,generatedNodes:plan?.generatedNodes??null,
+        planningMs:plan?.time??null,targetX:target.x,targetY:target.y,targetZ:target.z
+      });
+      throw new Error(status === 'noPath' ? 'No path to the goal!' : 'Path planning timeout');
+    }
     const slabNodes = plan.path.reduce((count, waypoint) => {
       const origin = bot.entity.position;
       const footing = bot.blockAt(origin.offset(waypoint.x-origin.x,waypoint.y-0.01-origin.y,waypoint.z-origin.z));
