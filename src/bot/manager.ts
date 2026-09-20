@@ -312,7 +312,7 @@ export class BotManager {
         if(b.ready&&now>=limboRecovery.playAt){
           this.log(b,'limbo recovery sending Pit command',{waitedMs:Math.max(0,now-(limboRecovery.playAt-2000))});
           this.join(b);
-          if(b.machine.state==='JOINING_PIT'&&b.limboRecovery===limboRecovery)limboRecovery.phase='JOINING_PIT';
+          if(b.limboRecovery===limboRecovery)limboRecovery.phase='JOINING_PIT';
           continue;
         }
         if(!b.ready&&now>=b.deadline){
