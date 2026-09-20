@@ -122,7 +122,7 @@ export class BotManager {
     b.paused = true;
     try {
       await b.transport.disconnectServer();
-      if (b.machine.state !== 'DISCONNECTED') this.disconnected(b);
+      if (this.view(b).state !== 'DISCONNECTED') this.disconnected(b);
     } catch (error) {
       b.paused = wasPaused;
       throw error;
