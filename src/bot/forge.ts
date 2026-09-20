@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { createRequire } from 'node:module';
 import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
 import { parseInstance } from '../instances/parser.js';
@@ -32,6 +33,7 @@ interface BridgeEvent {
   x?: number;
   y?: number;
   z?: number;
+  stateId?: number;
 }
 
 interface BridgeResponse {
@@ -41,6 +43,9 @@ interface BridgeResponse {
   ok: boolean;
   error?: string;
   blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown }>;
+  chunkX?: number;
+  chunkZ?: number;
+  sections?: Array<{ y?: unknown; states?: unknown }>;
 }
 
 type BridgeMessage =
@@ -103,6 +108,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let current: BridgeState | undefined;
   let connected = false;
   let requestSequence = 0;
+  let viewerClose: (() => void) | undefined;
+  let viewerState: ((state: BridgeState) => void) | undefined;
+  let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
+  let viewerReset: (() => void) | undefined;
   const pending = new Map<string, {
     resolve: (response: BridgeResponse) => void;
     reject: (error: Error) => void;
@@ -158,10 +167,239 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     });
   };
 
+  const startForgeViewer = () => {
+    const botId = `bot-${index + 1}`;
+    if (!config.viewer.enabled || config.viewer.botId !== botId || viewerClose) return;
+
+    try {
+      const localRequire = createRequire(import.meta.url);
+      const viewerRequire = createRequire(localRequire.resolve('prismarine-viewer/package.json'));
+      const express = viewerRequire('express') as any;
+      const http = viewerRequire('http') as typeof import('node:http');
+      const socketIo = viewerRequire('socket.io') as any;
+      const { setupRoutes } = viewerRequire('./lib/common') as { setupRoutes(app: any, prefix?: string): void };
+      const Chunk = viewerRequire('prismarine-chunk')('1.8.8') as any;
+      const Vec3 = viewerRequire('vec3').Vec3 as new (x: number, y: number, z: number) => any;
+
+      const app = express();
+      const server = http.createServer(app);
+      const io = socketIo(server);
+      setupRoutes(app, '');
+
+      const sockets = new Set<any>();
+      const loaded = new Map<any, Set<string>>();
+      const centers = new Map<any, string>();
+      const chunkCache = new Map<string, any>();
+      const loading = new Map<string, Promise<any | undefined>>();
+      let stopped = false;
+
+      const keyOf = (chunkX: number, chunkZ: number) => `${chunkX},${chunkZ}`;
+      const parseKey = (key: string) => {
+        const [x, z] = key.split(',').map(Number);
+        return { x: x!, z: z! };
+      };
+
+      const loadChunk = async (chunkX: number, chunkZ: number): Promise<any | undefined> => {
+        const key = keyOf(chunkX, chunkZ);
+        const cached = chunkCache.get(key);
+        if (cached) return cached;
+        const existing = loading.get(key);
+        if (existing) return existing;
+
+        const task = (async () => {
+          const response = await request({ type: 'getChunk', chunkX, chunkZ }, undefined, 5000);
+          if (!response.ok || response.kind !== 'chunk' || !Array.isArray(response.sections)) return undefined;
+
+          const chunk = new Chunk();
+          for (let y = 0; y < 256; y++) {
+            for (let z = 0; z < 16; z++) {
+              for (let x = 0; x < 16; x++) chunk.setSkyLight(new Vec3(x, y, z), 15);
+            }
+          }
+
+          for (const section of response.sections) {
+            if (!Number.isSafeInteger(section.y) || typeof section.states !== 'string') continue;
+            const sectionY = section.y as number;
+            if (sectionY < 0 || sectionY > 15) continue;
+            const raw = Buffer.from(section.states, 'base64');
+            if (raw.length !== 8192) continue;
+            let offset = 0;
+            for (let y = 0; y < 16; y++) {
+              for (let z = 0; z < 16; z++) {
+                for (let x = 0; x < 16; x++) {
+                  const stateId = raw[offset]! | (raw[offset + 1]! << 8);
+                  offset += 2;
+                  if (stateId !== 0) chunk.setBlockStateId(new Vec3(x, sectionY * 16 + y, z), stateId);
+                }
+              }
+            }
+          }
+
+          chunkCache.set(key, chunk);
+          return chunk;
+        })().catch(error => {
+          events.diagnostic?.('viewer chunk load failed', {
+            chunkX,
+            chunkZ,
+            reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown'
+          });
+          return undefined;
+        }).finally(() => loading.delete(key));
+
+        loading.set(key, task);
+        return task;
+      };
+
+      const refresh = async (socket: any, state: BridgeState) => {
+        if (stopped || !sockets.has(socket)) return;
+        const centerX = Math.floor(state.x / 16);
+        const centerZ = Math.floor(state.z / 16);
+        const desired = new Set<string>();
+        for (let x = centerX - config.viewer.viewDistance; x <= centerX + config.viewer.viewDistance; x++) {
+          for (let z = centerZ - config.viewer.viewDistance; z <= centerZ + config.viewer.viewDistance; z++) {
+            desired.add(keyOf(x, z));
+          }
+        }
+
+        const present = loaded.get(socket) ?? new Set<string>();
+        loaded.set(socket, present);
+        for (const key of [...present]) {
+          if (desired.has(key)) continue;
+          present.delete(key);
+          const { x, z } = parseKey(key);
+          socket.emit('unloadChunk', { x: x * 16, z: z * 16 });
+        }
+
+        const ordered = [...desired].sort((a, b) => {
+          const aa = parseKey(a), bb = parseKey(b);
+          return Math.hypot(aa.x - centerX, aa.z - centerZ) - Math.hypot(bb.x - centerX, bb.z - centerZ);
+        });
+
+        for (const key of ordered) {
+          if (stopped || !sockets.has(socket)) return;
+          if (present.has(key)) continue;
+          const { x, z } = parseKey(key);
+          const chunk = await loadChunk(x, z);
+          if (!chunk || stopped || !sockets.has(socket)) continue;
+          present.add(key);
+          socket.emit('loadChunk', { x: x * 16, z: z * 16, chunk: chunk.toJson() });
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      };
+
+      io.on('connection', (socket: any) => {
+        sockets.add(socket);
+        loaded.set(socket, new Set<string>());
+        socket.emit('version', '1.8.8');
+        if (current) {
+          const packet: Record<string, unknown> = {
+            pos: { x: current.x, y: current.y, z: current.z },
+            yaw: current.yaw * Math.PI / 180,
+            addMesh: true
+          };
+          if (config.viewer.firstPerson) packet.pitch = current.pitch * Math.PI / 180;
+          socket.emit('position', packet);
+          centers.set(socket, keyOf(Math.floor(current.x / 16), Math.floor(current.z / 16)));
+          void refresh(socket, current);
+        }
+        socket.on('disconnect', () => {
+          sockets.delete(socket);
+          loaded.delete(socket);
+          centers.delete(socket);
+        });
+      });
+
+      viewerState = state => {
+        for (const socket of sockets) {
+          const packet: Record<string, unknown> = {
+            pos: { x: state.x, y: state.y, z: state.z },
+            yaw: state.yaw * Math.PI / 180,
+            addMesh: true
+          };
+          if (config.viewer.firstPerson) packet.pitch = state.pitch * Math.PI / 180;
+          socket.emit('position', packet);
+
+          const centerKey = keyOf(Math.floor(state.x / 16), Math.floor(state.z / 16));
+          if (centers.get(socket) !== centerKey) {
+            centers.set(socket, centerKey);
+            void refresh(socket, state);
+          }
+        }
+      };
+
+      viewerBlockUpdate = (x, y, z, stateId) => {
+        const key = keyOf(Math.floor(x / 16), Math.floor(z / 16));
+        const chunk = chunkCache.get(key);
+        if (chunk && y >= 0 && y < 256) {
+          chunk.setBlockStateId(new Vec3(x & 15, y, z & 15), stateId);
+        }
+        for (const socket of sockets) {
+          if (loaded.get(socket)?.has(key)) socket.emit('blockUpdate', { pos: { x, y, z }, stateId });
+        }
+      };
+
+      viewerReset = () => {
+        chunkCache.clear();
+        loading.clear();
+        for (const socket of sockets) {
+          for (const key of loaded.get(socket) ?? []) {
+            const { x, z } = parseKey(key);
+            socket.emit('unloadChunk', { x: x * 16, z: z * 16 });
+          }
+          loaded.set(socket, new Set<string>());
+          centers.delete(socket);
+        }
+      };
+
+      server.listen(config.viewer.port, '127.0.0.1', () => {
+        events.diagnostic?.('viewer started', {
+          botId,
+          port: config.viewer.port,
+          firstPerson: config.viewer.firstPerson,
+          viewDistance: config.viewer.viewDistance,
+          source: 'forge'
+        });
+      });
+      server.on('error', error => {
+        events.diagnostic?.('viewer start failed', {
+          botId,
+          port: config.viewer.port,
+          reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+        });
+      });
+
+      viewerClose = () => {
+        if (stopped) return;
+        stopped = true;
+        viewerState = undefined;
+        viewerBlockUpdate = undefined;
+        viewerReset = undefined;
+        for (const socket of sockets) socket.disconnect(true);
+        sockets.clear();
+        loaded.clear();
+        centers.clear();
+        chunkCache.clear();
+        io.close();
+        server.close();
+      };
+    } catch (error) {
+      events.diagnostic?.('viewer start failed', {
+        botId,
+        port: config.viewer.port,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'viewer dependencies unavailable'
+      });
+    }
+  };
+
+  startForgeViewer();
+
   const handleMessage = (message: BridgeMessage) => {
     if (message.type === 'state') {
       const state = parseState(message);
-      if (state) current = state;
+      if (state) {
+        current = state;
+        viewerState?.(state);
+      }
       return;
     }
 
@@ -182,6 +420,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         events.spawn();
         break;
       case 'worldReset':
+        viewerReset?.();
         events.worldReset();
         break;
       case 'identity':
@@ -209,6 +448,12 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
         if (!eligible && !careEligible) break;
         events.message(raw);
+        break;
+      }
+      case 'blockUpdate': {
+        if (!isFiniteNumber(message.x) || !isFiniteNumber(message.y) || !isFiniteNumber(message.z) ||
+            !isFiniteNumber(message.stateId)) break;
+        viewerBlockUpdate?.(message.x, message.y, message.z, message.stateId);
         break;
       }
       case 'chickenSpawn':
@@ -457,6 +702,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if (closed) return;
       try { release(); } catch {}
       closed = true;
+      viewerClose?.();
+      viewerClose = undefined;
       failPending('Transport closed');
       socket.destroy();
     }
