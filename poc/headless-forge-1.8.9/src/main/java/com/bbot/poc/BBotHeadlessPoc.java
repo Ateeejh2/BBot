@@ -21,6 +21,7 @@ import net.minecraft.util.BlockPos;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.EntityJoinWorldEvent;
+import net.minecraftforge.fml.client.FMLClientHandler;
 import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
@@ -157,6 +158,7 @@ public final class BBotHeadlessPoc {
         }
 
         updateBridgeConnectionState();
+        processBridgeCommands();
 
         if (mc.thePlayer == null || mc.theWorld == null) {
             mc.skipRenderWorld = false;
@@ -185,7 +187,6 @@ public final class BBotHeadlessPoc {
         mc.skipRenderWorld = skipRender;
         totalTicks++;
 
-        processBridgeCommands();
         traceLargeClientStep();
 
         if (!bridgeControlActive) {
@@ -360,12 +361,72 @@ public final class BBotHeadlessPoc {
                 if (!message.isEmpty()) {
                     mc.thePlayer.sendChatMessage(message);
                 }
+            } else if ("connectServer".equals(type) && command.has("requestId") && command.has("host") && command.has("port")) {
+                connectServer(command);
+            } else if ("disconnectServer".equals(type) && command.has("requestId")) {
+                disconnectServer(command);
             } else if ("findSlimePads".equals(type) && command.has("requestId")) {
                 emitSlimePadResponse(command);
             } else if ("getChunk".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
                 emitChunkResponse(command);
             }
         }
+    }
+
+    private void connectServer(JsonObject command) {
+        String requestId = command.get("requestId").getAsString();
+        String host = command.get("host").getAsString();
+        int port = command.get("port").getAsInt();
+
+        if (!host.matches("^[A-Za-z0-9._:-]{1,253}$") || port < 1 || port > 65535) {
+            emitServerControlResponse(requestId, false, "INVALID_SERVER");
+            return;
+        }
+        if (mc.theWorld != null || mc.getNetHandler() != null) {
+            emitServerControlResponse(requestId, false, "ALREADY_CONNECTED");
+            return;
+        }
+
+        try {
+            FMLClientHandler.instance().connectToServerAtStartup(host, port);
+            emitServerControlResponse(requestId, true, null);
+        } catch (Throwable t) {
+            LOG.warn("[BBotPoC] connectServer failed", t);
+            emitServerControlResponse(requestId, false, "CONNECT_FAILED");
+        }
+    }
+
+    private void disconnectServer(JsonObject command) {
+        String requestId = command.get("requestId").getAsString();
+        if (mc.theWorld == null) {
+            emitServerControlResponse(requestId, false, "NOT_CONNECTED");
+            return;
+        }
+
+        try {
+            releaseMovementKeys();
+            mc.theWorld.sendQuittingDisconnectingPacket();
+            mc.loadWorld(null);
+            emitServerControlResponse(requestId, true, null);
+        } catch (Throwable t) {
+            LOG.warn("[BBotPoC] disconnectServer failed", t);
+            emitServerControlResponse(requestId, false, "DISCONNECT_FAILED");
+        }
+    }
+
+    private void emitServerControlResponse(String requestId, boolean ok, String error) {
+        if (bridge == null) {
+            return;
+        }
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", requestId);
+        response.addProperty("kind", "serverControl");
+        response.addProperty("ok", ok);
+        if (error != null) {
+            response.addProperty("error", error);
+        }
+        bridge.emit(response);
     }
 
     private void emitSlimePadResponse(JsonObject command) {
