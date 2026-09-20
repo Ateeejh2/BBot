@@ -11,14 +11,15 @@ import { backoff } from '../recovery/backoff.js';
 import type { TaskHandler } from '../events/task.js';
 import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
-import { isLimboNotice } from './message-source.js';
-interface Execution { id: string; lease: number; generation: number; abort: AbortController }
+import { isDeathNotice, isLimboNotice } from './message-source.js';
+interface Execution { id: string; lease: number; generation: number; abort: AbortController; event: GameEvent }
 interface EventPreparation {
   timestamp:number; generation:number; abort:AbortController; expiresAt?:number; launched?:boolean; chestEvent?:GameEvent;
   predictionAbort?:AbortController; predictionTarget?:Position;
 }
 interface DebugWalk { generation:number; abort:AbortController }
 interface LimboRecovery { playAt:number; phase:'WAIT_LOBBY'|'JOINING_PIT' }
+interface CarePackageRun { timestamp:number; instanceId:string; target:Position; expiresAt:number; chestEvent?:GameEvent }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
@@ -26,7 +27,7 @@ interface ManagedBot {
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
-  preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
+  preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; carePackage?:CarePackageRun; careRetryAt?:number; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -299,9 +300,22 @@ export class BotManager {
     }
     for (const [index, b] of this.bots.entries()) {
       if (b.paused || b.authCheckPending) continue;
+      if(b.carePackage&&now>=b.carePackage.expiresAt){
+        this.stopCarePackage(b,'EXPIRED');
+      }
       if (b.preparation?.expiresAt!==undefined && now>=b.preparation.expiresAt) {
         this.log(b,'care package preparation expired',{scheduledAt:b.preparation.timestamp});
         this.cancelPreparation(b);
+      }
+      if(b.careRetryAt!==undefined&&now>=b.careRetryAt){
+        const run=b.carePackage;
+        b.careRetryAt=undefined;
+        if(run&&b.machine.state==='IN_PIT_IDLE'&&b.instanceId===run.instanceId&&
+          this.carePackages?.isActive(run.instanceId,run.timestamp,now)){
+          const target=run.chestEvent?.target??run.target;
+          this.log(b,'care package death retry starting',{scheduledAt:run.timestamp,targetX:target.x,targetZ:target.z});
+          this.prepareCarePackage(b,run.timestamp,target);
+        }
       }
       if (!this.configurationLocked && b.machine.state === 'DISCONNECTED' && now >= b.dueAt && now >= this.nextConnectAt) {
         this.nextConnectAt = now + this.config.connectionSpacingMs; this.connect(b, index); continue;
@@ -390,6 +404,8 @@ export class BotManager {
           const event=this.carePackages.observeChest(b.instanceId,position,this.now());
           if(!event)return;
           const scheduledAt=typeof event.metadata?.scheduledAt==='number'?event.metadata.scheduledAt:undefined;
+          const owner=this.bots.find(bot=>bot.carePackage?.instanceId===event.instanceId&&bot.carePackage.timestamp===scheduledAt);
+          if(owner?.carePackage)owner.carePackage.chestEvent=event;
           const reserved=this.bots.find(bot=>bot.instanceId===event.instanceId&&bot.preparation&&bot.preparation.timestamp===scheduledAt);
           if(reserved?.preparation){
             const preparation=reserved.preparation;
@@ -411,6 +427,18 @@ export class BotManager {
           }
           const accepted=this.scheduler.enqueue(event,this.now());
           this.log(b,'care package chest detected',{eventId:event.id,x:position.x,y:position.y,z:position.z,accepted});
+        },
+        chestDisappeared: position => {
+          if(this.stopped||this.movementDebug||b.connection!==connection||!b.instanceId||!this.carePackages)return;
+          const ended=this.carePackages.observeChestDisappeared(b.instanceId,position,this.now());
+          if(!ended)return;
+          for(const bot of this.bots){
+            if(bot.carePackage?.timestamp===ended.timestamp&&bot.carePackage.instanceId===ended.instanceId){
+              this.stopCarePackage(bot,'CHEST_DISAPPEARED');
+            }
+          }
+          this.scheduler.jobs.delete(ended.eventId);
+          this.log(b,'care package ended; chest disappeared',{eventId:ended.eventId,x:position.x,y:position.y,z:position.z});
         },
         diagnostic: (name, fields) => {
           if (this.stopped || b.connection !== connection) return;
@@ -530,6 +558,10 @@ export class BotManager {
     this.recover(b, 'UNKNOWN_RETURN'); b.deadline = this.now() + this.config.joinTimeoutMs;
   }
   private message(b: ManagedBot, text: string): void {
+    if(isDeathNotice(text)){
+      this.handleDeath(b);
+      return;
+    }
     if(isLimboNotice(text)){
       if(!['DISCONNECTED','CONNECTING'].includes(b.machine.state))this.recoverFromLimbo(b);
       return;
@@ -567,6 +599,31 @@ export class BotManager {
     b.deadline = this.now() + this.config.joinTimeoutMs;
     try { b.transport?.chat('/play pit'); } catch { this.disconnected(b); }
   }
+  private handleDeath(b:ManagedBot):void {
+    const run=b.carePackage;
+    this.log(b,'death detected',{carePackageActive:Boolean(run)});
+    if(!run||!b.instanceId||b.instanceId!==run.instanceId||!this.carePackages?.isActive(run.instanceId,run.timestamp,this.now()))return;
+    const eventId=run.chestEvent?.id;
+    if(b.preparation)this.cancelPreparation(b);
+    if(b.execution?.event.type==='care-package')this.cancelExecution(b,true);
+    if(eventId)this.scheduler.jobs.delete(eventId);
+    b.generation.invalidate();
+    if(b.machine.state!=='IN_PIT_IDLE')return;
+    b.careRetryAt=this.now()+250;
+    this.log(b,'care package death retry queued',{scheduledAt:run.timestamp,retryDelayMs:250});
+  }
+  private stopCarePackage(b:ManagedBot,reason:'CHEST_DISAPPEARED'|'EXPIRED'):void {
+    const run=b.carePackage;
+    if(!run)return;
+    b.careRetryAt=undefined;
+    if(b.preparation?.timestamp===run.timestamp)this.cancelPreparation(b);
+    if(b.execution?.event.type==='care-package'&&b.execution.event.instanceId===run.instanceId)this.cancelExecution(b,true);
+    const eventId=run.chestEvent?.id??`care-package:${run.timestamp}:${run.instanceId}`;
+    this.scheduler.jobs.delete(eventId);
+    b.carePackage=undefined;
+    b.generation.invalidate();
+    this.log(b,'care package execution stopped',{scheduledAt:run.timestamp,reason});
+  }
   private recoverFromLimbo(b:ManagedBot):void {
     if(b.limboRecovery)return;
     const now=this.now();
@@ -587,7 +644,7 @@ export class BotManager {
     catch{b.limboRecovery=undefined;this.disconnected(b);}
   }
   private recover(b: ManagedBot, reason: ReturnReason): void {
-    b.limboRecovery=undefined;
+    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined;
@@ -605,7 +662,7 @@ export class BotManager {
     if (b.machine.state === 'DISCONNECTED') return;
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), 'DISCONNECT');
-    b.limboRecovery=undefined;
+    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
@@ -620,7 +677,7 @@ export class BotManager {
     }
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
-    b.limboRecovery=undefined;
+    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
@@ -634,8 +691,15 @@ export class BotManager {
     const bot=candidates.find(value=>value.id===source.id)??candidates[0];
     if(!bot)return;
     const transport=bot.transport!;
+    const expiresAt=this.carePackages.expiresAt(bot.instanceId!,timestamp);
+    const existing=bot.carePackage;
+    if(!existing||existing.timestamp!==timestamp||existing.instanceId!==bot.instanceId){
+      bot.carePackage={timestamp,instanceId:bot.instanceId,target:{...target},expiresAt};
+    }else{
+      existing.target={...target};existing.expiresAt=expiresAt;
+    }
     const preparation:EventPreparation={timestamp,generation:bot.generation.current,abort:new AbortController(),
-      expiresAt:this.carePackages.expiresAt(bot.instanceId!,timestamp)};
+      expiresAt,chestEvent:bot.carePackage?.chestEvent};
     bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
     this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
     this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
@@ -799,7 +863,7 @@ export class BotManager {
     if (idle && ['PATHFINDING', 'WORKING'].includes(b.machine.state)) b.machine.transition('IN_PIT_IDLE');
   }
   private execute(b: ManagedBot, id: string, lease: number, event: GameEvent): void {
-    const execution: Execution = { id, lease, generation: b.generation.current, abort: new AbortController() };
+    const execution: Execution = { id, lease, generation: b.generation.current, abort: new AbortController(), event };
     b.execution = execution; b.machine.transition('PATHFINDING');
     const transport = b.transport!;
     const queuedAt = this.now();
