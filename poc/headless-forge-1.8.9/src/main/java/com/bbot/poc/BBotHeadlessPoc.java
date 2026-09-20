@@ -406,8 +406,11 @@ public final class BBotHeadlessPoc {
         try {
             releaseMovementKeys();
             mc.theWorld.sendQuittingDisconnectingPacket();
-            mc.loadWorld(null);
+            // Acknowledge while the bridge is still attached. loadWorld(null) can
+            // synchronously fire the Minecraft disconnect event, which makes Node
+            // close its transport after this response has already been delivered.
             emitServerControlResponse(requestId, true, null);
+            mc.loadWorld(null);
         } catch (Throwable t) {
             LOG.warn("[BBotPoC] disconnectServer failed", t);
             emitServerControlResponse(requestId, false, "DISCONNECT_FAILED");
