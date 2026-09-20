@@ -29,6 +29,9 @@ interface BridgeEvent {
   text?: string;
   channel?: string;
   username?: string;
+  x?: number;
+  y?: number;
+  z?: number;
 }
 
 type BridgeMessage =
@@ -152,6 +155,14 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
         if (!eligible && !careEligible) break;
         events.message(raw);
+        break;
+      }
+      case 'chickenSpawn':
+      case 'chestAppeared': {
+        if (!isFiniteNumber(message.x) || !isFiniteNumber(message.y) || !isFiniteNumber(message.z)) break;
+        const position = { x: message.x, y: message.y, z: message.z };
+        if (message.event === 'chickenSpawn') events.chickenSpawn?.(position);
+        else events.chestAppeared?.(position);
         break;
       }
       case 'end':
