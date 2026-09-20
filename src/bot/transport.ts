@@ -16,6 +16,8 @@ export interface BotTransport {
   position(): Position | undefined;
   /** Server-reported ping for this player. May be unavailable briefly after login. */
   ping?(): number | undefined;
+  /** Bind the transport to the currently confirmed Pit instance for shared terrain caching. */
+  setInstance?(instanceId?: string): void;
   chat(command: string): void;
   /** Forge-backed transports can establish and end the Minecraft server session without restarting the client. */
   connectServer?(host: string, port: number): Promise<void>;
