@@ -325,6 +325,12 @@ test('Care Package death cancels the current attempt and immediately retries aft
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
   assert.equal(t.launches.length,1);
 
+  // The actual death respawn can reset/recreate the client world. It must not
+  // fall into generic UNKNOWN_RETURN recovery and erase the Care Package retry.
+  t.events.worldReset();
+  t.events.spawn();
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+
   f.tick(1349);
   assert.equal(t.launches.length,1);
   f.tick(1350);
