@@ -44,7 +44,7 @@ interface BridgeResponse {
   kind?: string;
   ok: boolean;
   error?: string;
-  blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown }>;
+  blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown; stateId?: unknown }>;
   chunks?: Array<{ x?: unknown; z?: unknown }>;
   chunkX?: number;
   chunkZ?: number;
@@ -214,6 +214,16 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     if(!response.ok||response.kind!=='loadedChunks'||!Array.isArray(response.chunks))return [];
     return response.chunks.flatMap(value=>
       isFiniteNumber(value.x)&&isFiniteNumber(value.z)?[{x:value.x,z:value.z}]:[]
+    );
+  };
+
+  const loadPitVolatileChunk = async (chunkX:number, chunkZ:number, signal:AbortSignal) => {
+    const response=await request({type:'getVolatileBlocks',chunkX,chunkZ},signal,5000);
+    if(!response.ok||response.kind!=='volatileBlocks'||!Array.isArray(response.blocks))return [];
+    return response.blocks.flatMap(block =>
+      isFiniteNumber(block.x)&&isFiniteNumber(block.y)&&isFiniteNumber(block.z)&&isFiniteNumber(block.stateId)
+        ? [{x:block.x,y:block.y,z:block.z,stateId:block.stateId}]
+        : []
     );
   };
 
@@ -488,6 +498,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         break;
       case 'worldReset':
         viewerReset?.();
+        if(boundInstanceId)sharedPitNavigation.invalidateOverlay(boundInstanceId);
         events.worldReset();
         break;
       case 'identity':
@@ -523,6 +534,13 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         if (!isFiniteNumber(message.x) || !isFiniteNumber(message.y) || !isFiniteNumber(message.z) ||
             !isFiniteNumber(message.stateId)) break;
         viewerBlockUpdate?.(message.x, message.y, message.z, message.stateId);
+        if(boundInstanceId){
+          sharedPitNavigation.updateDynamicBlock(
+            boundInstanceId,
+            {x:message.x,y:message.y,z:message.z},
+            message.stateId
+          );
+        }
         break;
       }
       case 'chickenSpawn':
@@ -586,7 +604,12 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     release();
   };
 
-  const navigateTo = async (target: Position, range: number, signal: AbortSignal): Promise<void> => {
+  const navigateTo = async (
+    target: Position,
+    range: number,
+    signal: AbortSignal,
+    shouldReplan?:()=>boolean
+  ): Promise<void> => {
     signal.throwIfAborted();
     const started = Date.now();
     let bestDistance = Number.POSITIVE_INFINITY;
@@ -596,6 +619,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     try {
       while (true) {
         signal.throwIfAborted();
+        if(shouldReplan?.())throw new Error('Pit map overlay changed');
         if (closed || !connected) throw new Error('Transport closed');
 
         const state = current;
@@ -665,7 +689,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             events.diagnostic?.('pit chunk scan progress',{
               done,total,progress,active:done<total
             });
-          }
+          },
+          loadPitVolatileChunk
         );
       }finally{
         if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
@@ -689,17 +714,24 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       for(const waypoint of plan.waypoints){
         signal.throwIfAborted();
         try{
-          await navigateTo(waypoint,0.7,signal);
+          await navigateTo(
+            waypoint,
+            0.7,
+            signal,
+            ()=>sharedPitNavigation.overlayRevision(instanceId)!==plan.overlayRevision
+          );
           advanced=true;
         }catch(error){
           const message=error instanceof Error?error.message:'';
-          if(message==='Control walk collision'||message==='Control walk stuck'){
-            const blockedFrom=current;
-            if(blockedFrom){
-              const dx=waypoint.x-blockedFrom.x,dz=waypoint.z-blockedFrom.z,length=Math.hypot(dx,dz)||1;
-              const blockedX=Math.floor(blockedFrom.x+dx/length*0.9);
-              const blockedZ=Math.floor(blockedFrom.z+dz/length*0.9);
-              avoided.set(`${blockedX},${blockedZ}`,{x:blockedX,z:blockedZ});
+          if(message==='Control walk collision'||message==='Control walk stuck'||message==='Pit map overlay changed'){
+            if(message!=='Pit map overlay changed'){
+              const blockedFrom=current;
+              if(blockedFrom){
+                const dx=waypoint.x-blockedFrom.x,dz=waypoint.z-blockedFrom.z,length=Math.hypot(dx,dz)||1;
+                const blockedX=Math.floor(blockedFrom.x+dx/length*0.9);
+                const blockedZ=Math.floor(blockedFrom.z+dz/length*0.9);
+                avoided.set(`${blockedX},${blockedZ}`,{x:blockedX,z:blockedZ});
+              }
             }
             events.diagnostic?.('pit path replan requested',{
               instanceId,
