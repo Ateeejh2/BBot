@@ -84,6 +84,12 @@ export class PitNavigationService {
     this.cache.invalidateInstance(instanceId);
   }
 
+  invalidateOverlay(instanceId:string):void {
+    const key=normalizeInstance(instanceId);
+    this.overlayReady.delete(key);
+    this.overlays.delete(key);
+  }
+
   overlayRevision(instanceId:string):number {
     return this.overlays.get(normalizeInstance(instanceId))?.revision??0;
   }
