@@ -27,7 +27,9 @@ interface ManagedBot {
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
-  preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; carePackage?:CarePackageRun; careRetryAt?:number; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
+  preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; carePackage?:CarePackageRun; careRetryAt?:number;
+  activity?: { kind:'SCANNING_CHUNKS'; progress:number };
+  debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -280,7 +282,7 @@ export class BotManager {
     this.configurationLocked = true;
     try { return await operation(); } finally { this.configurationLocked = false; }
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, jobId: b.execution?.id, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt }; }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, jobId: b.execution?.id, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt, activity: b.activity }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
@@ -457,6 +459,14 @@ export class BotManager {
               if(this.chatDebugEntries.length>200)this.chatDebugEntries.shift();
             }
             return;
+          }
+          if(name==='pit chunk scan progress'){
+            const progress=typeof fields?.progress==='number'&&Number.isFinite(fields.progress)
+              ?Math.max(0,Math.min(100,Math.round(fields.progress))):0;
+            if(fields?.active===false||progress>=100)b.activity=undefined;
+            else b.activity={kind:'SCANNING_CHUNKS',progress};
+          } else if(name==='pit path planned'){
+            b.activity=undefined;
           }
           let correlated=fields;
           if(name==='control walk collision'){
@@ -637,7 +647,7 @@ export class BotManager {
   private recoverFromLimbo(b:ManagedBot):void {
     if(b.limboRecovery)return;
     const now=this.now();
-    b.carePackage=undefined;b.careRetryAt=undefined;
+    b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
     b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
     this.registry.leave(b.id,now,'LIMBO');
@@ -656,7 +666,7 @@ export class BotManager {
     catch{b.limboRecovery=undefined;this.disconnected(b);}
   }
   private recover(b: ManagedBot, reason: ReturnReason): void {
-    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
+    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
     b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
@@ -676,7 +686,7 @@ export class BotManager {
     b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), 'DISCONNECT');
-    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
+    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
@@ -692,7 +702,7 @@ export class BotManager {
     b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
-    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
+    b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
