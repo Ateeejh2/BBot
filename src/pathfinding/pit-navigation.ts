@@ -155,7 +155,7 @@ function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkDat
       const normalized=Buffer.allocUnsafe(section.states.length*2);
       for (let i=0;i<section.states.length;i++) {
         const state=section.states[i]??0;
-        const blockId=state>>>4;
+        const blockId=blockId(state);
         // Care Package chests are dynamic and must not create a new map generation.
         const stable=blockId===54?0:state;
         normalized.writeUInt16LE(stable,i*2);
@@ -186,7 +186,7 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
     for(let y=minY;y<=maxY;y++){
       const feet=state(lx,y,lz),head=state(lx,y+1,lz),floor=state(lx,y-1,lz);
       if(!isPassable(feet)||!isPassable(head))continue;
-      const floorId=floor>>>4;
+      const floorId=blockId(floor);
       if(floor===0||isPassable(floor)||HAZARDOUS_FLOOR_IDS.has(floorId))continue;
       const node={x:minX+lx,y,z:minZ+lz};
       const nKey=nodeKey(node.x,node.y,node.z);
@@ -199,8 +199,14 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
   }
 }
 
+function blockId(state:number):number {
+  // Minecraft 1.8.9 Block.getStateId stores block id in the low 12 bits
+  // and metadata in the high 4 bits.
+  return state & 0x0fff;
+}
+
 function isPassable(state:number):boolean {
-  return PASSABLE_BLOCK_IDS.has(state>>>4);
+  return PASSABLE_BLOCK_IDS.has(blockId(state));
 }
 
 function nearestNode(graph:TerrainGraph,target:Position,radius:number,vertical:number):NavNode|undefined {
