@@ -1,5 +1,5 @@
 import { StateMachine, Generation } from '../core/state.js';
-import { UnknownReturnClassifier, type BotView, type GameEvent, type JobFailureReason, type ReturnClassifier, type ReturnReason } from '../core/types.js';
+import { UnknownReturnClassifier, type BotView, type GameEvent, type JobFailureReason, type Position, type ReturnClassifier, type ReturnReason } from '../core/types.js';
 import type { Config } from '../config/index.js';
 import { Logger, safeKickReason } from '../logging/logger.js';
 import { parseInstance } from '../instances/parser.js';
@@ -12,7 +12,10 @@ import type { TaskHandler } from '../events/task.js';
 import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
-interface EventPreparation { timestamp:number; generation:number; abort:AbortController; expiresAt?:number; launched?:boolean; chestEvent?:GameEvent }
+interface EventPreparation {
+  timestamp:number; generation:number; abort:AbortController; expiresAt?:number; launched?:boolean; chestEvent?:GameEvent;
+  predictionAbort?:AbortController; predictionTarget?:Position;
+}
 interface DebugWalk { generation:number; abort:AbortController }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
@@ -371,9 +374,21 @@ export class BotManager {
           const scheduledAt=typeof event.metadata?.scheduledAt==='number'?event.metadata.scheduledAt:undefined;
           const reserved=this.bots.find(bot=>bot.instanceId===event.instanceId&&bot.preparation&&bot.preparation.timestamp===scheduledAt);
           if(reserved?.preparation){
-            reserved.preparation.chestEvent=event;
-            this.log(b,'care package chest detected',{eventId:event.id,x:position.x,y:position.y,z:position.z,reservedBotId:reserved.id});
-            this.continuePreparedCarePackage(reserved,reserved.preparation);
+            const preparation=reserved.preparation;
+            preparation.chestEvent=event;
+            this.log(reserved,'care package chest detected',{eventId:event.id,x:position.x,y:position.y,z:position.z,reservedBotId:reserved.id});
+            if(preparation.predictionAbort&&!preparation.predictionAbort.signal.aborted){
+              this.log(reserved,'care package prediction corrected',{
+                eventId:event.id,
+                predictedX:preparation.predictionTarget?.x,
+                predictedY:preparation.predictionTarget?.y,
+                predictedZ:preparation.predictionTarget?.z,
+                actualX:position.x,actualY:position.y,actualZ:position.z
+              });
+              preparation.predictionAbort.abort();
+            }else{
+              this.continuePreparedCarePackage(reserved,preparation);
+            }
             return;
           }
           const accepted=this.scheduler.enqueue(event,this.now());
@@ -574,13 +589,21 @@ export class BotManager {
     bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
     this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
     this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
-    void transport.launchToward!({x:target.x,z:target.z},preparation.abort.signal,'LAUNCH').then(()=>{
+    void transport.launchToward!({x:target.x,z:target.z},preparation.abort.signal,'LANDING').then(()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
       preparation.launched=true;
       this.carePackages?.markLaunch(bot.instanceId,timestamp,'DROPPED');
-      this.log(bot,'care package launch completed',{scheduledAt:timestamp,completion:'LAUNCH'});
-      if(!preparation.chestEvent)this.log(bot,'care package waiting for chest',{scheduledAt:timestamp});
-      this.continuePreparedCarePackage(bot,preparation);
+      this.log(bot,'care package launch completed',{scheduledAt:timestamp,completion:'LANDING'});
+      if(preparation.chestEvent){
+        this.continuePreparedCarePackage(bot,preparation);
+        return;
+      }
+      const position=transport.position();
+      if(!position){
+        this.log(bot,'care package prediction unavailable',{scheduledAt:timestamp});
+        return;
+      }
+      this.startCarePackagePrediction(bot,preparation,{x:target.x,y:position.y,z:target.z});
     },()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
       this.carePackages?.markLaunch(bot.instanceId,timestamp,'LAUNCH_FAILED');
@@ -589,6 +612,44 @@ export class BotManager {
       bot.preparation=undefined;
       if(bot.machine.state==='PREPARING_EVENT')bot.machine.transition('IN_PIT_IDLE');
       if(fallback)this.scheduler.enqueue(fallback,this.now());
+    });
+  }
+  private startCarePackagePrediction(bot:ManagedBot,preparation:EventPreparation,target:Position):void {
+    if(bot.preparation!==preparation||!preparation.launched||preparation.chestEvent||!bot.transport||
+      !bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
+    const controller=new AbortController();
+    preparation.predictionAbort=controller;
+    preparation.predictionTarget={...target};
+    const transport=bot.transport;
+    const queuedAt=this.now();
+    bot.pathAttempts++;
+    this.log(bot,'care package prediction path started',{
+      scheduledAt:preparation.timestamp,targetX:target.x,targetY:target.y,targetZ:target.z
+    });
+    void this.paths.submit(`care-prediction:${bot.id}:${preparation.timestamp}:${preparation.generation}`,controller.signal,async signal=>{
+      const startedAt=this.now();bot.pathStartedAt=startedAt;bot.lastPathQueueMs=Math.max(0,startedAt-queuedAt);
+      try{await transport.navigate(target,signal);bot.pathCompleted++;}
+      catch(error){bot.pathFailed++;throw error;}
+      finally{if(bot.pathStartedAt===startedAt){bot.lastPathMs=Math.max(0,this.now()-startedAt);bot.pathStartedAt=undefined;}}
+    },()=>transport.stopPath()).then(()=>{
+      if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation))return;
+      preparation.predictionAbort=undefined;
+      this.log(bot,'care package prediction reached',{
+        scheduledAt:preparation.timestamp,targetX:target.x,targetY:target.y,targetZ:target.z
+      });
+      if(preparation.chestEvent)this.continuePreparedCarePackage(bot,preparation);
+      else this.log(bot,'care package waiting for chest',{scheduledAt:preparation.timestamp});
+    },error=>{
+      if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation))return;
+      preparation.predictionAbort=undefined;
+      if(preparation.chestEvent){
+        this.continuePreparedCarePackage(bot,preparation);
+        return;
+      }
+      this.log(bot,'care package prediction path failed',{
+        scheduledAt:preparation.timestamp,
+        reason:error instanceof PathfindingError?error.code:this.movementFailure(error)
+      });
     });
   }
   private continuePreparedCarePackage(bot:ManagedBot,preparation:EventPreparation):void {
@@ -676,7 +737,8 @@ export class BotManager {
     })();
   }
   private cancelPreparation(b:ManagedBot):void {
-    const preparation=b.preparation;b.preparation=undefined;preparation?.abort.abort();
+    const preparation=b.preparation;b.preparation=undefined;
+    preparation?.predictionAbort?.abort();preparation?.abort.abort();
     if(b.machine.state==='PREPARING_EVENT')b.machine.transition('IN_PIT_IDLE');
   }
   private cancelExecution(b: ManagedBot, idle: boolean, reason: JobFailureReason = 'INSTANCE_LOST'): void {
