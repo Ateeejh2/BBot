@@ -108,7 +108,24 @@ export class BotManager {
     if (this.config.transport !== 'forge') throw new Error('UNSUPPORTED_ACTION');
     if (!/^[a-z\d.:_-]+$/i.test(host) || !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error('INVALID_INPUT');
     const b = this.controlled(id);
-    if (b.pendingServer) throw new Error('CONFLICT');
+    if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending || b.pendingServer) throw new Error('INVALID_STATE');
+
+    // Reuse the existing Forge bridge after an explicit server Disconnect.
+    // The Forge worker/client lifecycle is independent from the Minecraft server session.
+    if (b.transport?.connectServer) {
+      b.paused = false; b.ready = false; b.dueAt = 0;
+      b.machine.transition('CONNECTING');
+      b.deadline = this.now() + this.config.connectTimeoutMs;
+      const connection = b.connection;
+      void b.transport.connectServer(host, port).catch(() => {
+        if (this.stopped || b.connection !== connection) return;
+        b.paused = true;
+        this.log(b, 'server connect failed');
+        this.serverDisconnected(b);
+      });
+      return;
+    }
+
     b.pendingServer = { host, port };
     try { this.connectBot(id); }
     catch (error) { b.pendingServer = undefined; throw error; }
@@ -122,7 +139,7 @@ export class BotManager {
     b.paused = true;
     try {
       await b.transport.disconnectServer();
-      if (this.view(b).state !== 'DISCONNECTED') this.disconnected(b);
+      if (this.view(b).state !== 'DISCONNECTED') this.serverDisconnected(b);
     } catch (error) {
       b.paused = wasPaused;
       throw error;
@@ -403,6 +420,11 @@ export class BotManager {
           if (this.config.transport === 'forge') b.paused = true;
           this.disconnected(b);
         },
+        serverDisconnected: guard(() => {
+          this.checkSessionAfterConnectFailure(b);
+          if (this.config.transport === 'forge') b.paused = true;
+          this.serverDisconnected(b);
+        }),
         end: guard(() => {
           this.checkSessionAfterConnectFailure(b);
           if (this.config.transport === 'forge') b.paused = true;
@@ -516,8 +538,22 @@ export class BotManager {
     if (!b || ['CONNECTING', 'DISCONNECTED'].includes(b.machine.state)) return;
     this.recover(b, reason); b.ready = true;
   }
-  private disconnected(b: ManagedBot): void {
+  private serverDisconnected(b: ManagedBot): void {
     if (b.machine.state === 'DISCONNECTED') return;
+    this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
+    this.registry.leave(b.id, this.now(), 'DISCONNECT');
+    b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
+    b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
+    b.machine.transition('DISCONNECTED');
+    b.dueAt = 0;
+  }
+
+  private disconnected(b: ManagedBot): void {
+    if (b.machine.state === 'DISCONNECTED') {
+      const transport = b.transport; b.transport = undefined; b.connection++;
+      try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
+      return;
+    }
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
