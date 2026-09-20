@@ -308,8 +308,6 @@ export class PitNavigationService {
 
 }
 
-}
-
 function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkData}>):string {
   const hash=createHash('sha256');
   const ordered=[...samples].sort((a,b)=>a.dx-b.dx||a.dz-b.dz);
