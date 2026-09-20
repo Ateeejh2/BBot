@@ -65,18 +65,20 @@ public final class BBotHeadlessPoc {
     private final int walkTicks = envInt("BBOT_POC_WALK_TICKS", DEFAULT_WALK_TICKS);
     private final int sprintTicks = envInt("BBOT_POC_SPRINT_TICKS", DEFAULT_SPRINT_TICKS);
     private final int traceEveryTicks = Math.max(1, envInt("BBOT_POC_TRACE_EVERY_TICKS", DEFAULT_TRACE_EVERY_TICKS));
+    private final boolean skipRender = envBool("BBOT_POC_SKIP_RENDER", true);
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(this);
         FMLCommonHandler.instance().bus().register(this);
         LOG.info(
-            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={}",
+            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={} skipRender={}",
             descendTicks,
             warmupTicks,
             walkTicks,
             sprintTicks,
-            traceEveryTicks
+            traceEveryTicks,
+            skipRender
         );
     }
 
@@ -92,6 +94,7 @@ public final class BBotHeadlessPoc {
         }
 
         if (mc.thePlayer == null || mc.theWorld == null) {
+            mc.skipRenderWorld = false;
             if (hadWorld) {
                 LOG.info("[BBotPoC] world left; resetting test");
             }
@@ -103,6 +106,7 @@ public final class BBotHeadlessPoc {
         }
 
         hadWorld = true;
+        mc.skipRenderWorld = skipRender;
         totalTicks++;
 
         traceLargeClientStep();
@@ -329,6 +333,22 @@ public final class BBotHeadlessPoc {
         } catch (NumberFormatException ignored) {
             return fallback;
         }
+    }
+
+    private static boolean envBool(String key, boolean fallback) {
+        String value = System.getenv(key);
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+
+        String normalized = value.trim().toLowerCase();
+        if ("true".equals(normalized) || "1".equals(normalized) || "yes".equals(normalized) || "on".equals(normalized)) {
+            return true;
+        }
+        if ("false".equals(normalized) || "0".equals(normalized) || "no".equals(normalized) || "off".equals(normalized)) {
+            return false;
+        }
+        return fallback;
     }
 
     private static double round3(double value) {
