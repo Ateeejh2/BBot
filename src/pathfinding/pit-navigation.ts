@@ -16,6 +16,8 @@ export type PitLoadedChunkLister = (signal: AbortSignal) => Promise<Array<{x:num
 
 export interface PitNavigationPlan {
   fingerprint: string;
+  previousFingerprint?: string;
+  cacheStatus: 'HIT' | 'SHARED_HIT' | 'FULL_SCAN' | 'REVALIDATED';
   waypoints: Position[];
   complete: boolean;
   scannedChunks: number;
@@ -75,7 +77,8 @@ export class PitNavigationService {
     listLoadedChunks?: PitLoadedChunkLister
   ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
-    const graph = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks);
+    const prepared = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks);
+    const graph=prepared.graph;
 
     const startNode = nearestNode(graph, start, 4, 5);
     if (!startNode) throw new Error('No path to the goal!');
@@ -90,6 +93,8 @@ export class PitNavigationService {
 
     return {
       fingerprint: graph.fingerprint,
+      previousFingerprint: prepared.previousFingerprint,
+      cacheStatus: prepared.cacheStatus,
       waypoints: compressPath(search.path),
       complete: search.complete,
       scannedChunks: graph.chunks.size,
@@ -103,12 +108,14 @@ export class PitNavigationService {
     loader: PitChunkLoader,
     signal: AbortSignal,
     listLoadedChunks?: PitLoadedChunkLister
-  ): Promise<TerrainGraph> {
+  ): Promise<{graph:TerrainGraph;cacheStatus:PitNavigationPlan['cacheStatus'];previousFingerprint?:string}> {
     const now = Date.now();
     const instanceKey=instanceId.toLowerCase();
     const existingFingerprint = this.cache.fingerprintForInstance(instanceId);
     const existingGraph = this.cache.graphForInstance(instanceId);
-    if (existingFingerprint && existingGraph && !this.cache.refreshDue(instanceId, now)) return existingGraph;
+    if (existingFingerprint && existingGraph && !this.cache.refreshDue(instanceId, now)) {
+      return {graph:existingGraph,cacheStatus:'HIT',previousFingerprint:existingFingerprint};
+    }
 
     let anchor=this.anchors.get(instanceKey);
     if(!anchor){
@@ -124,7 +131,7 @@ export class PitNavigationService {
       if (chunk) samples.push({ dx, dz, chunk });
     }
     if (!samples.length) {
-      if (existingGraph) return existingGraph;
+      if (existingGraph) return {graph:existingGraph,cacheStatus:'HIT',previousFingerprint:existingFingerprint};
       throw new Error('No path to the goal!');
     }
 
@@ -154,12 +161,15 @@ export class PitNavigationService {
         for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
       }
       this.cache.setGraph(fingerprint, graph, now);
-    } else if (this.cache.refreshDue(instanceId, now)) {
+      return {graph,cacheStatus:'FULL_SCAN',previousFingerprint:existingFingerprint};
+    }
+    if (this.cache.refreshDue(instanceId, now)) {
       // TTL only forces the fixed fingerprint sample to be checked. If it is
       // unchanged, keep the already-built graph and refresh its validation time.
       this.cache.setGraph(fingerprint, graph, now);
+      return {graph,cacheStatus:'REVALIDATED',previousFingerprint:existingFingerprint};
     }
-    return graph;
+    return {graph,cacheStatus:'SHARED_HIT',previousFingerprint:existingFingerprint};
   }
 }
 
