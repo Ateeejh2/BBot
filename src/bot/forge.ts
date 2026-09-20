@@ -4,7 +4,7 @@ import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
 import { parseInstance } from '../instances/parser.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
-import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isLimboNotice } from './message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isDeathNotice, isLimboNotice } from './message-source.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 
 interface BridgeState {
@@ -485,8 +485,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         const careAnnouncement = parseCarePackageAnnouncement(raw);
         const careEligible = eligibleServerAnnouncementChannel(channel, null, careAnnouncement !== undefined);
         const limboEligible = eligibleServerAnnouncementChannel(channel, null, isLimboNotice(raw));
+        const deathEligible = eligibleServerAnnouncementChannel(channel, null, isDeathNotice(raw));
 
-        if (!eligible && !careEligible && !limboEligible) break;
+        if (!eligible && !careEligible && !limboEligible && !deathEligible) break;
         events.message(raw);
         break;
       }
@@ -497,11 +498,13 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         break;
       }
       case 'chickenSpawn':
-      case 'chestAppeared': {
+      case 'chestAppeared':
+      case 'chestDisappeared': {
         if (!isFiniteNumber(message.x) || !isFiniteNumber(message.y) || !isFiniteNumber(message.z)) break;
         const position = { x: message.x, y: message.y, z: message.z };
         if (message.event === 'chickenSpawn') events.chickenSpawn?.(position);
-        else events.chestAppeared?.(position);
+        else if (message.event === 'chestAppeared') events.chestAppeared?.(position);
+        else events.chestDisappeared?.(position);
         break;
       }
       case 'serverDisconnected':
