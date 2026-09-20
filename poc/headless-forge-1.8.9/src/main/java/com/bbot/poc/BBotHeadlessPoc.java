@@ -1,5 +1,6 @@
 package com.bbot.poc;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
@@ -342,8 +343,68 @@ public final class BBotHeadlessPoc {
                 if (!message.isEmpty()) {
                     mc.thePlayer.sendChatMessage(message);
                 }
+            } else if ("findSlimePads".equals(type) && command.has("requestId")) {
+                emitSlimePadResponse(command);
             }
         }
+    }
+
+    private void emitSlimePadResponse(JsonObject command) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", command.get("requestId").getAsString());
+        response.addProperty("kind", "slimePads");
+
+        if (mc.thePlayer == null || mc.theWorld == null) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "WORLD_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        int radius = command.has("radius") ? command.get("radius").getAsInt() : 32;
+        int vertical = command.has("vertical") ? command.get("vertical").getAsInt() : 6;
+        int limit = command.has("limit") ? command.get("limit").getAsInt() : 96;
+        radius = Math.max(1, Math.min(48, radius));
+        vertical = Math.max(1, Math.min(12, vertical));
+        limit = Math.max(1, Math.min(256, limit));
+
+        int baseX = (int) Math.floor(mc.thePlayer.posX);
+        int baseY = (int) Math.floor(mc.thePlayer.posY);
+        int baseZ = (int) Math.floor(mc.thePlayer.posZ);
+        JsonArray blocks = new JsonArray();
+
+        outer:
+        for (int y = baseY - vertical; y <= baseY + vertical; y++) {
+            if (y < 0 || y > 255) {
+                continue;
+            }
+            for (int x = baseX - radius; x <= baseX + radius; x++) {
+                for (int z = baseZ - radius; z <= baseZ + radius; z++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    if (mc.theWorld.getBlockState(pos).getBlock() != Blocks.slime_block) {
+                        continue;
+                    }
+
+                    JsonObject block = new JsonObject();
+                    block.addProperty("x", x);
+                    block.addProperty("y", y);
+                    block.addProperty("z", z);
+                    blocks.add(block);
+                    if (blocks.size() >= limit) {
+                        break outer;
+                    }
+                }
+            }
+        }
+
+        response.addProperty("ok", true);
+        response.add("blocks", blocks);
+        bridge.emit(response);
     }
 
     private void emitBridgeState() {
