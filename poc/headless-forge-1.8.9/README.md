@@ -140,6 +140,20 @@ export BBOT_POC_TRACE_EVERY_TICKS=20
 ./scripts/run-hmc.sh
 ```
 
+## Headless render最適化
+
+接続中はデフォルトで `Minecraft.skipRenderWorld=true` を維持し、Minecraft本体のworld renderをスキップします。
+
+これはclient tick / network / world / chunk / entity stateを止めるものではありません。将来のWeb ViewerはForge bridgeからworld/chunk/entity/positionをNode側へ渡し、prismarine-viewerのcore/standalone側で描画する想定なので、Minecraft側の画面renderとは分離できます。
+
+A/B比較でrenderを戻す場合:
+
+```bash
+BBOT_POC_SKIP_RENDER=false ./scripts/run-hmc.sh
+```
+
+ログの `ready ... skipRender=true` で有効状態を確認できます。
+
 ## メモリについて
 
 最初はMinecraft側を `-Xmx768m` で試します。
