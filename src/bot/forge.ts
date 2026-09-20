@@ -501,8 +501,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         else events.chestAppeared?.(position);
         break;
       }
+      case 'serverDisconnected':
       case 'end':
-        emitEnd();
+        events.serverDisconnected?.();
         break;
       default:
         events.diagnostic?.('forge bridge event', { event: message.event.slice(0, 64) });
