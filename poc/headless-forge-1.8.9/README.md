@@ -144,7 +144,7 @@ export BBOT_POC_TRACE_EVERY_TICKS=20
 
 PoCにはNode ↔ Forgeの最小bridgeがあります。Forge側は `127.0.0.1:3010` にだけbindし、外部インターフェースへは公開しません。
 
-Forgeはbridgeへ現在のposition / yaw / pitch / onGround / sprint / collision / flight stateをJSON Linesで送ります。Node側からはforward / sprint / sneak / look / chatを送れます。
+Forgeはbridgeへ現在のposition / yaw / pitch / onGround / sprint / collision / flight stateをJSON Linesで送ります。Node側からはforward / sprint / sneak / jump / look / chatを送れます。spawn / worldReset / identity / filtered chat / chicken spawn / chest block-changeもbridge eventとしてNodeへ渡します。
 
 Forge起動・サーバー接続後、別ターミナルで:
 
@@ -162,6 +162,8 @@ sprint on
 sprint off
 sneak on
 sneak off
+jump on
+jump off
 look -90 0
 chat hello
 release
@@ -188,6 +190,57 @@ bridge自体を無効にする場合:
 ```bash
 BBOT_POC_BRIDGE_ENABLED=false ./scripts/run-hmc.sh
 ```
+
+## BBot本体でForgeTransportを使う
+
+このbranchでは既存 `BotTransport` に `ForgeTransport` を追加済みです。Web/API/state machineを変更せず、live transportだけを切り替えます。
+
+```bash
+MODE=live
+BBOT_TRANSPORT=forge
+BOT_COUNT=1
+FORGE_BRIDGE_BASE_PORT=3010
+```
+
+`bot-1` は3010、`bot-2` は3011というように、`FORGE_BRIDGE_BASE_PORT + bot index` を使います。10 botなら3010〜3019です。bridgeはすべて `127.0.0.1` のみで、外部公開しません。
+
+現在ForgeTransportでつながっているもの:
+
+- position
+- spawn / worldReset / identity / end
+- transfer/Care Package announcement用chat filtering
+- chat送信
+- navigate / stopPath
+- chickenSpawn
+- chestAppeared
+
+まだ移植途中のもの:
+
+- `launchToward` のForge実装
+- Forge world/chunkデータを使うWeb Viewer
+- NodeからForge workerを自動起動/停止するworker supervisor
+- Webのaccount assignmentとForge workerのMinecraft login/profileを1:1で管理するproduction worker lifecycle
+
+## 最終デプロイ想定: OCI + Cloudflare
+
+最終構成はCodespace固有機能に依存させません。
+
+```text
+Cloudflare
+  ├─ BBot-Web
+  ├─ /api/v1 -> OCI上のBBot API
+  └─ Live View -> OCI上のViewer
+
+Oracle OCI (2 OCPU / 12GB想定)
+  ├─ Node BBot
+  │    └─ API 127.0.0.1:3008
+  ├─ Forge worker bot-1 -> bridge 127.0.0.1:3010
+  ├─ Forge worker bot-2 -> bridge 127.0.0.1:3011
+  ├─ ...
+  └─ Forge worker bot-10 -> bridge 127.0.0.1:3019
+```
+
+Cloudflare側へ公開するのはWeb/API/Viewerの入口だけです。Forge bridgeポート3010〜3019はOCI内のlocalhost専用のままにします。既存configも `API_HOST=127.0.0.1` を要求するため、この構成に合わせています。
 
 ## Headless render最適化
 
@@ -226,4 +279,4 @@ Minecraft側はHeadlessMC/hmc-specificsの `quit` command、またはプロセ�
 - 半ブロックからの移動でも同じ問題が再現しない
 - OCI上のRAM/CPUが許容範囲
 
-次段階ではこのlocalhost bridgeを既存 `BotTransport` のForge実装へ接続し、Web/API側の契約を維持したままMineflayer transportを置き換えます。
+次段階では `launchToward` とViewerをForge側へ移植し、その後Nodeが10個のForge workerを管理するproduction worker supervisorを追加します。
