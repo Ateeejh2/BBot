@@ -467,7 +467,8 @@ export class BotManager {
               sinceHorizontalCollisionMs:b.lastHorizontalCollisionAt===undefined?null:Math.max(0,now-b.lastHorizontalCollisionAt)};
           }
           const level = name.startsWith('viewer ') || name === 'server position correction' || name === 'movement packet after correction' ||
-            name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ? 'info' : 'debug';
+            name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ||
+            name === 'pit path planned' || name === 'pit path replan requested' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...correlated });
         },
