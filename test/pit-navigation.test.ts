@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PitNavigationService, type PitChunkData } from '../src/pathfinding/pit-navigation.js';
 
-const STONE=1<<4;
+const STONE=1;
 
 function chunkWithWall():PitChunkData {
   const sections=new Map<number,Uint16Array>();
