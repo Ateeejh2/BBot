@@ -127,6 +127,7 @@ export class ControlStore {
   async bind(manager: BotManager): Promise<void> {
     this.manager = manager;
     manager.setSessionFailureHandler((botId, accountId) => this.revalidateSessionAfterConnectFailure(botId, accountId));
+    if (this.config.transport === 'forge') return;
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
       transportAccount(a), a.minecraftName);
     if (this.config.count === 1 && !this.entries.some(a => a.assignedBot)) {
@@ -200,6 +201,18 @@ export class ControlStore {
     const started: string[] = [], skipped: Array<{ botId: string; reason: string }> = [];
     for (const bot of this.manager.views()) {
       if (bot.state !== 'DISCONNECTED' || bot.startQueued) { skipped.push({ botId: bot.id, reason: bot.startQueued ? 'ALREADY_QUEUED' : 'NOT_DISCONNECTED' }); continue; }
+
+      if (this.config.transport === 'forge') {
+        try {
+          this.manager.connectBot(bot.id);
+          started.push(bot.id);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : 'START_FAILED';
+          skipped.push({ botId: bot.id, reason: ['INVALID_STATE','CONFLICT'].includes(code) ? code : 'START_FAILED' });
+        }
+        continue;
+      }
+
       if (!bot.accountId) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
       const account = this.entries.find(a => a.id === bot.accountId);
       if (!account || account.assignedBot !== bot.id) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
