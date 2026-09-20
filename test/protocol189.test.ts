@@ -21,7 +21,7 @@ test('offline dependency smoke: pinned 1.8.9 resolves protocol 47 and plugin exp
   assert.equal(typeof pathfinder.Movements, 'function');
   assert.equal(typeof pathfinder.goals.GoalNear, 'function');
 });
-import { eligibleServerAnnouncementChannel, eligibleTransferChannel } from '../src/bot/message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isLimboNotice } from '../src/bot/message-source.js';
 test('legacy chat is opt-in; sender metadata is accepted only for an exact transfer match', () => {
   assert.equal(eligibleTransferChannel('system', null, 'system'), true);
   assert.equal(eligibleTransferChannel('chat', null, 'system'), false);
@@ -40,4 +40,12 @@ test('exact server event announcements accept sender-less legacy chat or system 
   assert.equal(eligibleServerAnnouncementChannel('system', 'sender', true), false);
   assert.equal(eligibleServerAnnouncementChannel('game_info', null, true), false);
   assert.equal(eligibleServerAnnouncementChannel('chat', null, false), false);
+});
+
+test('Limbo notice requires an exact normalized server line', () => {
+  assert.equal(isLimboNotice('You were spawned in Limbo.'), true);
+  assert.equal(isLimboNotice('§eYou were spawned in Limbo.'), true);
+  assert.equal(isLimboNotice('SomePlayer: You were spawned in Limbo.'), false);
+  assert.equal(isLimboNotice('[MVP+] SomePlayer: You were spawned in Limbo.'), false);
+  assert.equal(eligibleServerAnnouncementChannel('chat', 'player-uuid', isLimboNotice('You were spawned in Limbo.')), false);
 });
