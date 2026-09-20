@@ -382,6 +382,8 @@ public final class BBotHeadlessPoc {
                 emitChunkResponse(command);
             } else if ("getLoadedChunks".equals(type) && command.has("requestId")) {
                 emitLoadedChunksResponse(command);
+            } else if ("getVolatileBlocks".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
+                emitVolatileBlocksResponse(command);
             }
         }
     }
@@ -548,6 +550,62 @@ public final class BBotHeadlessPoc {
         response.addProperty("ok", true);
         response.add("chunks", chunks);
         bridge.emit(response);
+    }
+
+    private void emitVolatileBlocksResponse(JsonObject command) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", command.get("requestId").getAsString());
+        response.addProperty("kind", "volatileBlocks");
+
+        if (mc.theWorld == null) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "WORLD_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        int chunkX = command.get("chunkX").getAsInt();
+        int chunkZ = command.get("chunkZ").getAsInt();
+        if (!mc.theWorld.getChunkProvider().chunkExists(chunkX, chunkZ)) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "CHUNK_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        JsonArray blocks = new JsonArray();
+        for (int y = 0; y < 256; y++) {
+            for (int z = 0; z < 16; z++) {
+                for (int x = 0; x < 16; x++) {
+                    BlockPos pos = new BlockPos(chunkX * 16 + x, y, chunkZ * 16 + z);
+                    int stateId = Block.getStateId(mc.theWorld.getBlockState(pos));
+                    if (!isVolatileStateId(stateId)) {
+                        continue;
+                    }
+                    JsonObject block = new JsonObject();
+                    block.addProperty("x", pos.getX());
+                    block.addProperty("y", pos.getY());
+                    block.addProperty("z", pos.getZ());
+                    block.addProperty("stateId", stateId);
+                    blocks.add(block);
+                }
+            }
+        }
+
+        response.addProperty("ok", true);
+        response.add("blocks", blocks);
+        bridge.emit(response);
+    }
+
+    private boolean isVolatileStateId(int stateId) {
+        int blockId = stateId & 0x0fff;
+        int metadata = (stateId >>> 12) & 0x0f;
+        return blockId == 49 || blockId == 4 || blockId == 7 || (blockId == 5 && metadata == 0);
     }
 
     private void emitChunkResponse(JsonObject command) {
