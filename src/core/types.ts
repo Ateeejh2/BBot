@@ -17,6 +17,7 @@ export interface Job {
 export interface BotView {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; state: BotState; instanceId?: string;
   generation: number; position?: Position; startQueued?: boolean; jobId?: string; kickReason?: string; kickedAt?: number;
+  activity?: { kind:'SCANNING_CHUNKS'; progress:number };
 }
 export type ReturnReason = 'UNKNOWN_RETURN' | 'AFK' | 'PLANNED' | 'LIMBO';
 export interface ReturnClassifier { classify(message: string): ReturnReason | undefined }
