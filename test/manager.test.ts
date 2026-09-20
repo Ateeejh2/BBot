@@ -211,6 +211,42 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
   f.manager.stop();
 });
+test('Limbo notice runs /l, waits two seconds, then rejoins Pit and completes on instance confirmation', () => {
+  const f=fixture();
+  f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'before-limbo');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.deepEqual(t.commands,['/play pit']);
+
+  // Player-formatted chat must not trigger Limbo recovery.
+  t.events.message('[MVP+] SomePlayer: You were spawned in Limbo.');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.deepEqual(t.commands,['/play pit']);
+
+  t.events.message('You were spawned in Limbo.');
+  assert.equal(f.manager.views()[0]?.state,'RECOVERING');
+  assert.equal(f.manager.views()[0]?.instanceId,undefined);
+  assert.deepEqual(t.commands,['/play pit','/l']);
+
+  // Duplicate notices do not restart the sequence or send /l twice.
+  t.events.message('You were spawned in Limbo.');
+  assert.deepEqual(t.commands,['/play pit','/l']);
+
+  // /l transfer may reset the world; this must not fall back to generic Recovery.
+  t.events.worldReset();
+  t.events.spawn();
+  f.tick(2999);
+  assert.equal(f.manager.views()[0]?.state,'RECOVERING');
+  assert.deepEqual(t.commands,['/play pit','/l']);
+
+  f.tick(3000);
+  assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.deepEqual(t.commands,['/play pit','/l','/play pit']);
+
+  f.join(t,'after-limbo');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(f.manager.views()[0]?.instanceId,'after-limbo');
+  f.manager.stop();
+});
 test('Care Package launches, moves toward prediction, then corrects to the real chest', async () => {
   const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
   const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
