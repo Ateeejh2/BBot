@@ -123,9 +123,22 @@ test('Forge Start connects selected server, waits five seconds after spawn, then
 
   await f.manager.disconnectServer('bot-1');
   assert.equal(t.serverDisconnects, 1);
-  assert.equal(t.closed, true);
+  assert.equal(t.closed, false);
   assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
+
+  // Disconnect ends only the Minecraft server session. The same Forge transport
+  // stays alive so a later Start can reconnect without relaunching Forge.
+  f.manager.startServer('bot-1', 'mc.example.test', 25565);
+  await delay(0);
+  assert.deepEqual(t.serverConnections, [
+    { host: 'mc.example.test', port: 25565 },
+    { host: 'mc.example.test', port: 25565 }
+  ]);
+  assert.equal(f.connections.length, 1);
+  assert.equal(t.closed, false);
+
   f.manager.stop();
+  assert.equal(t.closed, true);
 });
 
 test('invalid Session auth after connection failure pauses automatic reconnect', async () => {
