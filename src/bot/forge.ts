@@ -654,9 +654,22 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if(horizontal<=range&&vertical<=1.5)return;
 
       const plannedAt=Date.now();
-      const plan=await sharedPitNavigation.plan(
-        instanceId,start,target,loadPitChunk,signal,[...avoided.values()],listLoadedPitChunks
-      );
+      let scanReported=false;
+      let plan;
+      try{
+        plan=await sharedPitNavigation.plan(
+          instanceId,start,target,loadPitChunk,signal,[...avoided.values()],listLoadedPitChunks,
+          (done,total)=>{
+            scanReported=true;
+            const progress=total<=0?100:Math.floor(done/total*100);
+            events.diagnostic?.('pit chunk scan progress',{
+              done,total,progress,active:done<total
+            });
+          }
+        );
+      }finally{
+        if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
+      }
       events.diagnostic?.('pit path planned',{
         instanceId,
         fingerprint:plan.fingerprint,
