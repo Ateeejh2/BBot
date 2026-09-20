@@ -58,6 +58,7 @@ export class PitNavigationService {
   private readonly overlays = new Map<string,DynamicOverlay>();
   private readonly overlayReady = new Set<string>();
   private readonly overlayLoads = new Map<string,Promise<void>>();
+  private readonly overlayEpoch = new Map<string,number>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
@@ -78,6 +79,7 @@ export class PitNavigationService {
     this.overlays.delete(key);
     this.overlayReady.delete(key);
     this.overlayLoads.delete(key);
+    this.overlayEpoch.delete(key);
   }
 
   invalidate(instanceId: string): void {
@@ -88,6 +90,7 @@ export class PitNavigationService {
     const key=normalizeInstance(instanceId);
     this.overlayReady.delete(key);
     this.overlays.delete(key);
+    this.overlayEpoch.set(key,(this.overlayEpoch.get(key)??0)+1);
   }
 
   overlayRevision(instanceId:string):number {
@@ -169,6 +172,7 @@ export class PitNavigationService {
       return;
     }
 
+    const epoch=this.overlayEpoch.get(key)??0;
     const task=(async()=>{
       const coords=await listLoadedChunks(signal);
       const unique=new Map<string,{x:number;z:number}>();
@@ -193,7 +197,7 @@ export class PitNavigationService {
       }
       if(queue.length===0)onScanProgress?.(0,0);
       overlay.revision++;
-      this.overlayReady.add(key);
+      if((this.overlayEpoch.get(key)??0)===epoch)this.overlayReady.add(key);
     })().finally(()=>this.overlayLoads.delete(key));
     this.overlayLoads.set(key,task);
     await task;
