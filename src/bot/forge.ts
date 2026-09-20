@@ -842,8 +842,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     position: () => current ? { x: current.x, y: current.y, z: current.z } : undefined,
     ping: () => current?.pingMs,
     setInstance: instanceId => {
+      if(boundInstanceId===instanceId)return;
+      if(boundInstanceId)sharedPitNavigation.releaseInstance(boundInstanceId);
       boundInstanceId=instanceId;
-      if(instanceId)sharedPitNavigation.bindHint(instanceId);
+      if(instanceId)sharedPitNavigation.retainInstance(instanceId);
     },
     chat: command => {
       if (closed) throw new Error('Transport closed');
@@ -856,6 +858,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     stopPath,
     close: () => {
       if (closed) return;
+      if(boundInstanceId){
+        sharedPitNavigation.releaseInstance(boundInstanceId);
+        boundInstanceId=undefined;
+      }
       try { release(); } catch {}
       closed = true;
       viewerClose?.();
