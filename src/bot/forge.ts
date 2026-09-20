@@ -4,7 +4,7 @@ import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
 import { parseInstance } from '../instances/parser.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
-import { eligibleServerAnnouncementChannel, eligibleTransferChannel } from './message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isLimboNotice } from './message-source.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 
 interface BridgeState {
@@ -484,8 +484,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         const eligible = eligibleTransferChannel(channel, null, config.transferMessageChannel, candidate !== undefined);
         const careAnnouncement = parseCarePackageAnnouncement(raw);
         const careEligible = eligibleServerAnnouncementChannel(channel, null, careAnnouncement !== undefined);
+        const limboEligible = eligibleServerAnnouncementChannel(channel, null, isLimboNotice(raw));
 
-        if (!eligible && !careEligible) break;
+        if (!eligible && !careEligible && !limboEligible) break;
         events.message(raw);
         break;
       }
