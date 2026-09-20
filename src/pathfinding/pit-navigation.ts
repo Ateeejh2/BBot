@@ -12,6 +12,7 @@ export interface PitChunkData {
   sections: PitChunkSection[];
 }
 export type PitChunkLoader = (chunkX: number, chunkZ: number, signal: AbortSignal) => Promise<PitChunkData | undefined>;
+export type PitLoadedChunkLister = (signal: AbortSignal) => Promise<Array<{x:number;z:number}>>;
 
 export interface PitNavigationPlan {
   fingerprint: string;
@@ -70,11 +71,11 @@ export class PitNavigationService {
     target: Position,
     loader: PitChunkLoader,
     signal: AbortSignal,
-    avoidColumns: ReadonlyArray<Pick<Position,'x'|'z'>> = []
+    avoidColumns: ReadonlyArray<Pick<Position,'x'|'z'>> = [],
+    listLoadedChunks?: PitLoadedChunkLister
   ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
-    const graph = await this.ensureGraph(instanceId, start, loader, signal);
-    await this.loadLocalWindow(graph, start, loader, signal);
+    const graph = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks);
 
     const startNode = nearestNode(graph, start, 4, 5);
     if (!startNode) throw new Error('No path to the goal!');
@@ -96,7 +97,13 @@ export class PitNavigationService {
     };
   }
 
-  private async ensureGraph(instanceId: string, start: Position, loader: PitChunkLoader, signal: AbortSignal): Promise<TerrainGraph> {
+  private async ensureGraph(
+    instanceId: string,
+    start: Position,
+    loader: PitChunkLoader,
+    signal: AbortSignal,
+    listLoadedChunks?: PitLoadedChunkLister
+  ): Promise<TerrainGraph> {
     const now = Date.now();
     const instanceKey=instanceId.toLowerCase();
     const existingFingerprint = this.cache.fingerprintForInstance(instanceId);
@@ -126,37 +133,33 @@ export class PitNavigationService {
     let graph = this.cache.graphForInstance(instanceId);
     if (!graph) {
       graph = { fingerprint, chunks:new Map(), nodes:new Map(), columns:new Map() };
+      const loadedCoords = listLoadedChunks ? await listLoadedChunks(signal) : [];
+      const unique = new Map<string,{x:number;z:number}>();
+      for (const value of loadedCoords) unique.set(chunkKey(value.x,value.z),value);
+      for (const sample of samples) unique.set(chunkKey(sample.chunk.chunkX,sample.chunk.chunkZ),{
+        x:sample.chunk.chunkX,z:sample.chunk.chunkZ
+      });
+
+      // First observation of a fingerprint performs one complete scan of every
+      // chunk the client currently has. Later bots/paths reuse this graph.
+      const queue=[...unique.values()];
+      for(let i=0;i<queue.length;i+=2){
+        signal.throwIfAborted();
+        const loaded=await Promise.all(queue.slice(i,i+2).map(async ({x,z})=>{
+          const sample=samples.find(value=>value.chunk.chunkX===x&&value.chunk.chunkZ===z)?.chunk;
+          if(sample)return sample;
+          try{return await loader(x,z,signal);}
+          catch(error){if(signal.aborted)throw error;return undefined;}
+        }));
+        for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
+      }
       this.cache.setGraph(fingerprint, graph, now);
     } else if (this.cache.refreshDue(instanceId, now)) {
-      // A fresh sample produced the same fingerprint, so the cached generation is
-      // still valid. Refresh its validation timestamp without rebuilding it.
+      // TTL only forces the fixed fingerprint sample to be checked. If it is
+      // unchanged, keep the already-built graph and refresh its validation time.
       this.cache.setGraph(fingerprint, graph, now);
     }
-    for (const sample of samples) addChunk(graph, sample.chunk);
     return graph;
-  }
-
-  private async loadLocalWindow(graph: TerrainGraph, start: Position, loader: PitChunkLoader, signal: AbortSignal): Promise<void> {
-    const centerX=Math.floor(start.x/16),centerZ=Math.floor(start.z/16);
-    const queue:Array<{x:number;z:number}>=[];
-    for(let radius=0;radius<=2;radius++){
-      for(let dx=-radius;dx<=radius;dx++)for(let dz=-radius;dz<=radius;dz++){
-        if(Math.max(Math.abs(dx),Math.abs(dz))!==radius)continue;
-        const x=centerX+dx,z=centerZ+dz;
-        if(!graph.chunks.has(chunkKey(x,z)))queue.push({x,z});
-      }
-    }
-
-    // Keep Minecraft's client tick responsive: getChunk scans are intentionally
-    // limited to the currently loaded neighborhood and issued only two at a time.
-    for(let i=0;i<queue.length;i+=2){
-      signal.throwIfAborted();
-      const loaded=await Promise.all(queue.slice(i,i+2).map(async ({x,z})=>{
-        try{return await loader(x,z,signal);}
-        catch(error){if(signal.aborted)throw error;return undefined;}
-      }));
-      for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
-    }
   }
 }
 
@@ -272,7 +275,8 @@ function searchGraph(
       const key=nodeKey(next.x,next.y,next.z);
       if(closed.has(key))continue;
       const vertical=next.y-current.y;
-      const tentative=currentG+1+Math.abs(vertical)*0.35+(vertical>0?0.2:0);
+      const verticalCost=vertical>0?vertical*0.35+0.2:Math.min(1.5,Math.abs(vertical)*0.03);
+      const tentative=currentG+1+verticalCost;
       if(tentative>=(g.get(key)??Number.POSITIVE_INFINITY))continue;
       g.set(key,tentative);parent.set(key,currentKey);
       open.push(key,tentative+heuristic(next,target));
@@ -289,12 +293,17 @@ function neighbors(graph:TerrainGraph,node:NavNode,avoided:Set<string>):NavNode[
     if(avoided.has(cKey))continue;
     const ys=graph.columns.get(cKey);
     if(!ys)continue;
-    const candidates=[node.y,node.y+1,node.y-1,node.y-2,node.y-3];
-    for(const y of candidates){
-      if(!ys.has(y))continue;
-      const next=graph.nodes.get(nodeKey(x,y,z));
+    let nextY:number|undefined;
+    if(ys.has(node.y))nextY=node.y;
+    else if(ys.has(node.y+1))nextY=node.y+1;
+    else{
+      // The Pit has no fall damage: walking off an edge may target the highest
+      // reachable floor below, with no artificial three-block drop limit.
+      for(const y of ys)if(y<node.y&&(nextY===undefined||y>nextY))nextY=y;
+    }
+    if(nextY!==undefined){
+      const next=graph.nodes.get(nodeKey(x,nextY,z));
       if(next)result.push(next);
-      break;
     }
   }
   return result;
