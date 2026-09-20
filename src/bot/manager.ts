@@ -531,6 +531,10 @@ export class BotManager {
   }
   private spawn(b: ManagedBot): void {
     b.ready = true;
+    if(b.careRetryAt!==undefined&&b.carePackage){
+      this.log(b,'care package death respawn observed',{scheduledAt:b.carePackage.timestamp});
+      return;
+    }
     if (this.movementDebug) {
       if (b.machine.state === 'CONNECTING') b.machine.transition('LOBBY');
       else if (b.machine.state === 'PATHFINDING') this.cancelDebugWalk(b, true);
@@ -553,6 +557,10 @@ export class BotManager {
   }
   private worldReset(b: ManagedBot): void {
     b.ready = false;
+    if(b.careRetryAt!==undefined&&b.carePackage){
+      this.log(b,'care package death world reset observed',{scheduledAt:b.carePackage.timestamp});
+      return;
+    }
     if (this.movementDebug) { this.cancelDebugWalk(b, true); b.debugWalkDone = false; b.debugSpawnAt = undefined; return; }
     if(b.limboRecovery?.phase==='WAIT_LOBBY'&&b.machine.state==='RECOVERING')return;
     if (b.machine.state === 'JOINING_PIT' || b.machine.state === 'CONNECTING') return;
