@@ -20,12 +20,11 @@ Mineflayer / prismarine-physics を使わず、Minecraft Forge 1.8.9 本体に m
 
 ## 既存BBotへの影響
 
-このPoCは `poc/headless-forge-1.8.9/` 以下だけで完結します。
+このexperiment branchでは、PoC検証後に `src/bot/forge.ts` とtransport切り替え設定を追加しています。
 
-- `src/` は変更しない
-- Node API は変更しない
-- BBot-Web は変更しない
-- 既存の `feature/windows-bbot` branch は変更しない
+- Node API / BotManager / BBot-Webの外部契約は維持する
+- Minecraft I/OだけをMineflayerまたはForgeTransportで切り替える
+- 通常の `feature/windows-bbot` branch は変更しない
 
 PoC branch:
 
@@ -215,9 +214,17 @@ FORGE_BRIDGE_BASE_PORT=3010
 - chickenSpawn
 - chestAppeared
 
+Forge Viewer（実験実装済み）:
+
+- `VIEWER_BOT_ID` で選択した1体だけworld/chunk snapshotを要求
+- Forge 1.8.9のblock stateをViewer側では1.8.8互換として描画
+- initial chunk + S22/S23 block update + bot position/yaw/pitchをLive Viewへ送信
+- Viewer HTTPは `127.0.0.1:VIEWER_PORT` にbindし、OCIではCloudflare/reverse proxy経由で公開する
+- chunkは必要時に1個ずつ取得し、10 bot全部へViewer負荷をかけない
+
 まだ移植途中のもの:
 
-- Forge world/chunkデータを使うWeb Viewer
+- Viewerの他entity同期（現在はworld + 選択bot位置が中心）
 - NodeからForge workerを自動起動/停止するworker supervisor
 - Webのaccount assignmentとForge workerのMinecraft login/profileを1:1で管理するproduction worker lifecycle
 
@@ -279,4 +286,4 @@ Minecraft側はHeadlessMC/hmc-specificsの `quit` command、またはプロセ�
 - 半ブロックからの移動でも同じ問題が再現しない
 - OCI上のRAM/CPUが許容範囲
 
-次段階ではViewerをForge world/chunk bridgeへ移植し、その後Nodeが10個のForge workerを管理するproduction worker supervisorを追加します。
+次段階ではForge Viewerの実動作を確認し、他entity同期を補完した後、Nodeが10個のForge workerを管理するproduction worker supervisorを追加します。
