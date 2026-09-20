@@ -115,10 +115,17 @@ export class PitNavigationService {
     const overlay=this.overlay(key);
     const x=Math.floor(position.x),y=Math.floor(position.y),z=Math.floor(position.z);
     if(y<0||y>255)return;
-    const changed=isVolatileState(stateId)
-      ?setOverlayBlock(overlay,x,y,z,stateId)
-      :deleteOverlayBlock(overlay,x,y,z);
-    return changed?overlay.revision:undefined;
+    const positionId=positionKey(x,y,z);
+    if(isVolatileState(stateId)){
+      setOverlayBlock(overlay,x,y,z,stateId);
+      // Every bot in the same instance receives the packet. Even if another bot
+      // already applied it to the shared overlay, this transport still needs the
+      // current revision to decide whether its own active corridor is affected.
+      return overlay.revision;
+    }
+    if(!overlay.blocks.has(positionId))return;
+    deleteOverlayBlock(overlay,x,y,z);
+    return overlay.revision;
   }
 
   async plan(
