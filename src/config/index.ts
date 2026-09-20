@@ -59,7 +59,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   let accounts: Account[];
   let legacyAccountsPresent = false;
   if (mode === 'mock') accounts = Array.from({ length: count }, (_, i) => ({ label: `bot-${i + 1}`, username: `mock-${i + 1}`, auth: 'offline' }));
-  else {
+  else if (transport === 'forge' && !apiEnabled) {
+    accounts = Array.from({ length: count }, (_, i) => ({
+      label: `bot-${i + 1}`,
+      username: `forge-bot-${i + 1}`,
+      auth: 'offline' as const
+    }));
+  } else {
     let raw: unknown;
     try { raw = JSON.parse(readFileSync(resolve(env.ACCOUNTS_FILE ?? 'accounts.json'), 'utf8')); legacyAccountsPresent = true; }
     catch (error) {
