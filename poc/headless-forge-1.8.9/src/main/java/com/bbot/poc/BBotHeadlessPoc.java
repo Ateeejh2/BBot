@@ -8,6 +8,8 @@ import io.netty.channel.ChannelHandlerContext;
 import java.lang.reflect.Field;
 import java.util.Base64;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiMainMenu;
+import net.minecraft.client.multiplayer.GuiConnecting;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
 import net.minecraft.entity.SharedMonsterAttributes;
@@ -21,7 +23,6 @@ import net.minecraft.util.BlockPos;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.EntityJoinWorldEvent;
-import net.minecraftforge.fml.client.FMLClientHandler;
 import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
@@ -388,7 +389,12 @@ public final class BBotHeadlessPoc {
         }
 
         try {
-            FMLClientHandler.instance().connectToServerAtStartup(host, port);
+            // This bridge command runs after Minecraft has already finished startup.
+            // connectToServerAtStartup() performs the Forge startup server-list probe
+            // and may block the client tick for up to 30 seconds. That races the
+            // Node bridge request timeout. Use Minecraft's normal runtime connection
+            // screen directly instead.
+            mc.displayGuiScreen(new GuiConnecting(new GuiMainMenu(), mc, host, port));
             emitServerControlResponse(requestId, true, null);
         } catch (Throwable t) {
             LOG.warn("[BBotPoC] connectServer failed", t);
