@@ -4,7 +4,7 @@ const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { parseInstance } from '../instances/parser.js';
-import { eligibleServerAnnouncementChannel, eligibleTransferChannel } from './message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isLimboNotice } from './message-source.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
@@ -295,6 +295,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const eligible = eligibleTransferChannel(position, sender, config.transferMessageChannel, candidate !== undefined);
     const careAnnouncement = parseCarePackageAnnouncement(text);
     const careEligible = eligibleServerAnnouncementChannel(position, sender, careAnnouncement !== undefined);
+    const limboEligible = eligibleServerAnnouncementChannel(position, sender, isLimboNotice(text));
     const looksTransferRelated =
       candidate !== undefined ||
       lower.includes('server found') ||
@@ -316,7 +317,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         channel: position, senderPresent: Boolean(sender), eligible: careEligible, area: careAnnouncement.area
       });
     }
-    if (!eligible && !careEligible) return;
+    if (!eligible && !careEligible && !limboEligible) return;
     events.message(text);
   };
   const normalizeKickReason = (reason: unknown): string => {
