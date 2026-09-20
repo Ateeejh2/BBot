@@ -211,12 +211,12 @@ FORGE_BRIDGE_BASE_PORT=3010
 - transfer/Care Package announcement用chat filtering
 - chat送信
 - navigate / stopPath
+- launchToward（slime pad query + approach + launch/landing判定）
 - chickenSpawn
 - chestAppeared
 
 まだ移植途中のもの:
 
-- `launchToward` のForge実装
 - Forge world/chunkデータを使うWeb Viewer
 - NodeからForge workerを自動起動/停止するworker supervisor
 - Webのaccount assignmentとForge workerのMinecraft login/profileを1:1で管理するproduction worker lifecycle
@@ -279,4 +279,4 @@ Minecraft側はHeadlessMC/hmc-specificsの `quit` command、またはプロセ�
 - 半ブロックからの移動でも同じ問題が再現しない
 - OCI上のRAM/CPUが許容範囲
 
-次段階では `launchToward` とViewerをForge側へ移植し、その後Nodeが10個のForge workerを管理するproduction worker supervisorを追加します。
+次段階ではViewerをForge world/chunk bridgeへ移植し、その後Nodeが10個のForge workerを管理するproduction worker supervisorを追加します。
