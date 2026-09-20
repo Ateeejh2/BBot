@@ -4,7 +4,7 @@ import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
 import { parseInstance } from '../instances/parser.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
-import { sharedPitNavigation, type PitChunkData } from '../pathfinding/pit-navigation.js';
+import { sharedPitNavigation, type PitChunkData, type PitNavigationPlan } from '../pathfinding/pit-navigation.js';
 import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isDeathNotice, isLimboNotice } from './message-source.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 
@@ -655,7 +655,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
       const plannedAt=Date.now();
       let scanReported=false;
-      let plan;
+      let plan:PitNavigationPlan;
       try{
         plan=await sharedPitNavigation.plan(
           instanceId,start,target,loadPitChunk,signal,[...avoided.values()],listLoadedPitChunks,
