@@ -83,6 +83,17 @@ test('kick reason is retained on the individual bot view', () => {
   assert.equal(view.kickedAt, 0);
   f.manager.stop();
 });
+test('Forge API mode can attach a stopped bot without an account assignment', () => {
+  const f = fixture(1, new MockTaskHandler(), true);
+  f.config.mode = 'live';
+  f.config.transport = 'forge';
+  assert.equal(f.manager.views()[0]?.accountId, undefined);
+  f.manager.connectBot('bot-1');
+  assert.equal(f.connections.length, 1);
+  assert.equal(f.manager.views()[0]?.state, 'CONNECTING');
+  f.manager.stop();
+});
+
 test('invalid Session auth after connection failure pauses automatic reconnect', async () => {
   const f = fixture(1, new MockTaskHandler(), true);
   f.config.mode = 'live';
