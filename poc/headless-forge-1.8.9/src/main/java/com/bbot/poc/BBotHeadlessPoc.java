@@ -298,8 +298,21 @@ public final class BBotHeadlessPoc {
         bridge.emit(message);
     }
 
-    private void traceChestBlockChange(BlockPos pos, net.minecraft.block.state.IBlockState state) {
-        if (state != null && state.getBlock() == Blocks.chest) {
+    private void traceBlockChange(BlockPos pos, net.minecraft.block.state.IBlockState state) {
+        if (state == null || bridge == null) {
+            return;
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "blockUpdate");
+        message.addProperty("x", pos.getX());
+        message.addProperty("y", pos.getY());
+        message.addProperty("z", pos.getZ());
+        message.addProperty("stateId", Block.getStateId(state));
+        bridge.emit(message);
+
+        if (state.getBlock() == Blocks.chest) {
             emitBridgePositionEvent("chestAppeared", pos.getX(), pos.getY(), pos.getZ());
         }
     }
@@ -517,11 +530,11 @@ public final class BBotHeadlessPoc {
                 public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
                     if (msg instanceof S23PacketBlockChange) {
                         S23PacketBlockChange packet = (S23PacketBlockChange) msg;
-                        traceChestBlockChange(packet.getBlockPosition(), packet.getBlockState());
+                        traceBlockChange(packet.getBlockPosition(), packet.getBlockState());
                     } else if (msg instanceof S22PacketMultiBlockChange) {
                         S22PacketMultiBlockChange packet = (S22PacketMultiBlockChange) msg;
                         for (S22PacketMultiBlockChange.BlockUpdateData update : packet.getChangedBlocks()) {
-                            traceChestBlockChange(update.getPos(), update.getBlockState());
+                            traceBlockChange(update.getPos(), update.getBlockState());
                         }
                     }
 
