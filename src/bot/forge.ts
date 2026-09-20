@@ -5,6 +5,7 @@ import type { Position } from '../core/types.js';
 import { parseInstance } from '../instances/parser.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
 import { sharedPitNavigation, type PitChunkData, type PitNavigationPlan } from '../pathfinding/pit-navigation.js';
+import { pathCorridorAffected } from '../pathfinding/path-corridor.js';
 import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isDeathNotice, isLimboNotice } from './message-source.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 
@@ -659,34 +660,6 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     }
   };
 
-  const distanceToSegment2d = (
-    px:number,pz:number,ax:number,az:number,bx:number,bz:number
-  ):number => {
-    const dx=bx-ax,dz=bz-az,lengthSq=dx*dx+dz*dz;
-    if(lengthSq<=1e-9)return Math.hypot(px-ax,pz-az);
-    const t=Math.max(0,Math.min(1,((px-ax)*dx+(pz-az)*dz)/lengthSq));
-    return Math.hypot(px-(ax+t*dx),pz-(az+t*dz));
-  };
-
-  const pathChangeRelevant = (
-    change:{x:number;y:number;z:number},
-    waypoints:Position[],
-    fromIndex:number
-  ):boolean => {
-    const state=current;
-    if(!state)return true;
-    let ax=state.x,ay=state.y,az=state.z;
-    for(let i=fromIndex;i<waypoints.length;i++){
-      const waypoint=waypoints[i]!;
-      const horizontal=distanceToSegment2d(change.x+0.5,change.z+0.5,ax,az,waypoint.x,waypoint.z);
-      const minY=Math.min(ay,waypoint.y)-3;
-      const maxY=Math.max(ay,waypoint.y)+3;
-      if(horizontal<=2.0&&change.y>=minY&&change.y<=maxY)return true;
-      ax=waypoint.x;ay=waypoint.y;az=waypoint.z;
-    }
-    return false;
-  };
-
   const navigateCached = async (target:Position, range:number, signal:AbortSignal):Promise<void> => {
     const instanceId=boundInstanceId;
     if(!instanceId){
@@ -758,7 +731,13 @@ export function createForgeTransport(config: Config, index: number, events: Tran
                 let relevant=false;
                 for(const change of newChanges){
                   maxRevision=Math.max(maxRevision,change.revision);
-                  if(pathChangeRelevant(change,plan.waypoints,waypointIndex))relevant=true;
+                  const state=current;
+                  if(!state||pathCorridorAffected(
+                    change,
+                    {x:state.x,y:state.y,z:state.z},
+                    plan.waypoints,
+                    waypointIndex
+                  ))relevant=true;
                 }
                 checkedOverlayRevision=maxRevision;
                 if(relevant)debounceUntil??=Date.now()+75;
