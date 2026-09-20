@@ -9,6 +9,7 @@ import java.lang.reflect.Field;
 import java.util.Base64;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiMainMenu;
+import net.minecraft.client.gui.GuiMultiplayer;
 import net.minecraft.client.multiplayer.GuiConnecting;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
@@ -121,7 +122,7 @@ public final class BBotHeadlessPoc {
 
     @SubscribeEvent
     public void onClientDisconnected(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
-        emitBridgeEvent("end");
+        emitBridgeEvent("serverDisconnected");
     }
 
     @SubscribeEvent
@@ -417,6 +418,7 @@ public final class BBotHeadlessPoc {
             // close its transport after this response has already been delivered.
             emitServerControlResponse(requestId, true, null);
             mc.loadWorld(null);
+            mc.displayGuiScreen(new GuiMultiplayer(new GuiMainMenu()));
         } catch (Throwable t) {
             LOG.warn("[BBotPoC] disconnectServer failed", t);
             emitServerControlResponse(requestId, false, "DISCONNECT_FAILED");
