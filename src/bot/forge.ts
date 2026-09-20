@@ -46,6 +46,8 @@ interface BridgeResponse {
   error?: string;
   blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown; stateId?: unknown }>;
   chunks?: Array<{ x?: unknown; z?: unknown }>;
+  count?: number;
+  signature?: string;
   chunkX?: number;
   chunkZ?: number;
   sections?: Array<{ y?: unknown; states?: unknown }>;
@@ -113,6 +115,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let connected = false;
   let requestSequence = 0;
   let boundInstanceId: string | undefined;
+  const overlayChanges:Array<{revision:number;x:number;y:number;z:number;at:number}>=[];
   let viewerClose: (() => void) | undefined;
   let viewerState: ((state: BridgeState) => void) | undefined;
   let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
@@ -215,6 +218,14 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     return response.chunks.flatMap(value=>
       isFiniteNumber(value.x)&&isFiniteNumber(value.z)?[{x:value.x,z:value.z}]:[]
     );
+  };
+
+  const loadPitVolatileSummary = async (signal:AbortSignal) => {
+    const response=await request({type:'getVolatileSummary'},signal,15_000);
+    if(!response.ok||response.kind!=='volatileSummary'||
+       typeof response.signature!=='string'||!/^volatile:[0-9a-f]{24}$/.test(response.signature)||
+       !Number.isSafeInteger(response.count)||response.count!<0)return;
+    return {signature:response.signature,count:response.count};
   };
 
   const loadPitVolatileChunk = async (chunkX:number, chunkZ:number, signal:AbortSignal) => {
@@ -535,11 +546,21 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             !isFiniteNumber(message.stateId)) break;
         viewerBlockUpdate?.(message.x, message.y, message.z, message.stateId);
         if(boundInstanceId){
-          sharedPitNavigation.updateDynamicBlock(
+          const revision=sharedPitNavigation.updateDynamicBlock(
             boundInstanceId,
             {x:message.x,y:message.y,z:message.z},
             message.stateId
           );
+          if(revision!==undefined){
+            overlayChanges.push({
+              revision,
+              x:message.x,
+              y:message.y,
+              z:message.z,
+              at:Date.now()
+            });
+            if(overlayChanges.length>128)overlayChanges.splice(0,overlayChanges.length-128);
+          }
         }
         break;
       }
@@ -659,6 +680,34 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     }
   };
 
+  const distanceToSegment2d = (
+    px:number,pz:number,ax:number,az:number,bx:number,bz:number
+  ):number => {
+    const dx=bx-ax,dz=bz-az,lengthSq=dx*dx+dz*dz;
+    if(lengthSq<=1e-9)return Math.hypot(px-ax,pz-az);
+    const t=Math.max(0,Math.min(1,((px-ax)*dx+(pz-az)*dz)/lengthSq));
+    return Math.hypot(px-(ax+t*dx),pz-(az+t*dz));
+  };
+
+  const pathChangeRelevant = (
+    change:{x:number;y:number;z:number},
+    waypoints:Position[],
+    fromIndex:number
+  ):boolean => {
+    const state=current;
+    if(!state)return true;
+    let ax=state.x,ay=state.y,az=state.z;
+    for(let i=fromIndex;i<waypoints.length;i++){
+      const waypoint=waypoints[i]!;
+      const horizontal=distanceToSegment2d(change.x+0.5,change.z+0.5,ax,az,waypoint.x,waypoint.z);
+      const minY=Math.min(ay,waypoint.y)-3;
+      const maxY=Math.max(ay,waypoint.y)+3;
+      if(horizontal<=2.0&&change.y>=minY&&change.y<=maxY)return true;
+      ax=waypoint.x;ay=waypoint.y;az=waypoint.z;
+    }
+    return false;
+  };
+
   const navigateCached = async (target:Position, range:number, signal:AbortSignal):Promise<void> => {
     const instanceId=boundInstanceId;
     if(!instanceId){
@@ -690,10 +739,16 @@ export function createForgeTransport(config: Config, index: number, events: Tran
               done,total,progress,active:done<total
             });
           },
-          loadPitVolatileChunk
+          loadPitVolatileChunk,
+          loadPitVolatileSummary
         );
       }finally{
         if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
+      }
+      if(overlayChanges.length){
+        const firstNew=overlayChanges.findIndex(change=>change.revision>plan.overlayRevision);
+        if(firstNew<0)overlayChanges.length=0;
+        else if(firstNew>0)overlayChanges.splice(0,firstNew);
       }
       events.diagnostic?.('pit path planned',{
         instanceId,
@@ -713,14 +768,24 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
       let advanced=false;
       let replanRequested=false;
-      for(const waypoint of plan.waypoints){
+      let debounceUntil:number|undefined;
+      for(let waypointIndex=0;waypointIndex<plan.waypoints.length;waypointIndex++){
+        const waypoint=plan.waypoints[waypointIndex]!;
         signal.throwIfAborted();
         try{
           await navigateTo(
             waypoint,
             0.7,
             signal,
-            ()=>sharedPitNavigation.overlayRevision(instanceId)!==plan.overlayRevision
+            ()=>{
+              const relevant=overlayChanges.some(change=>
+                change.revision>plan.overlayRevision&&
+                pathChangeRelevant(change,plan.waypoints,waypointIndex)
+              );
+              if(!relevant){debounceUntil=undefined;return false;}
+              debounceUntil??=Date.now()+75;
+              return Date.now()>=debounceUntil;
+            }
           );
           advanced=true;
         }catch(error){
@@ -739,6 +804,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
               instanceId,
               reason:message,
               avoidedColumns:avoided.size,
+              overlayChanges:overlayChanges.filter(change=>change.revision>plan.overlayRevision).length,
               waypointX:Math.round(waypoint.x*10)/10,
               waypointY:Math.round(waypoint.y*10)/10,
               waypointZ:Math.round(waypoint.z*10)/10
