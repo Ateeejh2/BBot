@@ -264,8 +264,12 @@ test('live volatile block placement and removal changes only the instance overla
   const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
 
   const initial=await service.plan('live-instance',start,target,loader,signal);
+  const revisionBefore=initial.overlayRevision;
   service.updateDynamicBlock('live-instance',{x:5,y:64,z:2},OBSIDIAN);
   service.updateDynamicBlock('live-instance',{x:5,y:65,z:2},OBSIDIAN);
+  const journal=service.dynamicChangesSince('live-instance',revisionBefore);
+  assert.equal(journal.length,2);
+  assert.deepEqual(journal.map(change=>[change.x,change.y,change.z]),[[5,64,2],[5,65,2]]);
   const blocked=await service.plan('live-instance',start,target,loader,signal);
   assert.ok(blocked.overlayRevision>initial.overlayRevision);
   assert.equal(blocked.dynamicBlocks,2);
