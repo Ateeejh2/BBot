@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { PitNavigationService, type PitChunkData } from '../src/pathfinding/pit-navigation.js';
 
 const STONE=1;
+const COBBLESTONE=4;
+const OAK_PLANK=5;
+const BEDROCK=7;
+const OBSIDIAN=49;
 
 function chunkWithWall(includeWall=true):PitChunkData {
   const sections=new Map<number,Uint16Array>();
@@ -36,6 +40,20 @@ function flatChunk(chunkX:number, floorY=63):PitChunkData {
   };
   for(let x=0;x<16;x++)for(let z=0;z<16;z++)set(x,floorY,z,STONE);
   return {chunkX,chunkZ:0,sections:[...sections.entries()].map(([y,states])=>({y,states}))};
+}
+
+function volatileBarrierChunk(stateId=OBSIDIAN):PitChunkData {
+  const chunk=flatChunk(0);
+  const sections=new Map(chunk.sections.map(section=>[section.y,section.states.slice()] as const));
+  const set=(x:number,y:number,z:number,state:number)=>{
+    const sy=y>>4;
+    let values=sections.get(sy);
+    if(!values){values=new Uint16Array(4096);sections.set(sy,values);}
+    values[((y&15)*256)+(z*16)+x]=state;
+  };
+  set(5,64,2,stateId);
+  set(5,65,2,stateId);
+  return {chunkX:0,chunkZ:0,sections:[...sections.entries()].map(([y,states])=>({y,states}))};
 }
 
 function dropChunk():PitChunkData {
@@ -151,6 +169,92 @@ test('A-star allows arbitrarily deep Pit drops when a lower floor exists', async
   );
   assert.equal(plan.complete,true);
   assert.ok(plan.waypoints.some(point=>point.y===64));
+});
+
+test('volatile Pit blocks do not change the shared terrain fingerprint', async () => {
+  const service=new PitNavigationService();
+  const signal=new AbortController().signal;
+  const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
+  const states=[OBSIDIAN,COBBLESTONE,BEDROCK,OAK_PLANK];
+  const fingerprints:string[]=[];
+  for(let i=0;i<states.length;i++){
+    const terrain=volatileBarrierChunk(states[i]!);
+    const plan=await service.plan(
+      `volatile-${i}`,
+      start,
+      target,
+      async (x,z)=>x===0&&z===0?terrain:undefined,
+      signal
+    );
+    fingerprints.push(plan.fingerprint);
+  }
+  assert.equal(new Set(fingerprints).size,1);
+});
+
+test('shared base graph keeps volatile obstacles instance-local', async () => {
+  const service=new PitNavigationService();
+  const clear=flatChunk(0);
+  const blocked=volatileBarrierChunk();
+  const signal=new AbortController().signal;
+  const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
+  const lister=async()=>[{x:0,z:0}];
+
+  const clearPlan=await service.plan(
+    'clear-instance',
+    start,
+    target,
+    async (x,z)=>x===0&&z===0?clear:undefined,
+    signal,
+    [],
+    lister,
+    undefined,
+    async()=>[]
+  );
+  const blockedPlan=await service.plan(
+    'blocked-instance',
+    start,
+    target,
+    async (x,z)=>x===0&&z===0?blocked:undefined,
+    signal,
+    [],
+    lister,
+    undefined,
+    async()=>[
+      {x:5,y:64,z:2,stateId:OBSIDIAN},
+      {x:5,y:65,z:2,stateId:OBSIDIAN}
+    ]
+  );
+
+  assert.equal(clearPlan.fingerprint,blockedPlan.fingerprint);
+  assert.equal(service.cache.snapshot(Date.now()).length,1);
+  assert.equal(clearPlan.dynamicBlocks,0);
+  assert.equal(blockedPlan.dynamicBlocks,2);
+  assert.ok(clearPlan.waypoints.every(point=>point.z===2.5),'clear instance should use the straight route');
+  assert.ok(blockedPlan.waypoints.some(point=>point.z!==2.5),'blocked instance should route around its own overlay');
+});
+
+test('live volatile block placement and removal changes only the instance overlay', async () => {
+  const service=new PitNavigationService();
+  const terrain=flatChunk(0);
+  const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+    x===0&&z===0?terrain:undefined;
+  const signal=new AbortController().signal;
+  const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
+
+  const initial=await service.plan('live-instance',start,target,loader,signal);
+  service.updateDynamicBlock('live-instance',{x:5,y:64,z:2},OBSIDIAN);
+  service.updateDynamicBlock('live-instance',{x:5,y:65,z:2},OBSIDIAN);
+  const blocked=await service.plan('live-instance',start,target,loader,signal);
+  assert.ok(blocked.overlayRevision>initial.overlayRevision);
+  assert.equal(blocked.dynamicBlocks,2);
+  assert.ok(blocked.waypoints.some(point=>point.z!==2.5));
+
+  service.updateDynamicBlock('live-instance',{x:5,y:64,z:2},0);
+  service.updateDynamicBlock('live-instance',{x:5,y:65,z:2},0);
+  const restored=await service.plan('live-instance',start,target,loader,signal);
+  assert.ok(restored.overlayRevision>blocked.overlayRevision);
+  assert.equal(restored.dynamicBlocks,0);
+  assert.ok(restored.waypoints.every(point=>point.z===2.5));
 });
 
 test('different weekly terrains coexist as separate fingerprint generations', async () => {
