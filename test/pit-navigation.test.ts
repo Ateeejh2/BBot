@@ -231,6 +231,20 @@ test('shared base graph keeps volatile obstacles instance-local', async () => {
   assert.equal(blockedPlan.dynamicBlocks,2);
   assert.ok(clearPlan.waypoints.every(point=>point.z===2.5),'clear instance should use the straight route');
   assert.ok(blockedPlan.waypoints.some(point=>point.z!==2.5),'blocked instance should route around its own overlay');
+
+  const clearAgain=await service.plan(
+    'clear-instance',
+    start,
+    target,
+    async (x,z)=>x===0&&z===0?clear:undefined,
+    signal,
+    [],
+    lister,
+    undefined,
+    async()=>[]
+  );
+  assert.equal(clearAgain.dynamicBlocks,0);
+  assert.ok(clearAgain.waypoints.every(point=>point.z===2.5),'blocked overlay must not leak into another instance');
 });
 
 test('live volatile block placement and removal changes only the instance overlay', async () => {
