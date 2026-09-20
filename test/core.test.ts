@@ -170,6 +170,15 @@ test('Care Package coordinator waits for the live announcement, then clusters an
   assert.equal(coordinator.observeChest('Mega-A',{x:100,y:64,z:-52},10_210),undefined);
   assert.equal(coordinator.trackingSnapshot(10_210).instances[0]?.state,'CHEST_DETECTED');
 });
+test('Forge live mode can start without legacy accounts.json when API is disabled', () => {
+  const config = loadConfig({ MODE: 'live', BBOT_TRANSPORT: 'forge', BOT_COUNT: '2', ACCOUNTS_FILE: '/definitely/missing/accounts.json' });
+  assert.equal(config.transport, 'forge');
+  assert.deepEqual(config.accounts.map(account => ({ label: account.label, username: account.username, auth: account.auth })), [
+    { label: 'bot-1', username: 'forge-bot-1', auth: 'offline' },
+    { label: 'bot-2', username: 'forge-bot-2', auth: 'offline' }
+  ]);
+});
+
 test('configuration defaults are safe and malformed values fail closed', () => {
   assert.equal(loadConfig({}).mode, 'mock'); assert.equal(loadConfig({}).count, 1); assert.equal(loadConfig({}).pathConcurrency, 2);
   assert.equal(loadConfig({}).version, '1.8.9'); assert.equal(loadConfig({ MC_VERSION: '' }).version, '1.8.9');
