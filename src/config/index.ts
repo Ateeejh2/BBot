@@ -16,9 +16,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   };
   const mode = env.MODE ?? 'mock';
   if (!['mock', 'live'].includes(mode)) throw new Error('MODE must be mock or live');
+  const transport = env.BBOT_TRANSPORT ?? 'mineflayer';
+  if (!['mineflayer', 'forge'].includes(transport)) throw new Error('BBOT_TRANSPORT must be mineflayer or forge');
   const level = bool('DEBUG', false) ? 'debug' : (env.LOG_LEVEL ?? 'info');
   if (!['debug', 'info', 'warn', 'error'].includes(level)) throw new Error('Invalid LOG_LEVEL');
   const count = integer('BOT_COUNT', 1, 1, 20);
+  const forgeBridgeBasePort = integer('FORGE_BRIDGE_BASE_PORT', 3010, 1024, 65535);
+  if (forgeBridgeBasePort + count - 1 > 65535) throw new Error('FORGE_BRIDGE_BASE_PORT range exceeds 65535');
   const host = env.SERVER_HOST ?? 'localhost';
   if (!/^[a-z\d.:_-]+$/i.test(host)) throw new Error('Invalid SERVER_HOST');
   const version = env.MC_VERSION?.trim() || '1.8.9';
@@ -77,7 +81,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       : configured;
   }
   return {
-    mode: mode as 'mock' | 'live', count, host, version, accounts, legacyAccountsPresent, level: level as 'debug' | 'info' | 'warn' | 'error',
+    mode: mode as 'mock' | 'live', transport: transport as 'mineflayer' | 'forge',
+    count, host, version, accounts, legacyAccountsPresent, level: level as 'debug' | 'info' | 'warn' | 'error',
+    forge: { bridgeBasePort: forgeBridgeBasePort },
     port: integer('SERVER_PORT', 25565, 1, 65535),
     reconnect: { baseMs: reconnectBaseMs, maxMs: reconnectMaxMs, jitter: integer('RECONNECT_JITTER_PERCENT', 50, 0, 100) / 100 },
     connectTimeoutMs: integer('CONNECT_TIMEOUT_MS', 60000, 1000, 600000),
