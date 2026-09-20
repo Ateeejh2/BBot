@@ -7,6 +7,8 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import java.lang.reflect.Field;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraft.client.gui.GuiMultiplayer;
@@ -75,6 +77,7 @@ public final class BBotHeadlessPoc {
     private boolean bridgeWasConnected;
     private Object lastWorld;
     private LocalBridgeServer bridge;
+    private final Set<BlockPos> observedChests = new HashSet<BlockPos>();
 
     private boolean havePreviousPosition;
     private double previousX;
@@ -181,6 +184,7 @@ public final class BBotHeadlessPoc {
             emitBridgeIdentity();
             emitBridgeEvent("spawn");
         } else if (lastWorld != mc.theWorld) {
+            observedChests.clear();
             emitBridgeEvent("worldReset");
             emitBridgeEvent("spawn");
         }
@@ -309,15 +313,6 @@ public final class BBotHeadlessPoc {
             return;
         }
 
-        net.minecraft.block.Block previous = null;
-        if (mc.theWorld != null) {
-            try {
-                previous = mc.theWorld.getBlockState(pos).getBlock();
-            } catch (Throwable ignored) {
-                previous = null;
-            }
-        }
-
         JsonObject message = new JsonObject();
         message.addProperty("type", "event");
         message.addProperty("event", "blockUpdate");
@@ -327,9 +322,11 @@ public final class BBotHeadlessPoc {
         message.addProperty("stateId", Block.getStateId(state));
         bridge.emit(message);
 
-        if (state.getBlock() == Blocks.chest && previous != Blocks.chest) {
-            emitBridgePositionEvent("chestAppeared", pos.getX(), pos.getY(), pos.getZ());
-        } else if (previous == Blocks.chest && state.getBlock() != Blocks.chest) {
+        if (state.getBlock() == Blocks.chest) {
+            if (observedChests.add(pos)) {
+                emitBridgePositionEvent("chestAppeared", pos.getX(), pos.getY(), pos.getZ());
+            }
+        } else if (observedChests.remove(pos)) {
             emitBridgePositionEvent("chestDisappeared", pos.getX(), pos.getY(), pos.getZ());
         }
     }
@@ -717,6 +714,7 @@ public final class BBotHeadlessPoc {
         totalTicks = 0;
         havePreviousPosition = false;
         bridgeControlActive = false;
+        observedChests.clear();
     }
 
     private void traceLargeClientStep() {
