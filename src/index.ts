@@ -19,6 +19,7 @@ import prismarineAuth from 'prismarine-auth';
 import { join } from 'node:path';
 const { Authflow, Titles } = prismarineAuth;
 import type { TransportFactory } from './bot/transport.js';
+import type { ForgeWorkerSupervisor } from './forge/worker-supervisor.js';
 async function main(): Promise<void> {
   const config = loadConfig({ ...process.env, ...(process.argv.includes('--mock') ? { MODE: 'mock' } : {}) });
   if (config.inactiveMs <= config.suspectMs) throw new Error('INSTANCE_INACTIVE_MS must exceed INSTANCE_SUSPECT_MS');
@@ -38,6 +39,11 @@ async function main(): Promise<void> {
   });
   if (config.api.enabled && config.mode === 'live') await controls.load();
   const logger = new Logger(config.level, config.logDir, config.logMaxBytes, config.logFiles, config.accounts.map(a => a.username));
+  let forgeWorkers: ForgeWorkerSupervisor | undefined;
+  if (config.mode === 'live' && config.transport === 'forge' && config.api.enabled) {
+    const { ForgeWorkerSupervisor } = await import('./forge/worker-supervisor.js');
+    forgeWorkers = new ForgeWorkerSupervisor(config, logger);
+  }
   let factory: TransportFactory;
   if (config.mode === 'mock') factory = (_index, events) => new MockTransport(events, () => `mock-pit-${1 + Math.floor(Math.random() * 3)}`);
   else if (config.transport === 'forge') {
@@ -65,10 +71,18 @@ async function main(): Promise<void> {
         })
       : new MockEventProvider([]);
   const app = new Application(manager, provider, new JsonStore(config.dataDir, config.mode), logger, config, carePackages);
-  const api = config.api.enabled ? createManagementApi(manager, config, logger, config.mode === 'live' ? controls : undefined, carePackages) : undefined;
+  const api = config.api.enabled ? createManagementApi(manager, config, logger, config.mode === 'live' ? controls : undefined, carePackages, forgeWorkers) : undefined;
   const input = createInterface({ input: process.stdin, terminal: false });
   let stopping = false;
-  const stop = async () => { if (stopping) return; stopping = true; input.close(); await api?.close(); await app.stop(); setTimeout(() => process.exit(process.exitCode ?? 0), 10000).unref(); };
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    input.close();
+    await api?.close();
+    await app.stop();
+    await forgeWorkers?.close();
+    setTimeout(() => process.exit(process.exitCode ?? 0), 10000).unref();
+  };
   process.once('SIGINT', () => { void stop(); }); process.once('SIGTERM', () => { void stop(); });
   input.on('line', line => {
     const [command, botId] = line.trim().split(/\s+/);
@@ -76,7 +90,8 @@ async function main(): Promise<void> {
     else if (command === 'status') logger.log('info', 'status', { bots: manager.views() });
     else if (command === 'recover' && botId) manager.notifyLobbyReturn(botId);
   });
-  try { await api?.listen(); await app.start(); } catch (error) { input.close(); manager.stop(); await api?.close(); throw error; }
+  try { await api?.listen(); await app.start(); }
+  catch (error) { input.close(); manager.stop(); await api?.close(); await forgeWorkers?.close(); throw error; }
   logger.log('info', 'BBot started', { mode: config.mode, transport: config.transport, botCount: config.count,
     pathConcurrency: config.pathConcurrency, eventProvider: config.eventProviderUrl ? 'http' : 'disabled' });
 }
