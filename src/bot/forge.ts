@@ -701,6 +701,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         previousFingerprint:plan.previousFingerprint??null,
         mapChanged:Boolean(plan.previousFingerprint&&plan.previousFingerprint!==plan.fingerprint),
         cacheStatus:plan.cacheStatus,
+        dynamicBlocks:plan.dynamicBlocks,
+        overlayRevision:plan.overlayRevision,
         waypoints:plan.waypoints.length,
         complete:plan.complete,
         scannedChunks:plan.scannedChunks,
