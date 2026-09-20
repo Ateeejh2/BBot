@@ -155,7 +155,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   });
 
   socket.on('data', chunk => {
-    buffer += chunk;
+    buffer += chunk.toString();
     if (buffer.length > 1_000_000) {
       buffer = '';
       events.error();
