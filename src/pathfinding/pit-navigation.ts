@@ -64,9 +64,12 @@ export class PitNavigationService {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
   }
 
-  retainInstance(instanceId:string):void {
+  retainInstance(instanceId:string, position?:Position):void {
     const key=normalizeInstance(instanceId);
     this.instanceUsers.set(key,(this.instanceUsers.get(key)??0)+1);
+    if(position&&!this.anchors.has(key)){
+      this.anchors.set(key,{x:Math.floor(position.x/16),z:Math.floor(position.z/16)});
+    }
   }
 
   releaseInstance(instanceId:string):void {
@@ -236,6 +239,7 @@ export class PitNavigationService {
     }
 
     const fingerprint = terrainFingerprint(samples);
+    if(existingFingerprint&&existingFingerprint!==fingerprint)this.invalidateOverlay(instanceId);
     this.cache.bind(instanceId, fingerprint, now);
     let graph = this.cache.graphForInstance(instanceId);
     if (!graph) {
