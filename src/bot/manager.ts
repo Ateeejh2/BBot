@@ -94,7 +94,7 @@ export class BotManager {
     const b = this.controlled(id);
     if (this.configurationLocked) throw new Error('CONFLICT');
     if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending) throw new Error('INVALID_STATE');
-    if (this.config.mode === 'live' && this.config.api.enabled && !b.accountId) throw new Error('ACCOUNT_REQUIRED');
+    if (this.config.mode === 'live' && this.config.api.enabled && this.config.transport !== 'forge' && !b.accountId) throw new Error('ACCOUNT_REQUIRED');
     b.paused = false; b.dueAt = 0;
     const now = this.now();
     if (now >= this.nextConnectAt) {
