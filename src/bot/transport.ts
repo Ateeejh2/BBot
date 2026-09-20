@@ -14,6 +14,9 @@ export interface BotTransport {
   /** Server-reported ping for this player. May be unavailable briefly after login. */
   ping?(): number | undefined;
   chat(command: string): void;
+  /** Forge-backed transports can establish and end the Minecraft server session without restarting the client. */
+  connectServer?(host: string, port: number): Promise<void>;
+  disconnectServer?(): Promise<void>;
   navigate(target: Position, signal: AbortSignal): Promise<void>;
   /** Use a spawn launch pad aligned with the target X/Z. Default waits for landing; event mode can return once launch is confirmed. */
   launchToward?(target: Pick<Position, 'x' | 'z'>, signal: AbortSignal, completion?: 'LAUNCH' | 'LANDING'): Promise<void>;
