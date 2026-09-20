@@ -297,6 +297,88 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
   f.manager.stop();
 });
+test('Care Package death cancels the current attempt and immediately retries after respawn settle', async () => {
+  const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
+  const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
+  const f=fixture(1,new MockTaskHandler(),false,coordinator);
+  f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
+  t.launcher=(_target,signal)=>new Promise<void>((_resolve,reject)=>{
+    const abort=()=>reject(new Error('Launch cancelled'));
+    if(signal.aborted){abort();return;}
+    signal.addEventListener('abort',abort,{once:true});
+  });
+
+  t.events.chickenSpawn?.({x:80,y:110,z:-30});
+  t.events.chickenSpawn?.({x:82,y:111,z:-31});
+  t.events.chickenSpawn?.({x:81,y:109,z:-29});
+  f.tick(1100);t.events.message('MINOR EVENT! CARE PACKAGE in Water Area');
+  assert.equal(t.launches.length,1);
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
+
+  // A player repeating the text is not a death event.
+  t.events.message('[MVP+] FakePlayer: DEATH! by [9] Someone VIEW RECAP');
+  assert.equal(t.launches.length,1);
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
+
+  t.events.message('DEATH! by [9] SuperRuzgar2341 VIEW RECAP');
+  await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(t.launches.length,1);
+
+  f.tick(1349);
+  assert.equal(t.launches.length,1);
+  f.tick(1350);
+  assert.equal(t.launches.length,2);
+  assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
+  f.manager.stop();
+});
+
+test('Care Package chest disappearance aborts active work and prevents later death retries', async () => {
+  const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
+  const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
+  const f=fixture(1,new MockTaskHandler(),false,coordinator);
+  f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
+  t.launcher=async()=>{};
+  let navigationCount=0;
+  t.navigation=(_target,signal)=>{
+    navigationCount++;
+    if(navigationCount===1){
+      return new Promise<void>((_resolve,reject)=>{
+        const abort=()=>reject(new Error('prediction corrected'));
+        if(signal.aborted){abort();return;}
+        signal.addEventListener('abort',abort,{once:true});
+      });
+    }
+    return new Promise<void>((_resolve,reject)=>{
+      const abort=()=>reject(new Error('event ended'));
+      if(signal.aborted){abort();return;}
+      signal.addEventListener('abort',abort,{once:true});
+    });
+  };
+
+  t.events.chickenSpawn?.({x:80,y:110,z:-30});
+  t.events.chickenSpawn?.({x:82,y:111,z:-31});
+  t.events.chickenSpawn?.({x:81,y:109,z:-29});
+  f.tick(1100);t.events.message('MINOR EVENT! CARE PACKAGE in Water Area');
+  await delay(0);await delay(0);
+  const chest={x:79,y:64,z:-32};
+  t.events.chestAppeared?.(chest);
+  await delay(0);await delay(0);await delay(0);await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'PATHFINDING');
+  assert.equal(f.scheduler.jobs.has('care-package:1000:mega-a'),true);
+
+  t.events.chestDisappeared?.(chest);
+  await delay(0);await delay(0);
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(f.scheduler.jobs.has('care-package:1000:mega-a'),false);
+
+  const launchesBefore=t.launches.length;
+  t.events.message('DEATH! by [88] AnotherPlayer VIEW RECAP');
+  f.tick(2000);
+  assert.equal(t.launches.length,launchesBefore);
+  f.manager.stop();
+});
+
 test('manual Care Package test runs launch then same-bot synthetic chest path without a live event', async () => {
   const f=fixture();f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
   let finishLaunch!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finishLaunch=resolve;});
