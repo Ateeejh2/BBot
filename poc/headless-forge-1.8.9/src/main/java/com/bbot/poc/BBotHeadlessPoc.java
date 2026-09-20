@@ -11,6 +11,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraft.client.gui.GuiMultiplayer;
 import net.minecraft.client.multiplayer.GuiConnecting;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
 import net.minecraft.entity.SharedMonsterAttributes;
@@ -583,6 +584,12 @@ public final class BBotHeadlessPoc {
         state.addProperty("flying", mc.thePlayer.capabilities.isFlying);
         state.addProperty("phase", phase.name());
         state.addProperty("bridgeControl", bridgeControlActive);
+        if (mc.getNetHandler() != null) {
+            NetworkPlayerInfo info = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID());
+            if (info != null && info.getResponseTime() >= 0) {
+                state.addProperty("pingMs", info.getResponseTime());
+            }
+        }
         bridge.emit(state);
     }
 
