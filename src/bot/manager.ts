@@ -17,6 +17,7 @@ interface DebugWalk { generation:number; abort:AbortController }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
+  pendingServer?: { host: string; port: number };
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
@@ -100,6 +101,31 @@ export class BotManager {
     if (now >= this.nextConnectAt) {
       this.nextConnectAt = now + this.config.connectionSpacingMs;
       this.connect(b, this.bots.indexOf(b));
+    }
+  }
+
+  startServer(id: string, host: string, port: number): void {
+    if (this.config.transport !== 'forge') throw new Error('UNSUPPORTED_ACTION');
+    if (!/^[a-z\d.:_-]+$/i.test(host) || !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error('INVALID_INPUT');
+    const b = this.controlled(id);
+    if (b.pendingServer) throw new Error('CONFLICT');
+    b.pendingServer = { host, port };
+    try { this.connectBot(id); }
+    catch (error) { b.pendingServer = undefined; throw error; }
+  }
+
+  async disconnectServer(id: string): Promise<void> {
+    if (this.config.transport !== 'forge') throw new Error('UNSUPPORTED_ACTION');
+    const b = this.controlled(id);
+    if (b.machine.state === 'DISCONNECTED' || !b.transport?.disconnectServer) throw new Error('INVALID_STATE');
+    const wasPaused = b.paused;
+    b.paused = true;
+    try {
+      await b.transport.disconnectServer();
+      if (b.machine.state !== 'DISCONNECTED') this.disconnected(b);
+    } catch (error) {
+      b.paused = wasPaused;
+      throw error;
     }
   }
   stopAllBots(): string[] {
@@ -374,12 +400,38 @@ export class BotManager {
           this.logger.log('warn', 'bot kicked', { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, kickReason, loggedIn: loggedIn ?? null });
           this.checkSessionAfterConnectFailure(b);
+          if (this.config.transport === 'forge') b.paused = true;
           this.disconnected(b);
         },
-        end: guard(() => { this.checkSessionAfterConnectFailure(b); this.disconnected(b); }),
-        error: guard(() => { this.log(b, 'transport error (details withheld)'); this.checkSessionAfterConnectFailure(b); this.disconnected(b); })
+        end: guard(() => {
+          this.checkSessionAfterConnectFailure(b);
+          if (this.config.transport === 'forge') b.paused = true;
+          this.disconnected(b);
+        }),
+        error: guard(() => {
+          this.log(b, 'transport error (details withheld)');
+          this.checkSessionAfterConnectFailure(b);
+          if (this.config.transport === 'forge') b.paused = true;
+          this.disconnected(b);
+        })
       });
-    } catch { this.checkSessionAfterConnectFailure(b); this.disconnected(b); }
+      const target = b.pendingServer;
+      b.pendingServer = undefined;
+      if (target) {
+        if (!b.transport.connectServer) throw new Error('UNSUPPORTED_ACTION');
+        void b.transport.connectServer(target.host, target.port).catch(() => {
+          if (this.stopped || b.connection !== connection) return;
+          b.paused = true;
+          this.log(b, 'server connect failed');
+          this.disconnected(b);
+        });
+      }
+    } catch {
+      b.pendingServer = undefined;
+      this.checkSessionAfterConnectFailure(b);
+      if (this.config.transport === 'forge') b.paused = true;
+      this.disconnected(b);
+    }
   }
   private confirmJoinedInstance(b: ManagedBot): void {
     if (b.machine.state !== 'JOINING_PIT' || !b.pendingInstance || !b.joinSpawnObserved) return;
@@ -401,7 +453,7 @@ export class BotManager {
       return;
     }
     if (b.machine.state === 'CONNECTING') {
-      b.machine.transition('LOBBY'); b.dueAt = this.now() + this.config.playCooldownMs;
+      b.machine.transition('LOBBY'); b.dueAt = this.now() + (this.config.transport === 'forge' ? 5000 : this.config.playCooldownMs);
     } else if (b.machine.state === 'JOINING_PIT') {
       // 1.8.9/Bungee event order is not assumed: require both an exact transfer notice and a spawn
       // from the same join attempt, but accept either observation order.
@@ -468,7 +520,7 @@ export class BotManager {
     if (b.machine.state === 'DISCONNECTED') return;
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
-    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
