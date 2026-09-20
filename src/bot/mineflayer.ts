@@ -1,5 +1,5 @@
 import { createBot, type BotOptions } from 'mineflayer';
-import pathfinderModule from 'mineflayer-pathfinder';
+import pathfinderModule, { type PartiallyComputedPath } from 'mineflayer-pathfinder';
 const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -115,7 +115,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         timeout: Math.max(1, config.pathTimeoutMs - (Date.now()-started)),
         tickTimeout: bot.pathfinder.tickTimeout
       });
-      let plan: ReturnType<typeof bot.pathfinder.getPathTo> | undefined;
+      let plan: PartiallyComputedPath | undefined;
       while (true) {
         signal.throwIfAborted();
         const next = planner.next();
