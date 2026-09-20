@@ -38,6 +38,9 @@ async function main(): Promise<void> {
   });
   if (config.api.enabled && config.mode === 'live') await controls.load();
   const logger = new Logger(config.level, config.logDir, config.logMaxBytes, config.logFiles, config.accounts.map(a => a.username));
+  if (config.mode === 'live' && config.transport === 'forge' && config.viewer.enabled) {
+    logger.log('warn', 'Forge transport viewer bridge is not implemented yet; Live View remains unavailable in this experiment');
+  }
   let factory: TransportFactory;
   if (config.mode === 'mock') factory = (_index, events) => new MockTransport(events, () => `mock-pit-${1 + Math.floor(Math.random() * 3)}`);
   else if (config.transport === 'forge') {
