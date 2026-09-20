@@ -4,6 +4,7 @@ import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
 import { parseInstance } from '../instances/parser.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
+import { sharedPitNavigation, type PitChunkData } from '../pathfinding/pit-navigation.js';
 import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isDeathNotice, isLimboNotice } from './message-source.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 
@@ -110,6 +111,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let current: BridgeState | undefined;
   let connected = false;
   let requestSequence = 0;
+  let boundInstanceId: string | undefined;
   let viewerClose: (() => void) | undefined;
   let viewerState: ((state: BridgeState) => void) | undefined;
   let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
@@ -204,6 +206,23 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     if (!response.ok || response.kind !== 'serverControl') {
       throw new Error(response.error === 'NOT_CONNECTED' ? 'NOT_CONNECTED' : 'SERVER_DISCONNECT_FAILED');
     }
+  };
+
+  const loadPitChunk = async (chunkX:number, chunkZ:number, signal:AbortSignal):Promise<PitChunkData|undefined> => {
+    const response=await request({type:'getChunk',chunkX,chunkZ},signal,5000);
+    if(!response.ok||response.kind!=='chunk'||!Array.isArray(response.sections))return;
+    const sections:PitChunkData['sections']=[];
+    for(const section of response.sections){
+      if(!Number.isSafeInteger(section.y)||typeof section.states!=='string')continue;
+      const y=section.y as number;
+      if(y<0||y>15)continue;
+      const raw=Buffer.from(section.states,'base64');
+      if(raw.length!==8192)continue;
+      const states=new Uint16Array(4096);
+      for(let i=0;i<4096;i++)states[i]=raw.readUInt16LE(i*2);
+      sections.push({y,states});
+    }
+    return {chunkX,chunkZ,sections};
   };
 
   const startForgeViewer = () => {
@@ -607,7 +626,72 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     }
   };
 
-  const navigate = (target: Position, signal: AbortSignal) => navigateTo(target, 1.0, signal);
+  const navigateCached = async (target:Position, range:number, signal:AbortSignal):Promise<void> => {
+    const instanceId=boundInstanceId;
+    if(!instanceId){
+      await navigateTo(target,range,signal);
+      return;
+    }
+
+    let replans=0;
+    while(replans++<12){
+      signal.throwIfAborted();
+      const state=current;
+      if(!state)throw new Error('Position unavailable');
+      const start={x:state.x,y:state.y,z:state.z};
+      const horizontal=Math.hypot(target.x-start.x,target.z-start.z);
+      const vertical=Math.abs(target.y-start.y);
+      if(horizontal<=range&&vertical<=1.5)return;
+
+      const plannedAt=Date.now();
+      const plan=await sharedPitNavigation.plan(instanceId,start,target,loadPitChunk,signal);
+      events.diagnostic?.('pit path planned',{
+        instanceId,
+        fingerprint:plan.fingerprint,
+        waypoints:plan.waypoints.length,
+        complete:plan.complete,
+        scannedChunks:plan.scannedChunks,
+        expandedNodes:plan.expandedNodes,
+        planningMs:Date.now()-plannedAt
+      });
+      if(!plan.waypoints.length)throw new Error('No path to the goal!');
+
+      let advanced=false;
+      let replanRequested=false;
+      for(const waypoint of plan.waypoints){
+        signal.throwIfAborted();
+        try{
+          await navigateTo(waypoint,0.7,signal);
+          advanced=true;
+        }catch(error){
+          const message=error instanceof Error?error.message:'';
+          if(message==='Control walk collision'||message==='Control walk stuck'){
+            events.diagnostic?.('pit path replan requested',{
+              instanceId,
+              reason:message,
+              waypointX:Math.round(waypoint.x*10)/10,
+              waypointY:Math.round(waypoint.y*10)/10,
+              waypointZ:Math.round(waypoint.z*10)/10
+            });
+            replanRequested=true;
+            break;
+          }
+          throw error;
+        }
+      }
+
+      const after=current;
+      if(!after)throw new Error('Position unavailable');
+      const afterHorizontal=Math.hypot(target.x-after.x,target.z-after.z);
+      const afterVertical=Math.abs(target.y-after.y);
+      if(afterHorizontal<=range+0.6&&afterVertical<=1.5)return;
+      if(!advanced&&!replanRequested)throw new Error('No path to the goal!');
+      await delay(75,signal);
+    }
+    throw new Error('No path to the goal!');
+  };
+
+  const navigate = (target: Position, signal: AbortSignal) => navigateCached(target, 1.0, signal);
 
   const launchToward = async (
     target: Pick<Position, 'x' | 'z'>,
@@ -705,7 +789,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       distance: Math.round(distance * 10) / 10
     });
 
-    await navigateTo(approach, 0.8, signal);
+    await navigateCached(approach, 0.8, signal);
     signal.throwIfAborted();
 
     const beforeLaunch = current;
@@ -750,6 +834,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   return {
     position: () => current ? { x: current.x, y: current.y, z: current.z } : undefined,
     ping: () => current?.pingMs,
+    setInstance: instanceId => {
+      boundInstanceId=instanceId;
+      if(instanceId)sharedPitNavigation.bindHint(instanceId);
+    },
     chat: command => {
       if (closed) throw new Error('Transport closed');
       send({ type: 'chat', message: command });
