@@ -11,12 +11,14 @@ import { backoff } from '../recovery/backoff.js';
 import type { TaskHandler } from '../events/task.js';
 import { CarePackageCoordinator } from '../events/care-package.js';
 import type { BotTransport, TransportFactory } from './transport.js';
+import { isLimboNotice } from './message-source.js';
 interface Execution { id: string; lease: number; generation: number; abort: AbortController }
 interface EventPreparation {
   timestamp:number; generation:number; abort:AbortController; expiresAt?:number; launched?:boolean; chestEvent?:GameEvent;
   predictionAbort?:AbortController; predictionTarget?:Position;
 }
 interface DebugWalk { generation:number; abort:AbortController }
+interface LimboRecovery { playAt:number; phase:'WAIT_LOBBY'|'JOINING_PIT' }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
@@ -24,7 +26,7 @@ interface ManagedBot {
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
-  preparation?: EventPreparation; debugWalk?: DebugWalk; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
+  preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
 }
 export class BotManager {
   private bots: ManagedBot[];
@@ -305,6 +307,22 @@ export class BotManager {
         this.nextConnectAt = now + this.config.connectionSpacingMs; this.connect(b, index); continue;
       }
       if (b.machine.state === 'CONNECTING' && now >= b.deadline) { this.disconnected(b); continue; }
+      const limboRecovery=b.limboRecovery;
+      if(limboRecovery?.phase==='WAIT_LOBBY'&&b.machine.state==='RECOVERING'){
+        if(b.ready&&now>=limboRecovery.playAt){
+          this.log(b,'limbo recovery sending Pit command',{waitedMs:Math.max(0,now-(limboRecovery.playAt-2000))});
+          this.join(b);
+          if(b.machine.state==='JOINING_PIT'&&b.limboRecovery===limboRecovery)limboRecovery.phase='JOINING_PIT';
+          continue;
+        }
+        if(!b.ready&&now>=b.deadline){
+          this.log(b,'limbo recovery lobby wait timed out');
+          b.limboRecovery=undefined;
+          this.disconnected(b);
+          continue;
+        }
+        continue;
+      }
       if (b.machine.state === 'JOINING_PIT' && now >= b.deadline) {
         this.recover(b, 'UNKNOWN_RETURN');
         this.log(b, 'join timed out; no confirmed instance');
@@ -314,7 +332,7 @@ export class BotManager {
         const quietSince = Math.max(b.debugSpawnAt ?? now, b.lastPositionCorrectionAt ?? Number.NEGATIVE_INFINITY);
         if (now - quietSince >= 1500) this.startDebugWalk(b);
       }
-      if (!this.movementDebug && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
+      if (!this.movementDebug && !b.limboRecovery && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
     }
@@ -476,6 +494,10 @@ export class BotManager {
     catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
     b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false;
     b.machine.transition('IN_PIT_IDLE'); b.stableSince = this.now();
+    if(b.limboRecovery?.phase==='JOINING_PIT'){
+      this.log(b,'limbo recovery completed',{instanceId:b.instanceId});
+      b.limboRecovery=undefined;
+    }
     this.log(b, 'instance confirmed after transfer signals');
   }
   private spawn(b: ManagedBot): void {
@@ -503,10 +525,15 @@ export class BotManager {
   private worldReset(b: ManagedBot): void {
     b.ready = false;
     if (this.movementDebug) { this.cancelDebugWalk(b, true); b.debugWalkDone = false; b.debugSpawnAt = undefined; return; }
+    if(b.limboRecovery?.phase==='WAIT_LOBBY'&&b.machine.state==='RECOVERING')return;
     if (b.machine.state === 'JOINING_PIT' || b.machine.state === 'CONNECTING') return;
     this.recover(b, 'UNKNOWN_RETURN'); b.deadline = this.now() + this.config.joinTimeoutMs;
   }
   private message(b: ManagedBot, text: string): void {
+    if(isLimboNotice(text)){
+      if(!['DISCONNECTED','CONNECTING'].includes(b.machine.state))this.recoverFromLimbo(b);
+      return;
+    }
     if (this.movementDebug) return;
     if(b.instanceId&&this.carePackages){
       const started=this.carePackages.observeAnnouncement(b.instanceId,text,this.now());
@@ -532,6 +559,7 @@ export class BotManager {
   }
   private join(b: ManagedBot): void {
     if (b.joinAttempts >= this.config.joinMaxAttempts) {
+      b.limboRecovery=undefined;
       b.paused = true; this.log(b, 'join attempt budget exhausted; inspect and restart after diagnosis'); return;
     }
     b.joinAttempts++; b.pendingInstance = undefined; b.joinSpawnObserved = false;
@@ -539,7 +567,22 @@ export class BotManager {
     b.deadline = this.now() + this.config.joinTimeoutMs;
     try { b.transport?.chat('/play pit'); } catch { this.disconnected(b); }
   }
+  private recoverFromLimbo(b:ManagedBot):void {
+    if(b.limboRecovery)return;
+    const now=this.now();
+    this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
+    this.registry.leave(b.id,now,'LIMBO');
+    b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.stableSince=undefined;b.ready=false;
+    b.machine.transition('RECOVERING');
+    b.limboRecovery={playAt:now+2000,phase:'WAIT_LOBBY'};
+    b.deadline=now+2000+this.config.joinTimeoutMs;
+    b.dueAt=Number.POSITIVE_INFINITY;
+    this.log(b,'limbo detected; starting special recovery',{lobbyCommand:'/l',pitDelayMs:2000});
+    try{b.transport?.chat('/l');}
+    catch{b.limboRecovery=undefined;this.disconnected(b);}
+  }
   private recover(b: ManagedBot, reason: ReturnReason): void {
+    b.limboRecovery=undefined;
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined;
@@ -557,6 +600,7 @@ export class BotManager {
     if (b.machine.state === 'DISCONNECTED') return;
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), 'DISCONNECT');
+    b.limboRecovery=undefined;
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
@@ -571,6 +615,7 @@ export class BotManager {
     }
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
+    b.limboRecovery=undefined;
     b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
