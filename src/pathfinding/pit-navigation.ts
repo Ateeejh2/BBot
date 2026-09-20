@@ -58,7 +58,14 @@ export class PitNavigationService {
     this.cache.invalidateInstance(instanceId);
   }
 
-  async plan(instanceId: string, start: Position, target: Position, loader: PitChunkLoader, signal: AbortSignal): Promise<PitNavigationPlan> {
+  async plan(
+    instanceId: string,
+    start: Position,
+    target: Position,
+    loader: PitChunkLoader,
+    signal: AbortSignal,
+    avoidColumns: ReadonlyArray<Pick<Position,'x'|'z'>> = []
+  ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
     const graph = await this.ensureGraph(instanceId, start, loader, signal);
     await this.loadCorridor(graph, start, target, loader, signal);
@@ -67,7 +74,8 @@ export class PitNavigationService {
     if (!startNode) throw new Error('No path to the goal!');
 
     const goalNode = nearestNode(graph, target, 3, 5);
-    const search = searchGraph(graph, startNode, target, goalNode, 50_000);
+    const avoided=new Set(avoidColumns.map(value=>columnKey(Math.floor(value.x),Math.floor(value.z))));
+    const search = searchGraph(graph, startNode, target, goalNode, 50_000, avoided);
     if (search.path.length < 2) {
       const horizontal = Math.hypot(target.x - start.x, target.z - start.z);
       if (horizontal > 1.25) throw new Error('No path to the goal!');
@@ -224,8 +232,14 @@ function nearestNode(graph:TerrainGraph,target:Position,radius:number,vertical:n
   return best;
 }
 
-function searchGraph(graph:TerrainGraph,start:NavNode,target:Position,goal:NavNode|undefined,maxExpanded:number):
-  {path:NavNode[];complete:boolean;expanded:number}{
+function searchGraph(
+  graph:TerrainGraph,
+  start:NavNode,
+  target:Position,
+  goal:NavNode|undefined,
+  maxExpanded:number,
+  avoided:Set<string>
+):{path:NavNode[];complete:boolean;expanded:number}{
   const startKey=nodeKey(start.x,start.y,start.z);
   const goalKey=goal?nodeKey(goal.x,goal.y,goal.z):undefined;
   const open=new MinHeap();
@@ -246,7 +260,7 @@ function searchGraph(graph:TerrainGraph,start:NavNode,target:Position,goal:NavNo
     if(goalKey&&currentKey===goalKey)return {path:reconstruct(graph,parent,currentKey),complete:true,expanded};
 
     const currentG=g.get(currentKey)??Number.POSITIVE_INFINITY;
-    for(const next of neighbors(graph,current)){
+    for(const next of neighbors(graph,current,avoided)){
       const key=nodeKey(next.x,next.y,next.z);
       if(closed.has(key))continue;
       const vertical=next.y-current.y;
@@ -260,10 +274,12 @@ function searchGraph(graph:TerrainGraph,start:NavNode,target:Position,goal:NavNo
   return {path:reconstruct(graph,parent,bestKey),complete:false,expanded};
 }
 
-function neighbors(graph:TerrainGraph,node:NavNode):NavNode[]{
+function neighbors(graph:TerrainGraph,node:NavNode,avoided:Set<string>):NavNode[]{
   const result:NavNode[]=[];
   for(const [dx,dz] of CARDINAL){
-    const x=node.x+dx,z=node.z+dz,ys=graph.columns.get(columnKey(x,z));
+    const x=node.x+dx,z=node.z+dz,cKey=columnKey(x,z);
+    if(avoided.has(cKey))continue;
+    const ys=graph.columns.get(cKey);
     if(!ys)continue;
     const candidates=[node.y,node.y+1,node.y-1,node.y-2,node.y-3];
     for(const y of candidates){
