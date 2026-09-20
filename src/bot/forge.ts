@@ -782,9 +782,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     const distance = Math.hypot(dx, dz) || 1;
     const approach = {
       x: pad.x - dx / distance * 2.2,
-      // Keep the approach on the player's current walking plane. Using pad.y here
-      // can make navigateTo jump in place before any horizontal progress.
-      y: start.y,
+      y: pad.y,
       z: pad.z - dz / distance * 2.2
     };
 
