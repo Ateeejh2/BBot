@@ -40,6 +40,24 @@ test('cached Pit A-star routes around a blocking wall instead of walking into it
   assert.ok(plan.expandedNodes>0);
 });
 
+test('runtime collision cells are excluded from the next A-star replan', async () => {
+  const service=new PitNavigationService();
+  const terrain=chunkWithWall();
+  const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+    x===0&&z===0?terrain:undefined;
+  const signal=new AbortController().signal;
+  const plan=await service.plan(
+    'mega-a',
+    {x:2.5,y:64,z:2.5},
+    {x:9.5,y:64,z:2.5},
+    loader,
+    signal,
+    [{x:5,z:7}]
+  );
+  assert.equal(plan.complete,true);
+  assert.ok(plan.waypoints.some(point=>point.z>=10.5),'replan should route around the blocked opening');
+});
+
 test('same terrain fingerprint shares one cached graph across Pit instances', async () => {
   const service=new PitNavigationService();
   const terrain=chunkWithWall();
