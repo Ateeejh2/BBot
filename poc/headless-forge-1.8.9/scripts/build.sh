@@ -48,4 +48,12 @@ fi
 echo "[BBotPoC] building"
 "$GRADLE" --no-daemon clean build
 
-echo "[BBotPoC] built: $ROOT/build/libs/bbot-headless-poc-0.1.0.jar"
+POC_JAR="$ROOT/build/libs/bbot-headless-poc-0.1.0.jar"
+echo "[BBotPoC] built: $POC_JAR"
+
+RUNTIME_MODS="$ROOT/runtime/game/mods"
+if [[ -d "$RUNTIME_MODS" ]]; then
+  cp -f "$POC_JAR" "$RUNTIME_MODS/"
+  echo "[BBotPoC] refreshed runtime mod: $RUNTIME_MODS/$(basename "$POC_JAR")"
+  echo "[BBotPoC] restart Forge to load the new mod jar"
+fi
