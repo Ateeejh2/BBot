@@ -1,5 +1,6 @@
 package com.bbot.poc;
 
+import com.google.gson.JsonObject;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -38,6 +39,8 @@ public final class BBotHeadlessPoc {
     private static final int DEFAULT_WALK_TICKS = 200;
     private static final int DEFAULT_SPRINT_TICKS = 200;
     private static final int DEFAULT_TRACE_EVERY_TICKS = 20;
+    private static final int DEFAULT_BRIDGE_PORT = 3010;
+    private static final int DEFAULT_BRIDGE_STATE_EVERY_TICKS = 2;
 
     private enum Phase {
         WAITING_FOR_WORLD,
@@ -54,6 +57,9 @@ public final class BBotHeadlessPoc {
     private int phaseTicks;
     private int totalTicks;
     private boolean hadWorld;
+    private boolean bridgeControlActive;
+    private boolean bridgeWasConnected;
+    private LocalBridgeServer bridge;
 
     private boolean havePreviousPosition;
     private double previousX;
@@ -66,19 +72,30 @@ public final class BBotHeadlessPoc {
     private final int sprintTicks = envInt("BBOT_POC_SPRINT_TICKS", DEFAULT_SPRINT_TICKS);
     private final int traceEveryTicks = Math.max(1, envInt("BBOT_POC_TRACE_EVERY_TICKS", DEFAULT_TRACE_EVERY_TICKS));
     private final boolean skipRender = envBool("BBOT_POC_SKIP_RENDER", true);
+    private final boolean bridgeEnabled = envBool("BBOT_POC_BRIDGE_ENABLED", true);
+    private final int bridgePort = Math.max(1024, envInt("BBOT_POC_BRIDGE_PORT", DEFAULT_BRIDGE_PORT));
+    private final int bridgeStateEveryTicks = Math.max(1, envInt("BBOT_POC_BRIDGE_STATE_EVERY_TICKS", DEFAULT_BRIDGE_STATE_EVERY_TICKS));
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(this);
         FMLCommonHandler.instance().bus().register(this);
+
+        if (bridgeEnabled) {
+            bridge = new LocalBridgeServer(bridgePort);
+            bridge.start();
+        }
+
         LOG.info(
-            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={} skipRender={}",
+            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={} skipRender={} bridgeEnabled={} bridgePort={}",
             descendTicks,
             warmupTicks,
             walkTicks,
             sprintTicks,
             traceEveryTicks,
-            skipRender
+            skipRender,
+            bridgeEnabled,
+            bridgePort
         );
     }
 
@@ -92,6 +109,8 @@ public final class BBotHeadlessPoc {
         if (event.phase != TickEvent.Phase.END) {
             return;
         }
+
+        updateBridgeConnectionState();
 
         if (mc.thePlayer == null || mc.theWorld == null) {
             mc.skipRenderWorld = false;
@@ -109,9 +128,11 @@ public final class BBotHeadlessPoc {
         mc.skipRenderWorld = skipRender;
         totalTicks++;
 
+        processBridgeCommands();
         traceLargeClientStep();
 
-        switch (phase) {
+        if (!bridgeControlActive) {
+            switch (phase) {
             case WAITING_FOR_WORLD:
                 transitionTo(Phase.DESCEND);
                 break;
@@ -153,11 +174,92 @@ public final class BBotHeadlessPoc {
                 break;
             default:
                 break;
+            }
+        }
+
+        if (bridge != null && bridge.isClientConnected() && totalTicks % bridgeStateEveryTicks == 0) {
+            emitBridgeState();
         }
 
         if (totalTicks % traceEveryTicks == 0) {
             logState("tick");
         }
+    }
+
+    private void updateBridgeConnectionState() {
+        boolean connected = bridge != null && bridge.isClientConnected();
+        if (!connected && bridgeWasConnected && bridgeControlActive) {
+            releaseMovementKeys();
+            bridgeControlActive = false;
+            LOG.info("[BBotPoC] bridge control released after disconnect");
+        }
+        bridgeWasConnected = connected;
+    }
+
+    private void processBridgeCommands() {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject command;
+        int processed = 0;
+        while (processed++ < 64 && (command = bridge.poll()) != null) {
+            if (!command.has("type")) {
+                continue;
+            }
+
+            String type = command.get("type").getAsString();
+            if ("controls".equals(type)) {
+                boolean forward = command.has("forward") && command.get("forward").getAsBoolean();
+                boolean sprint = command.has("sprint") && command.get("sprint").getAsBoolean();
+                boolean sneak = command.has("sneak") && command.get("sneak").getAsBoolean();
+                setMovement(forward, sprint);
+                setSneak(sneak);
+                bridgeControlActive = true;
+            } else if ("release".equals(type)) {
+                releaseMovementKeys();
+                bridgeControlActive = false;
+            } else if ("look".equals(type) && mc.thePlayer != null) {
+                if (command.has("yaw")) {
+                    mc.thePlayer.rotationYaw = command.get("yaw").getAsFloat();
+                }
+                if (command.has("pitch")) {
+                    float pitch = command.get("pitch").getAsFloat();
+                    mc.thePlayer.rotationPitch = Math.max(-90.0F, Math.min(90.0F, pitch));
+                }
+            } else if ("chat".equals(type) && mc.thePlayer != null && command.has("message")) {
+                String message = command.get("message").getAsString();
+                if (message.length() > 100) {
+                    message = message.substring(0, 100);
+                }
+                if (!message.isEmpty()) {
+                    mc.thePlayer.sendChatMessage(message);
+                }
+            }
+        }
+    }
+
+    private void emitBridgeState() {
+        if (bridge == null || mc.thePlayer == null) {
+            return;
+        }
+
+        JsonObject state = new JsonObject();
+        state.addProperty("type", "state");
+        state.addProperty("tick", totalTicks);
+        state.addProperty("x", mc.thePlayer.posX);
+        state.addProperty("y", mc.thePlayer.posY);
+        state.addProperty("z", mc.thePlayer.posZ);
+        state.addProperty("yaw", mc.thePlayer.rotationYaw);
+        state.addProperty("pitch", mc.thePlayer.rotationPitch);
+        state.addProperty("onGround", mc.thePlayer.onGround);
+        state.addProperty("sprinting", mc.thePlayer.isSprinting());
+        state.addProperty("collidedH", mc.thePlayer.isCollidedHorizontally);
+        state.addProperty("allowFlying", mc.thePlayer.capabilities.allowFlying);
+        state.addProperty("flying", mc.thePlayer.capabilities.isFlying);
+        state.addProperty("phase", phase.name());
+        state.addProperty("bridgeControl", bridgeControlActive);
+        bridge.emit(state);
     }
 
     private void installInboundPositionTrace(final NetworkManager manager) {
