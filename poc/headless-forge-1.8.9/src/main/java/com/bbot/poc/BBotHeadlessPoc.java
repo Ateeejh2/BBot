@@ -190,8 +190,7 @@ public final class BBotHeadlessPoc {
         boolean connected = bridge != null && bridge.isClientConnected();
         if (!connected && bridgeWasConnected && bridgeControlActive) {
             releaseMovementKeys();
-            bridgeControlActive = false;
-            LOG.info("[BBotPoC] bridge control released after disconnect");
+            LOG.info("[BBotPoC] bridge disconnected; controls released and autotest remains paused");
         }
         bridgeWasConnected = connected;
     }
@@ -218,7 +217,7 @@ public final class BBotHeadlessPoc {
                 bridgeControlActive = true;
             } else if ("release".equals(type)) {
                 releaseMovementKeys();
-                bridgeControlActive = false;
+                bridgeControlActive = true;
             } else if ("look".equals(type) && mc.thePlayer != null) {
                 if (command.has("yaw")) {
                     mc.thePlayer.rotationYaw = command.get("yaw").getAsFloat();
@@ -359,6 +358,7 @@ public final class BBotHeadlessPoc {
         phaseTicks = 0;
         totalTicks = 0;
         havePreviousPosition = false;
+        bridgeControlActive = false;
     }
 
     private void traceLargeClientStep() {
