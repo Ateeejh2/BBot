@@ -113,7 +113,6 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let connected = false;
   let requestSequence = 0;
   let boundInstanceId: string | undefined;
-  const overlayChanges:Array<{revision:number;x:number;y:number;z:number;at:number}>=[];
   let viewerClose: (() => void) | undefined;
   let viewerState: ((state: BridgeState) => void) | undefined;
   let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
@@ -536,21 +535,11 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             !isFiniteNumber(message.stateId)) break;
         viewerBlockUpdate?.(message.x, message.y, message.z, message.stateId);
         if(boundInstanceId){
-          const revision=sharedPitNavigation.updateDynamicBlock(
+          sharedPitNavigation.updateDynamicBlock(
             boundInstanceId,
             {x:message.x,y:message.y,z:message.z},
             message.stateId
           );
-          if(revision!==undefined){
-            overlayChanges.push({
-              revision,
-              x:message.x,
-              y:message.y,
-              z:message.z,
-              at:Date.now()
-            });
-            if(overlayChanges.length>128)overlayChanges.splice(0,overlayChanges.length-128);
-          }
         }
         break;
       }
@@ -734,11 +723,6 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       }finally{
         if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
       }
-      if(overlayChanges.length){
-        const firstNew=overlayChanges.findIndex(change=>change.revision>plan.overlayRevision);
-        if(firstNew<0)overlayChanges.length=0;
-        else if(firstNew>0)overlayChanges.splice(0,firstNew);
-      }
       events.diagnostic?.('pit path planned',{
         instanceId,
         fingerprint:plan.fingerprint,
@@ -768,7 +752,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             0.7,
             signal,
             ()=>{
-              const newChanges=overlayChanges.filter(change=>change.revision>checkedOverlayRevision);
+              const newChanges=sharedPitNavigation.dynamicChangesSince(instanceId,checkedOverlayRevision);
               if(newChanges.length){
                 let maxRevision=checkedOverlayRevision;
                 let relevant=false;
@@ -777,9 +761,6 @@ export function createForgeTransport(config: Config, index: number, events: Tran
                   if(pathChangeRelevant(change,plan.waypoints,waypointIndex))relevant=true;
                 }
                 checkedOverlayRevision=maxRevision;
-                for(let i=overlayChanges.length-1;i>=0;i--){
-                  if(overlayChanges[i]!.revision<=checkedOverlayRevision)overlayChanges.splice(i,1);
-                }
                 if(relevant)debounceUntil??=Date.now()+75;
               }
               return debounceUntil!==undefined&&Date.now()>=debounceUntil;
@@ -802,7 +783,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
               instanceId,
               reason:message,
               avoidedColumns:avoided.size,
-              overlayChanges:overlayChanges.filter(change=>change.revision>plan.overlayRevision).length,
+              overlayChanges:sharedPitNavigation.dynamicChangesSince(instanceId,plan.overlayRevision).length,
               waypointX:Math.round(waypoint.x*10)/10,
               waypointY:Math.round(waypoint.y*10)/10,
               waypointZ:Math.round(waypoint.z*10)/10
