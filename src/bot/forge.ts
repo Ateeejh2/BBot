@@ -46,8 +46,6 @@ interface BridgeResponse {
   error?: string;
   blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown; stateId?: unknown }>;
   chunks?: Array<{ x?: unknown; z?: unknown }>;
-  count?: number;
-  signature?: string;
   chunkX?: number;
   chunkZ?: number;
   sections?: Array<{ y?: unknown; states?: unknown }>;
@@ -218,14 +216,6 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     return response.chunks.flatMap(value=>
       isFiniteNumber(value.x)&&isFiniteNumber(value.z)?[{x:value.x,z:value.z}]:[]
     );
-  };
-
-  const loadPitVolatileSummary = async (signal:AbortSignal) => {
-    const response=await request({type:'getVolatileSummary'},signal,15_000);
-    if(!response.ok||response.kind!=='volatileSummary'||
-       typeof response.signature!=='string'||!/^volatile:[0-9a-f]{24}$/.test(response.signature)||
-       !Number.isSafeInteger(response.count)||response.count!<0)return;
-    return {signature:response.signature,count:response.count};
   };
 
   const loadPitVolatileChunk = async (chunkX:number, chunkZ:number, signal:AbortSignal) => {
@@ -739,8 +729,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
               done,total,progress,active:done<total
             });
           },
-          loadPitVolatileChunk,
-          loadPitVolatileSummary
+          loadPitVolatileChunk
         );
       }finally{
         if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
