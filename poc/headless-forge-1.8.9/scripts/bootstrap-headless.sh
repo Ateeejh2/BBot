@@ -55,6 +55,9 @@ hmc.gamedir=$GAME_DIR
 hmc.assets.dummy=true
 hmc.rethrow.launch.exceptions=true
 hmc.java.versions=$JAVA_BIN
+# Supervisor launches HeadlessMC with piped stdin/stdout. Disable JLine so
+# launch/quit commands sent through the pipe are consumed reliably.
+hmc.jline.enabled=false
 EOF
 
 echo "[BBotPoC] runtime prepared in $RUNTIME"
