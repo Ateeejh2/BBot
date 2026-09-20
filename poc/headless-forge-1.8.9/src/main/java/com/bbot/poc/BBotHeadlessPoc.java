@@ -10,6 +10,7 @@ import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.network.NetworkManager;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
+import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
@@ -59,6 +60,7 @@ public final class BBotHeadlessPoc {
     private boolean hadWorld;
     private boolean bridgeControlActive;
     private boolean bridgeWasConnected;
+    private Object lastWorld;
     private LocalBridgeServer bridge;
 
     private boolean havePreviousPosition;
@@ -105,6 +107,30 @@ public final class BBotHeadlessPoc {
     }
 
     @SubscribeEvent
+    public void onClientDisconnected(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
+        emitBridgeEvent("end");
+    }
+
+    @SubscribeEvent
+    public void onChatReceived(ClientChatReceivedEvent event) {
+        if (bridge == null || event.message == null) {
+            return;
+        }
+
+        String text = event.message.getUnformattedText();
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "message");
+        message.addProperty("text", text);
+        message.addProperty("channel", event.type == 2 ? "actionbar" : (event.type == 1 ? "system" : "chat"));
+        bridge.emit(message);
+    }
+
+    @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) {
             return;
@@ -116,15 +142,26 @@ public final class BBotHeadlessPoc {
             mc.skipRenderWorld = false;
             if (hadWorld) {
                 LOG.info("[BBotPoC] world left; resetting test");
+                emitBridgeEvent("worldReset");
             }
 
             releaseMovementKeys();
             resetTest();
             hadWorld = false;
+            lastWorld = null;
             return;
         }
 
+        if (!hadWorld) {
+            emitBridgeIdentity();
+            emitBridgeEvent("spawn");
+        } else if (lastWorld != mc.theWorld) {
+            emitBridgeEvent("worldReset");
+            emitBridgeEvent("spawn");
+        }
+
         hadWorld = true;
+        lastWorld = mc.theWorld;
         mc.skipRenderWorld = skipRender;
         totalTicks++;
 
@@ -188,11 +225,45 @@ public final class BBotHeadlessPoc {
 
     private void updateBridgeConnectionState() {
         boolean connected = bridge != null && bridge.isClientConnected();
+        if (connected && !bridgeWasConnected) {
+            emitBridgeIdentity();
+            if (mc.thePlayer != null && mc.theWorld != null) {
+                emitBridgeEvent("spawn");
+            }
+        }
         if (!connected && bridgeWasConnected && bridgeControlActive) {
             releaseMovementKeys();
             LOG.info("[BBotPoC] bridge disconnected; controls released and autotest remains paused");
         }
         bridgeWasConnected = connected;
+    }
+
+    private void emitBridgeIdentity() {
+        if (bridge == null || mc.getSession() == null) {
+            return;
+        }
+
+        String username = mc.getSession().getUsername();
+        if (username == null || username.isEmpty()) {
+            return;
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "identity");
+        message.addProperty("username", username);
+        bridge.emit(message);
+    }
+
+    private void emitBridgeEvent(String eventName) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", eventName);
+        bridge.emit(message);
     }
 
     private void processBridgeCommands() {
