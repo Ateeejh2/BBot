@@ -6,8 +6,6 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.Set;
@@ -386,8 +384,6 @@ public final class BBotHeadlessPoc {
                 emitLoadedChunksResponse(command);
             } else if ("getVolatileBlocks".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
                 emitVolatileBlocksResponse(command);
-            } else if ("getVolatileSummary".equals(type) && command.has("requestId")) {
-                emitVolatileSummaryResponse(command);
             }
         }
     }
@@ -554,72 +550,6 @@ public final class BBotHeadlessPoc {
         response.addProperty("ok", true);
         response.add("chunks", chunks);
         bridge.emit(response);
-    }
-
-    private void emitVolatileSummaryResponse(JsonObject command) {
-        if (bridge == null) {
-            return;
-        }
-
-        JsonObject response = new JsonObject();
-        response.addProperty("type", "response");
-        response.addProperty("requestId", command.get("requestId").getAsString());
-        response.addProperty("kind", "volatileSummary");
-
-        if (mc.theWorld == null || mc.thePlayer == null) {
-            response.addProperty("ok", false);
-            response.addProperty("error", "WORLD_UNAVAILABLE");
-            bridge.emit(response);
-            return;
-        }
-
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            int count = 0;
-            int centerX = ((int) Math.floor(mc.thePlayer.posX)) >> 4;
-            int centerZ = ((int) Math.floor(mc.thePlayer.posZ)) >> 4;
-            int radius = Math.max(8, Math.min(32, mc.gameSettings.renderDistanceChunks + 4));
-
-            for (int chunkX = centerX - radius; chunkX <= centerX + radius; chunkX++) {
-                for (int chunkZ = centerZ - radius; chunkZ <= centerZ + radius; chunkZ++) {
-                    if (!mc.theWorld.getChunkProvider().chunkExists(chunkX, chunkZ)) {
-                        continue;
-                    }
-                    for (int y = 0; y < 256; y++) {
-                        for (int z = 0; z < 16; z++) {
-                            for (int x = 0; x < 16; x++) {
-                                BlockPos pos = new BlockPos(chunkX * 16 + x, y, chunkZ * 16 + z);
-                                int stateId = Block.getStateId(mc.theWorld.getBlockState(pos));
-                                if (!isVolatileStateId(stateId)) {
-                                    continue;
-                                }
-                                String value = pos.getX() + "," + pos.getY() + "," + pos.getZ() + "," + stateId + ";";
-                                digest.update(value.getBytes(StandardCharsets.UTF_8));
-                                count++;
-                            }
-                        }
-                    }
-                }
-            }
-
-            response.addProperty("ok", true);
-            response.addProperty("count", count);
-            response.addProperty("signature", "volatile:" + toHex(digest.digest()).substring(0, 24));
-            bridge.emit(response);
-        } catch (Throwable t) {
-            LOG.warn("[BBotPoC] volatile summary failed", t);
-            response.addProperty("ok", false);
-            response.addProperty("error", "SUMMARY_FAILED");
-            bridge.emit(response);
-        }
-    }
-
-    private String toHex(byte[] bytes) {
-        StringBuilder out = new StringBuilder(bytes.length * 2);
-        for (byte value : bytes) {
-            out.append(String.format("%02x", value & 0xff));
-        }
-        return out.toString();
     }
 
     private void emitVolatileBlocksResponse(JsonObject command) {
