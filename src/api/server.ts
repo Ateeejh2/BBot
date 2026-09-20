@@ -89,7 +89,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   });
   const snapshot = () => {
     const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
-    return { version: 1, bots: manager.views(),
+    return { version: 1, transport: config.transport, bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
