@@ -167,6 +167,43 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     });
   };
 
+  const waitForBridge = (timeoutMs = 5000): Promise<void> => {
+    if (connected && !socket.destroyed && socket.writable) return Promise.resolve();
+    if (closed) return Promise.reject(new Error('Transport closed'));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => finish(new Error('Forge bridge connection timeout')), timeoutMs);
+      const onConnect = () => finish();
+      const onClose = () => finish(new Error('Forge bridge disconnected'));
+      const onError = () => finish(new Error('Forge bridge connection failed'));
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        socket.off('connect', onConnect);
+        socket.off('close', onClose);
+        socket.off('error', onError);
+        if (error) reject(error); else resolve();
+      };
+      socket.once('connect', onConnect);
+      socket.once('close', onClose);
+      socket.once('error', onError);
+    });
+  };
+
+  const connectServer = async (host: string, serverPort: number): Promise<void> => {
+    await waitForBridge();
+    const response = await request({ type: 'connectServer', host, port: serverPort }, undefined, 5000);
+    if (!response.ok || response.kind !== 'serverControl') {
+      throw new Error(response.error === 'ALREADY_CONNECTED' ? 'ALREADY_CONNECTED' : 'SERVER_CONNECT_FAILED');
+    }
+  };
+
+  const disconnectServer = async (): Promise<void> => {
+    await waitForBridge();
+    const response = await request({ type: 'disconnectServer' }, undefined, 5000);
+    if (!response.ok || response.kind !== 'serverControl') {
+      throw new Error(response.error === 'NOT_CONNECTED' ? 'NOT_CONNECTED' : 'SERVER_DISCONNECT_FAILED');
+    }
+  };
+
   const startForgeViewer = () => {
     const botId = `bot-${index + 1}`;
     if (!config.viewer.enabled || config.viewer.botId !== botId || viewerClose) return;
@@ -695,6 +732,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if (closed) throw new Error('Transport closed');
       send({ type: 'chat', message: command });
     },
+    connectServer,
+    disconnectServer,
     navigate,
     launchToward,
     stopPath,
