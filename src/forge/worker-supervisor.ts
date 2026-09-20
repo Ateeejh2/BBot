@@ -95,7 +95,7 @@ export class ForgeWorkerSupervisor {
     worker.phase = 'LAUNCHING';
     worker.lastError = undefined;
 
-    const env = { ...process.env, BBOT_POC_BRIDGE_PORT: String(worker.bridgePort), BBOT_POC_AUTOTEST: 'false' };
+    const env: NodeJS.ProcessEnv = { ...process.env, BBOT_POC_BRIDGE_PORT: String(worker.bridgePort), BBOT_POC_AUTOTEST: 'false' };
     const resolvedJava8 = java8Home(this.config);
     if (resolvedJava8) env.JAVA8_HOME = resolvedJava8;
 
