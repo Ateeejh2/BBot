@@ -146,7 +146,7 @@ export class PitNavigationService {
       for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
     }
   }
-}}
+}
 
 function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkData}>):string {
   const hash=createHash('sha256');
