@@ -906,7 +906,13 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if(boundInstanceId===instanceId)return;
       if(boundInstanceId)sharedPitNavigation.releaseInstance(boundInstanceId);
       boundInstanceId=instanceId;
-      if(instanceId)sharedPitNavigation.retainInstance(instanceId);
+      if(instanceId){
+        const state=current;
+        sharedPitNavigation.retainInstance(
+          instanceId,
+          state?{x:state.x,y:state.y,z:state.z}:undefined
+        );
+      }
     },
     chat: command => {
       if (closed) throw new Error('Transport closed');
