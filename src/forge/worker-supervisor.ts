@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Config } from '../config/index.js';
 import type { Logger } from '../logging/logger.js';
 
@@ -69,7 +69,19 @@ function processGroupSample(groupId: number): { cpuTicks: number; rssMb: number;
   return processCount ? { cpuTicks, rssMb: rssKb / 1024, processCount } : undefined;
 }
 
-const LINUX_CLOCK_TICKS = 100;
+function linuxClockTicks(): number {
+  if (process.platform !== 'linux') return 100;
+  try {
+    const result = spawnSync('getconf', ['CLK_TCK'], { encoding: 'utf8' });
+    const value = Number(result.stdout.trim());
+    if (result.status === 0 && Number.isFinite(value) && value > 0) return value;
+  } catch {
+    // Fall back to Linux's common USER_HZ value.
+  }
+  return 100;
+}
+
+const LINUX_CLOCK_TICKS = linuxClockTicks();
 
 function java8Home(config: Config): string | undefined {
   if (config.forge.java8Home && existsSync(join(config.forge.java8Home, 'bin', 'java'))) return config.forge.java8Home;
