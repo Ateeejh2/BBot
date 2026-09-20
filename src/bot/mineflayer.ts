@@ -4,7 +4,7 @@ const { pathfinder, Movements, goals } = pathfinderModule;
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { parseInstance } from '../instances/parser.js';
-import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isLimboNotice } from './message-source.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isDeathNotice, isLimboNotice } from './message-source.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
 import type { Config } from '../config/index.js';
 import type { BotTransport, TransportEvents } from './transport.js';
@@ -296,6 +296,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
     const careAnnouncement = parseCarePackageAnnouncement(text);
     const careEligible = eligibleServerAnnouncementChannel(position, sender, careAnnouncement !== undefined);
     const limboEligible = eligibleServerAnnouncementChannel(position, sender, isLimboNotice(text));
+    const deathEligible = eligibleServerAnnouncementChannel(position, sender, isDeathNotice(text));
     const looksTransferRelated =
       candidate !== undefined ||
       lower.includes('server found') ||
@@ -317,7 +318,7 @@ export function createMineflayerTransport(config: Config, index: number, events:
         channel: position, senderPresent: Boolean(sender), eligible: careEligible, area: careAnnouncement.area
       });
     }
-    if (!eligible && !careEligible && !limboEligible) return;
+    if (!eligible && !careEligible && !limboEligible && !deathEligible) return;
     events.message(text);
   };
   const normalizeKickReason = (reason: unknown): string => {
@@ -342,9 +343,17 @@ export function createMineflayerTransport(config: Config, index: number, events:
       events.chickenSpawn?.({ x: entity.position.x, y: entity.position.y, z: entity.position.z });
     }
   };
-  const blockUpdate = (oldBlock: { name?: string } | null, newBlock: { name?: string; position?: { x:number;y:number;z:number } } | null) => {
-    if (closed || !newBlock?.position || newBlock.name !== 'chest' || oldBlock?.name === 'chest') return;
-    events.chestAppeared?.({ x: newBlock.position.x, y: newBlock.position.y, z: newBlock.position.z });
+  const blockUpdate = (oldBlock: { name?: string; position?: { x:number;y:number;z:number } } | null, newBlock: { name?: string; position?: { x:number;y:number;z:number } } | null) => {
+    if (closed) return;
+    const position=newBlock?.position??oldBlock?.position;
+    if(!position)return;
+    if(newBlock?.name==='chest'&&oldBlock?.name!=='chest'){
+      events.chestAppeared?.({x:position.x,y:position.y,z:position.z});
+      return;
+    }
+    if(oldBlock?.name==='chest'&&newBlock?.name!=='chest'){
+      events.chestDisappeared?.({x:position.x,y:position.y,z:position.z});
+    }
   };
   const positionPacket = (packet: { x:number; y:number; z:number; yaw:number; flags:number | {x?:boolean;y?:boolean;z?:boolean;yaw?:boolean} }) => {
     if (closed || !bot.entity?.position) return;
