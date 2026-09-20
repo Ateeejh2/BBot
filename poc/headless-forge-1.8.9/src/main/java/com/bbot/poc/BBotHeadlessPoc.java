@@ -283,8 +283,10 @@ public final class BBotHeadlessPoc {
                 boolean forward = command.has("forward") && command.get("forward").getAsBoolean();
                 boolean sprint = command.has("sprint") && command.get("sprint").getAsBoolean();
                 boolean sneak = command.has("sneak") && command.get("sneak").getAsBoolean();
+                boolean jump = command.has("jump") && command.get("jump").getAsBoolean();
                 setMovement(forward, sprint);
                 setSneak(sneak);
+                setJump(jump);
                 bridgeControlActive = true;
             } else if ("release".equals(type)) {
                 releaseMovementKeys();
@@ -415,6 +417,10 @@ public final class BBotHeadlessPoc {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSneak.getKeyCode(), sneak);
     }
 
+    private void setJump(boolean jump) {
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), jump);
+    }
+
     private void releaseMovementKeys() {
         if (mc.gameSettings == null) {
             return;
@@ -422,6 +428,7 @@ public final class BBotHeadlessPoc {
 
         setMovement(false, false);
         setSneak(false);
+        setJump(false);
     }
 
     private void resetTest() {
