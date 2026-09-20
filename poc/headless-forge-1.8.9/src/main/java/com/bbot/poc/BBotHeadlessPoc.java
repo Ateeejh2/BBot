@@ -6,8 +6,10 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import java.lang.reflect.Field;
+import java.util.Base64;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
+import net.minecraft.block.Block;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.entity.passive.EntityChicken;
 import net.minecraft.init.Blocks;
@@ -345,6 +347,8 @@ public final class BBotHeadlessPoc {
                 }
             } else if ("findSlimePads".equals(type) && command.has("requestId")) {
                 emitSlimePadResponse(command);
+            } else if ("getChunk".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
+                emitChunkResponse(command);
             }
         }
     }
@@ -404,6 +408,71 @@ public final class BBotHeadlessPoc {
 
         response.addProperty("ok", true);
         response.add("blocks", blocks);
+        bridge.emit(response);
+    }
+
+    private void emitChunkResponse(JsonObject command) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", command.get("requestId").getAsString());
+        response.addProperty("kind", "chunk");
+
+        if (mc.theWorld == null) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "WORLD_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        int chunkX = command.get("chunkX").getAsInt();
+        int chunkZ = command.get("chunkZ").getAsInt();
+        response.addProperty("chunkX", chunkX);
+        response.addProperty("chunkZ", chunkZ);
+
+        if (!mc.theWorld.getChunkProvider().chunkExists(chunkX, chunkZ)) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "CHUNK_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        JsonArray sections = new JsonArray();
+        for (int sectionY = 0; sectionY < 16; sectionY++) {
+            byte[] states = new byte[16 * 16 * 16 * 2];
+            boolean nonAir = false;
+            int offset = 0;
+
+            for (int y = 0; y < 16; y++) {
+                int worldY = sectionY * 16 + y;
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        BlockPos pos = new BlockPos(chunkX * 16 + x, worldY, chunkZ * 16 + z);
+                        int stateId = Block.getStateId(mc.theWorld.getBlockState(pos));
+                        if (stateId != 0) {
+                            nonAir = true;
+                        }
+                        states[offset++] = (byte) (stateId & 0xff);
+                        states[offset++] = (byte) ((stateId >>> 8) & 0xff);
+                    }
+                }
+            }
+
+            if (!nonAir) {
+                continue;
+            }
+
+            JsonObject section = new JsonObject();
+            section.addProperty("y", sectionY);
+            section.addProperty("states", Base64.getEncoder().encodeToString(states));
+            sections.add(section);
+        }
+
+        response.addProperty("ok", true);
+        response.add("sections", sections);
         bridge.emit(response);
     }
 
