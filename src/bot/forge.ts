@@ -34,9 +34,19 @@ interface BridgeEvent {
   z?: number;
 }
 
+interface BridgeResponse {
+  type: 'response';
+  requestId: string;
+  kind?: string;
+  ok: boolean;
+  error?: string;
+  blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown }>;
+}
+
 type BridgeMessage =
   | BridgeState
   | BridgeEvent
+  | BridgeResponse
   | { type: 'bridge'; event: string; protocol?: number };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -92,6 +102,14 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let buffer = '';
   let current: BridgeState | undefined;
   let connected = false;
+  let requestSequence = 0;
+  const pending = new Map<string, {
+    resolve: (response: BridgeResponse) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+    signal?: AbortSignal;
+    abort?: () => void;
+  }>();
 
   const emitEnd = () => {
     if (ended || closed) return;
@@ -109,6 +127,37 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     socket.write('{"type":"release"}\n');
   };
 
+  const settlePending = (requestId: string, response?: BridgeResponse, error?: Error) => {
+    const entry = pending.get(requestId);
+    if (!entry) return;
+    pending.delete(requestId);
+    clearTimeout(entry.timer);
+    if (entry.signal && entry.abort) entry.signal.removeEventListener('abort', entry.abort);
+    if (error) entry.reject(error);
+    else if (response) entry.resolve(response);
+  };
+
+  const failPending = (message: string) => {
+    for (const requestId of [...pending.keys()]) settlePending(requestId, undefined, new Error(message));
+  };
+
+  const request = (message: Record<string, unknown>, signal?: AbortSignal, timeoutMs = 3000): Promise<BridgeResponse> => {
+    signal?.throwIfAborted();
+    const requestId = `${index + 1}-${++requestSequence}`;
+    return new Promise<BridgeResponse>((resolve, reject) => {
+      const timer = setTimeout(() => settlePending(requestId, undefined, new Error('Forge bridge request timeout')), timeoutMs);
+      const abort = signal ? () => settlePending(requestId, undefined,
+        signal.reason instanceof Error ? signal.reason : new Error('Movement cancelled')) : undefined;
+      pending.set(requestId, { resolve, reject, timer, signal, abort });
+      if (signal && abort) signal.addEventListener('abort', abort, { once: true });
+      try {
+        send({ ...message, requestId });
+      } catch (error) {
+        settlePending(requestId, undefined, error instanceof Error ? error : new Error('Forge bridge request failed'));
+      }
+    });
+  };
+
   const handleMessage = (message: BridgeMessage) => {
     if (message.type === 'state') {
       const state = parseState(message);
@@ -118,6 +167,11 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
     if (message.type === 'bridge') {
       events.diagnostic?.('forge bridge connected', { port, protocol: message.protocol ?? null });
+      return;
+    }
+
+    if (message.type === 'response') {
+      if (typeof message.requestId === 'string') settlePending(message.requestId, message);
       return;
     }
 
@@ -207,6 +261,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
   socket.on('close', () => {
     connected = false;
+    failPending('Forge bridge disconnected');
     emitEnd();
   });
 
@@ -214,7 +269,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     release();
   };
 
-  const navigate = async (target: Position, signal: AbortSignal): Promise<void> => {
+  const navigateTo = async (target: Position, range: number, signal: AbortSignal): Promise<void> => {
     signal.throwIfAborted();
     const started = Date.now();
     let bestDistance = Number.POSITIVE_INFINITY;
@@ -235,7 +290,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
         const horizontal = Math.hypot(target.x - state.x, target.z - state.z);
         const vertical = Math.abs(target.y - state.y);
-        if (horizontal <= 1.0 && vertical <= 1.5) return;
+        if (horizontal <= range && vertical <= 1.5) return;
 
         if (horizontal + 0.08 < bestDistance) {
           bestDistance = horizontal;
@@ -263,6 +318,132 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     }
   };
 
+  const navigate = (target: Position, signal: AbortSignal) => navigateTo(target, 1.0, signal);
+
+  const launchToward = async (
+    target: Pick<Position, 'x' | 'z'>,
+    signal: AbortSignal,
+    completion: 'LAUNCH' | 'LANDING' = 'LANDING'
+  ): Promise<void> => {
+    signal.throwIfAborted();
+    const start = current;
+    if (!start) throw new Error('Launch position unavailable');
+
+    const response = await request({ type: 'findSlimePads', radius: 32, vertical: 6, limit: 96 }, signal);
+    if (!response.ok || response.kind !== 'slimePads' || !Array.isArray(response.blocks)) {
+      throw new Error('Launch pad unavailable');
+    }
+
+    const slime = response.blocks.flatMap(block =>
+      isFiniteNumber(block.x) && isFiniteNumber(block.y) && isFiniteNumber(block.z)
+        ? [{ x: block.x, y: block.y, z: block.z }]
+        : []
+    ).filter(pos => Math.abs(pos.y - start.y) <= 6);
+
+    if (!slime.length) throw new Error('Launch pad not found');
+
+    const remaining = [...slime];
+    const clusters: Array<typeof slime> = [];
+    while (remaining.length) {
+      const seed = remaining.pop()!;
+      const cluster = [seed];
+      for (let changed = true; changed;) {
+        changed = false;
+        for (let i = remaining.length - 1; i >= 0; i--) {
+          const candidate = remaining[i]!;
+          if (cluster.some(p =>
+            Math.abs(p.x - candidate.x) <= 1 &&
+            Math.abs(p.y - candidate.y) <= 1 &&
+            Math.abs(p.z - candidate.z) <= 1)) {
+            cluster.push(remaining.splice(i, 1)[0]!);
+            changed = true;
+          }
+        }
+      }
+      if (cluster.length >= 4) clusters.push(cluster);
+    }
+    if (!clusters.length) throw new Error('Launch pad not found');
+
+    const centers = clusters.map(cluster => ({
+      x: cluster.reduce((sum, p) => sum + p.x, 0) / cluster.length + 0.5,
+      y: Math.max(...cluster.map(p => p.y)) + 1,
+      z: cluster.reduce((sum, p) => sum + p.z, 0) / cluster.length + 0.5,
+      blocks: cluster.length
+    }));
+
+    const tx = target.x - start.x;
+    const tz = target.z - start.z;
+    const targetLength = Math.hypot(tx, tz) || 1;
+    centers.sort((a, b) => {
+      const score = (p: typeof a) => {
+        const px = p.x - start.x;
+        const pz = p.z - start.z;
+        const length = Math.hypot(px, pz) || 1;
+        return (px * tx + pz * tz) / (length * targetLength);
+      };
+      return score(b) - score(a);
+    });
+
+    const pad = centers[0]!;
+    events.diagnostic?.('launch pad selected', {
+      candidates: centers.length,
+      blocks: pad.blocks,
+      padX: Math.round(pad.x * 10) / 10,
+      padY: Math.round(pad.y * 10) / 10,
+      padZ: Math.round(pad.z * 10) / 10
+    });
+
+    const dx = pad.x - start.x;
+    const dz = pad.z - start.z;
+    const distance = Math.hypot(dx, dz) || 1;
+    const approach = {
+      x: pad.x - dx / distance * 2.2,
+      y: pad.y,
+      z: pad.z - dz / distance * 2.2
+    };
+
+    await navigateTo(approach, 0.8, signal);
+    signal.throwIfAborted();
+
+    const beforeLaunch = current;
+    if (!beforeLaunch) throw new Error('Launch position unavailable');
+    send({ type: 'look', yaw: yawToward(
+      { x: beforeLaunch.x, y: beforeLaunch.y, z: beforeLaunch.z },
+      { x: pad.x, y: pad.y, z: pad.z }
+    ), pitch: 0 });
+    send({ type: 'controls', forward: true, sprint: false, sneak: false, jump: false });
+
+    const launchedFrom = { x: beforeLaunch.x, y: beforeLaunch.y, z: beforeLaunch.z };
+    const launchedAt = Date.now();
+    let launched = false;
+    let groundSamples = 0;
+
+    try {
+      while (true) {
+        signal.throwIfAborted();
+        const state = current;
+        if (state) {
+          const horizontal = Math.hypot(state.x - launchedFrom.x, state.z - launchedFrom.z);
+          if (!launched && (horizontal > 7 || Math.abs(state.y - launchedFrom.y) > 4)) {
+            launched = true;
+            release();
+            if (completion === 'LAUNCH') return;
+          }
+          if (launched) {
+            groundSamples = state.onGround ? groundSamples + 1 : 0;
+            if (groundSamples >= 2 && horizontal > 7) return;
+          }
+        }
+        if (Date.now() - launchedAt > 10_000) {
+          throw new Error(launched ? 'Launch landing timeout' : 'Launch pad did not trigger');
+        }
+        await delay(50, signal);
+      }
+    } finally {
+      release();
+    }
+  };
+
   return {
     position: () => current ? { x: current.x, y: current.y, z: current.z } : undefined,
     chat: command => {
@@ -270,11 +451,13 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       send({ type: 'chat', message: command });
     },
     navigate,
+    launchToward,
     stopPath,
     close: () => {
       if (closed) return;
       try { release(); } catch {}
       closed = true;
+      failPending('Transport closed');
       socket.destroy();
     }
   };
