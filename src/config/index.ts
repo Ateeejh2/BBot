@@ -23,6 +23,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const count = integer('BOT_COUNT', 1, 1, 20);
   const forgeBridgeBasePort = integer('FORGE_BRIDGE_BASE_PORT', 3010, 1024, 65535);
   if (forgeBridgeBasePort + count - 1 > 65535) throw new Error('FORGE_BRIDGE_BASE_PORT range exceeds 65535');
+  const forgePocDir = resolve(env.FORGE_POC_DIR ?? 'poc/headless-forge-1.8.9');
+  const forgeJava8Home = env.FORGE_JAVA8_HOME?.trim() || env.JAVA8_HOME?.trim() || undefined;
   const host = env.SERVER_HOST ?? 'localhost';
   if (!/^[a-z\d.:_-]+$/i.test(host)) throw new Error('Invalid SERVER_HOST');
   const version = env.MC_VERSION?.trim() || '1.8.9';
@@ -89,7 +91,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     mode: mode as 'mock' | 'live', transport: transport as 'mineflayer' | 'forge',
     count, host, version, accounts, legacyAccountsPresent, level: level as 'debug' | 'info' | 'warn' | 'error',
-    forge: { bridgeBasePort: forgeBridgeBasePort },
+    forge: { bridgeBasePort: forgeBridgeBasePort, pocDir: forgePocDir, java8Home: forgeJava8Home },
     port: integer('SERVER_PORT', 25565, 1, 65535),
     reconnect: { baseMs: reconnectBaseMs, maxMs: reconnectMaxMs, jitter: integer('RECONNECT_JITTER_PERCENT', 50, 0, 100) / 100 },
     connectTimeoutMs: integer('CONNECT_TIMEOUT_MS', 60000, 1000, 600000),
