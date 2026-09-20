@@ -16,7 +16,6 @@ export interface PitDynamicBlock extends Position { stateId:number }
 export type PitChunkLoader = (chunkX: number, chunkZ: number, signal: AbortSignal) => Promise<PitChunkData | undefined>;
 export type PitLoadedChunkLister = (signal: AbortSignal) => Promise<Array<{x:number;z:number}>>;
 export type PitDynamicChunkLoader = (chunkX:number,chunkZ:number,signal:AbortSignal)=>Promise<PitDynamicBlock[]>;
-export type PitDynamicSummaryLoader = (signal:AbortSignal)=>Promise<{signature:string;count:number}|undefined>;
 export type PitScanProgress = (done:number,total:number)=>void;
 
 export interface PitNavigationPlan {
@@ -42,7 +41,6 @@ interface DynamicOverlay {
   blocks: Map<string,number>;
   columns: Map<string,Set<number>>;
   revision: number;
-  signature?: string;
 }
 
 const SAMPLE_OFFSETS = [[0,0],[-1,0],[1,0],[0,-1],[0,1]] as const;
@@ -61,8 +59,6 @@ export class PitNavigationService {
   private readonly overlayReady = new Set<string>();
   private readonly overlayLoads = new Map<string,Promise<void>>();
   private readonly overlayEpoch = new Map<string,number>();
-  private readonly overlayNeedsValidation = new Set<string>();
-  private readonly overlayDetachedAt = new Map<string,number>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
@@ -83,14 +79,12 @@ export class PitNavigationService {
     this.instanceUsers.delete(key);
     this.cache.unbind(instanceId);
     this.anchors.delete(key);
-    const overlay=this.overlays.get(key);
-    if(overlay){
-      overlay.signature=overlaySignature(overlay);
-      this.overlayNeedsValidation.add(key);
-      this.overlayDetachedAt.set(key,Date.now());
-    }
+    // No bot is watching this instance anymore, so future block changes are
+    // unknowable. Drop only the instance overlay; the shared base graph remains.
+    this.overlays.delete(key);
+    this.overlayReady.delete(key);
     this.overlayLoads.delete(key);
-    this.pruneDetachedOverlays();
+    this.overlayEpoch.delete(key);
   }
 
   invalidate(instanceId: string): void {
@@ -100,8 +94,6 @@ export class PitNavigationService {
   invalidateOverlay(instanceId:string):void {
     const key=normalizeInstance(instanceId);
     this.overlayReady.delete(key);
-    this.overlayNeedsValidation.delete(key);
-    this.overlayDetachedAt.delete(key);
     this.overlays.delete(key);
     this.overlayEpoch.set(key,(this.overlayEpoch.get(key)??0)+1);
   }
@@ -137,12 +129,11 @@ export class PitNavigationService {
     avoidColumns: ReadonlyArray<Pick<Position,'x'|'z'>> = [],
     listLoadedChunks?: PitLoadedChunkLister,
     onScanProgress?: PitScanProgress,
-    loadDynamicChunk?: PitDynamicChunkLoader,
-    loadDynamicSummary?: PitDynamicSummaryLoader
+    loadDynamicChunk?: PitDynamicChunkLoader
   ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
     const prepared = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks, onScanProgress);
-    await this.ensureOverlay(instanceId,signal,listLoadedChunks,loadDynamicChunk,onScanProgress,loadDynamicSummary);
+    await this.ensureOverlay(instanceId,signal,listLoadedChunks,loadDynamicChunk,onScanProgress);
     const graph=prepared.graph;
     const overlay=this.overlay(normalizeInstance(instanceId));
 
@@ -184,21 +175,10 @@ export class PitNavigationService {
     signal:AbortSignal,
     listLoadedChunks?:PitLoadedChunkLister,
     loadDynamicChunk?:PitDynamicChunkLoader,
-    onScanProgress?:PitScanProgress,
-    loadDynamicSummary?:PitDynamicSummaryLoader
+    onScanProgress?:PitScanProgress
   ):Promise<void>{
     const key=normalizeInstance(instanceId);
-    if(this.overlayReady.has(key)&&!this.overlayNeedsValidation.has(key))return;
-    if(this.overlayReady.has(key)&&this.overlayNeedsValidation.has(key)&&loadDynamicSummary){
-      const overlay=this.overlay(key);
-      const summary=await loadDynamicSummary(signal);
-      if(summary&&overlay.signature===summary.signature){
-        this.overlayNeedsValidation.delete(key);
-        this.overlayDetachedAt.delete(key);
-        return;
-      }
-      this.overlayReady.delete(key);
-    }
+    if(this.overlayReady.has(key))return;
     const pending=this.overlayLoads.get(key);
     if(pending){await pending;return;}
     if(!listLoadedChunks||!loadDynamicChunk){
@@ -231,9 +211,6 @@ export class PitNavigationService {
       }
       if(queue.length===0)onScanProgress?.(0,0);
       overlay.revision++;
-      overlay.signature=overlaySignature(overlay);
-      this.overlayNeedsValidation.delete(key);
-      this.overlayDetachedAt.delete(key);
       if((this.overlayEpoch.get(key)??0)===epoch)this.overlayReady.add(key);
     })().finally(()=>this.overlayLoads.delete(key));
     this.overlayLoads.set(key,task);
@@ -309,8 +286,6 @@ export class PitNavigationService {
       if(queue.length===0)onScanProgress?.(0,0);
       overlay.revision++;
       overlay.signature=overlaySignature(overlay);
-      this.overlayNeedsValidation.delete(instanceKey);
-      this.overlayDetachedAt.delete(instanceKey);
       this.overlayReady.add(instanceKey);
       this.cache.setGraph(fingerprint, graph, now);
       return {graph,cacheStatus:'FULL_SCAN',previousFingerprint:existingFingerprint};
@@ -322,17 +297,8 @@ export class PitNavigationService {
     return {graph,cacheStatus:'SHARED_HIT',previousFingerprint:existingFingerprint};
   }
 
-  private pruneDetachedOverlays():void {
-    const detached=[...this.overlayDetachedAt.entries()].sort((a,b)=>a[1]-b[1]);
-    while(detached.length>32){
-      const [key]=detached.shift()!;
-      this.overlayDetachedAt.delete(key);
-      this.overlayNeedsValidation.delete(key);
-      this.overlayReady.delete(key);
-      this.overlays.delete(key);
-      this.overlayEpoch.delete(key);
-    }
-  }
+}
+
 }
 
 function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkData}>):string {
@@ -417,24 +383,6 @@ function deleteOverlayBlock(overlay:DynamicOverlay,x:number,y:number,z:number,bu
   if(ys?.size===0)overlay.columns.delete(cKey);
   if(bump)overlay.revision++;
   return true;
-}
-
-function overlaySignature(overlay:DynamicOverlay):string {
-  const hash=createHash('sha256');
-  const ordered=[...overlay.blocks.entries()].sort(([a],[b])=>comparePositionKeys(a,b));
-  for(const [key,state] of ordered)hash.update(`${key},${state};`);
-  return `volatile:${hash.digest('hex').slice(0,24)}`;
-}
-
-function comparePositionKeys(a:string,b:string):number {
-  const aa=a.split(',').map(Number),bb=b.split(',').map(Number);
-  const acx=Math.floor(aa[0]!/16),bcx=Math.floor(bb[0]!/16);
-  if(acx!==bcx)return acx-bcx;
-  const acz=Math.floor(aa[2]!/16),bcz=Math.floor(bb[2]!/16);
-  if(acz!==bcz)return acz-bcz;
-  if(aa[1]!==bb[1])return aa[1]!-bb[1]!;
-  if(aa[2]!==bb[2])return aa[2]!-bb[2]!;
-  return aa[0]!-bb[0]!;
 }
 
 function baseState(state:number):number {
