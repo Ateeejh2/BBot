@@ -7,8 +7,6 @@ on:
     paths:
       - "poc/headless-forge-1.8.9/**"
       - ".github/workflows/headless-forge-poc.yml"
-    paths-ignore:
-      - "poc/headless-forge-1.8.9/dist/**"
   workflow_dispatch:
 
 permissions:
@@ -16,6 +14,7 @@ permissions:
 
 jobs:
   build:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
