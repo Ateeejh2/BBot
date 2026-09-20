@@ -349,7 +349,7 @@ test('first bot after an unwatched gap rescans the instance overlay exactly once
 
 test('world reset invalidates the instance overlay and rescans only current volatile blocks', async () => {
   const service=new PitNavigationService();
-  const terrain=flatChunk(0);
+  const terrain=volatileBarrierChunk();
   const signal=new AbortController().signal;
   const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
   const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
