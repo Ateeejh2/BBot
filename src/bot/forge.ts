@@ -660,6 +660,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       events.diagnostic?.('pit path planned',{
         instanceId,
         fingerprint:plan.fingerprint,
+        previousFingerprint:plan.previousFingerprint??null,
+        mapChanged:Boolean(plan.previousFingerprint&&plan.previousFingerprint!==plan.fingerprint),
+        cacheStatus:plan.cacheStatus,
         waypoints:plan.waypoints.length,
         complete:plan.complete,
         scannedChunks:plan.scannedChunks,
