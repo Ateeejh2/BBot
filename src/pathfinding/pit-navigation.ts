@@ -155,9 +155,9 @@ function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkDat
       const normalized=Buffer.allocUnsafe(section.states.length*2);
       for (let i=0;i<section.states.length;i++) {
         const state=section.states[i]??0;
-        const blockId=blockId(state);
+        const id=blockId(state);
         // Care Package chests are dynamic and must not create a new map generation.
-        const stable=blockId===54?0:state;
+        const stable=id===54?0:state;
         normalized.writeUInt16LE(stable,i*2);
       }
       hash.update(normalized);
