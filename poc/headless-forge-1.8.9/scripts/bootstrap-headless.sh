@@ -10,9 +10,6 @@ HMC_VERSION="2.10.0"
 HMC_JAR="$RUNTIME/headlessmc-launcher-$HMC_VERSION.jar"
 HMC_URL="https://github.com/headlesshq/headlessmc/releases/download/$HMC_VERSION/headlessmc-launcher-$HMC_VERSION.jar"
 
-SPECIFICS_JAR="$RUNTIME/hmc-specifics-1.8.9-forge-latest.jar"
-SPECIFICS_URL="https://github.com/headlesshq/hmc-specifics/releases/download/1.8.9-latest/hmc-specifics-1.8.9-forge-latest.jar"
-
 POC_JAR="$ROOT/build/libs/bbot-headless-poc-0.1.0.jar"
 
 if [[ -n "${JAVA8_HOME:-}" ]]; then
@@ -48,13 +45,10 @@ if [[ ! -f "$HMC_JAR" ]]; then
   curl -fL "$HMC_URL" -o "$HMC_JAR"
 fi
 
-if [[ ! -f "$SPECIFICS_JAR" ]]; then
-  echo "[BBotPoC] downloading hmc-specifics for Forge 1.8.9"
-  curl -fL "$SPECIFICS_URL" -o "$SPECIFICS_JAR"
-fi
-
+# HeadlessMC's -specifics launch flag installs the version-matched HMC-Specifics
+# mod. Remove the old manually-copied jar so Forge does not see a stale/duplicate copy.
+rm -f "$GAME_DIR/mods/hmc-specifics-1.8.9-forge-latest.jar"
 cp -f "$POC_JAR" "$GAME_DIR/mods/"
-cp -f "$SPECIFICS_JAR" "$GAME_DIR/mods/"
 
 cat > "$HMC_DIR/config.properties" <<EOF
 hmc.gamedir=$GAME_DIR
@@ -65,3 +59,4 @@ EOF
 
 echo "[BBotPoC] runtime prepared in $RUNTIME"
 echo "[BBotPoC] next: ./scripts/run-hmc.sh"
+echo "[BBotPoC] launch with: launch forge:1.8.9 -specifics -lwjgl --jvm \"-Djava.awt.headless=true -Xms256m -Xmx768m\""
