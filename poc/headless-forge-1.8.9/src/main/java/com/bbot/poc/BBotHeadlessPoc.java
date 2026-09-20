@@ -83,6 +83,7 @@ public final class BBotHeadlessPoc {
     private final int sprintTicks = envInt("BBOT_POC_SPRINT_TICKS", DEFAULT_SPRINT_TICKS);
     private final int traceEveryTicks = Math.max(1, envInt("BBOT_POC_TRACE_EVERY_TICKS", DEFAULT_TRACE_EVERY_TICKS));
     private final boolean skipRender = envBool("BBOT_POC_SKIP_RENDER", true);
+    private final boolean autoMovementTest = envBool("BBOT_POC_AUTOTEST", false);
     private final boolean bridgeEnabled = envBool("BBOT_POC_BRIDGE_ENABLED", true);
     private final int bridgePort = Math.max(1024, envInt("BBOT_POC_BRIDGE_PORT", DEFAULT_BRIDGE_PORT));
     private final int bridgeStateEveryTicks = Math.max(1, envInt("BBOT_POC_BRIDGE_STATE_EVERY_TICKS", DEFAULT_BRIDGE_STATE_EVERY_TICKS));
@@ -98,13 +99,14 @@ public final class BBotHeadlessPoc {
         }
 
         LOG.info(
-            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={} skipRender={} bridgeEnabled={} bridgePort={}",
+            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={} skipRender={} autoMovementTest={} bridgeEnabled={} bridgePort={}",
             descendTicks,
             warmupTicks,
             walkTicks,
             sprintTicks,
             traceEveryTicks,
             skipRender,
+            autoMovementTest,
             bridgeEnabled,
             bridgePort
         );
@@ -203,7 +205,7 @@ public final class BBotHeadlessPoc {
                 setMovement(false, false);
                 setSneak(false);
                 if (!mc.thePlayer.capabilities.isFlying && mc.thePlayer.onGround) {
-                    transitionTo(Phase.WARMUP);
+                    transitionTo(autoMovementTest ? Phase.WARMUP : Phase.DONE);
                 }
                 break;
             case WARMUP:
