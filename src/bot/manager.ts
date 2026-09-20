@@ -521,6 +521,7 @@ export class BotManager {
     try { this.registry.join(b.pendingInstance, b.id, this.now()); }
     catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
     b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false;
+    b.transport?.setInstance?.(b.instanceId);
     b.machine.transition('IN_PIT_IDLE'); b.stableSince = this.now();
     if(b.limboRecovery?.phase==='JOINING_PIT'){
       this.log(b,'limbo recovery completed',{instanceId:b.instanceId});
@@ -628,6 +629,7 @@ export class BotManager {
     if(b.limboRecovery)return;
     const now=this.now();
     b.carePackage=undefined;b.careRetryAt=undefined;
+    b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
     this.registry.leave(b.id,now,'LIMBO');
     b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.stableSince=undefined;b.ready=false;
@@ -646,6 +648,7 @@ export class BotManager {
   }
   private recover(b: ManagedBot, reason: ReturnReason): void {
     b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
+    b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
     b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.stableSince = undefined;
@@ -661,6 +664,7 @@ export class BotManager {
   }
   private serverDisconnected(b: ManagedBot): void {
     if (b.machine.state === 'DISCONNECTED') return;
+    b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), 'DISCONNECT');
     b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
@@ -676,6 +680,7 @@ export class BotManager {
       try { transport?.close(); } catch { this.log(b, 'transport close failed'); }
       return;
     }
+    b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
     b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;
