@@ -8,10 +8,16 @@ import java.lang.reflect.Field;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.SharedMonsterAttributes;
+import net.minecraft.entity.passive.EntityChicken;
+import net.minecraft.init.Blocks;
 import net.minecraft.network.NetworkManager;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
+import net.minecraft.network.play.server.S22PacketMultiBlockChange;
+import net.minecraft.network.play.server.S23PacketBlockChange;
+import net.minecraft.util.BlockPos;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.entity.EntityJoinWorldEvent;
 import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
@@ -128,6 +134,15 @@ public final class BBotHeadlessPoc {
         message.addProperty("text", text);
         message.addProperty("channel", event.type == 2 ? "actionbar" : (event.type == 1 ? "system" : "chat"));
         bridge.emit(message);
+    }
+
+    @SubscribeEvent
+    public void onEntityJoinWorld(EntityJoinWorldEvent event) {
+        if (bridge == null || event.world != mc.theWorld || !(event.entity instanceof EntityChicken)) {
+            return;
+        }
+
+        emitBridgePositionEvent("chickenSpawn", event.entity.posX, event.entity.posY, event.entity.posZ);
     }
 
     @SubscribeEvent
@@ -266,6 +281,26 @@ public final class BBotHeadlessPoc {
         bridge.emit(message);
     }
 
+    private void emitBridgePositionEvent(String eventName, double x, double y, double z) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", eventName);
+        message.addProperty("x", x);
+        message.addProperty("y", y);
+        message.addProperty("z", z);
+        bridge.emit(message);
+    }
+
+    private void traceChestBlockChange(BlockPos pos, net.minecraft.block.state.IBlockState state) {
+        if (state != null && state.getBlock() == Blocks.chest) {
+            emitBridgePositionEvent("chestAppeared", pos.getX(), pos.getY(), pos.getZ());
+        }
+    }
+
     private void processBridgeCommands() {
         if (bridge == null) {
             return;
@@ -350,6 +385,16 @@ public final class BBotHeadlessPoc {
             channel.pipeline().addBefore("packet_handler", handlerName, new ChannelDuplexHandler() {
                 @Override
                 public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                    if (msg instanceof S23PacketBlockChange) {
+                        S23PacketBlockChange packet = (S23PacketBlockChange) msg;
+                        traceChestBlockChange(packet.getBlockPosition(), packet.getBlockState());
+                    } else if (msg instanceof S22PacketMultiBlockChange) {
+                        S22PacketMultiBlockChange packet = (S22PacketMultiBlockChange) msg;
+                        for (S22PacketMultiBlockChange.BlockUpdateData update : packet.getChangedBlocks()) {
+                            traceChestBlockChange(update.getPos(), update.getBlockState());
+                        }
+                    }
+
                     if (msg instanceof S08PacketPlayerPosLook) {
                         S08PacketPlayerPosLook packet = (S08PacketPlayerPosLook) msg;
                         double playerX = mc.thePlayer == null ? Double.NaN : mc.thePlayer.posX;
