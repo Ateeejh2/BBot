@@ -68,7 +68,7 @@ export class PitNavigationService {
   ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
     const graph = await this.ensureGraph(instanceId, start, loader, signal);
-    await this.loadCorridor(graph, start, target, loader, signal);
+    await this.loadLocalWindow(graph, start, loader, signal);
 
     const startNode = nearestNode(graph, start, 4, 5);
     if (!startNode) throw new Error('No path to the goal!');
@@ -124,33 +124,29 @@ export class PitNavigationService {
     return graph;
   }
 
-  private async loadCorridor(graph: TerrainGraph, start: Position, target: Position, loader: PitChunkLoader, signal: AbortSignal): Promise<void> {
-    const startChunk = { x:Math.floor(start.x/16), z:Math.floor(start.z/16) };
-    const endChunk = { x:Math.floor(target.x/16), z:Math.floor(target.z/16) };
-    const centers = chunkLine(startChunk.x, startChunk.z, endChunk.x, endChunk.z);
-    const wanted = new Map<string,{x:number;z:number}>();
-    for (const center of centers) {
-      for (let dx=-1; dx<=1; dx++) for (let dz=-1; dz<=1; dz++) {
-        const x=center.x+dx,z=center.z+dz,key=chunkKey(x,z);
-        if (!graph.chunks.has(key)) wanted.set(key,{x,z});
+  private async loadLocalWindow(graph: TerrainGraph, start: Position, loader: PitChunkLoader, signal: AbortSignal): Promise<void> {
+    const centerX=Math.floor(start.x/16),centerZ=Math.floor(start.z/16);
+    const queue:Array<{x:number;z:number}>=[];
+    for(let radius=0;radius<=2;radius++){
+      for(let dx=-radius;dx<=radius;dx++)for(let dz=-radius;dz<=radius;dz++){
+        if(Math.max(Math.abs(dx),Math.abs(dz))!==radius)continue;
+        const x=centerX+dx,z=centerZ+dz;
+        if(!graph.chunks.has(chunkKey(x,z)))queue.push({x,z});
       }
     }
 
-    const queue=[...wanted.values()].slice(0,72);
-    for (let i=0;i<queue.length;i+=4) {
+    // Keep Minecraft's client tick responsive: getChunk scans are intentionally
+    // limited to the currently loaded neighborhood and issued only two at a time.
+    for(let i=0;i<queue.length;i+=2){
       signal.throwIfAborted();
-      const batch=queue.slice(i,i+4);
-      const loaded=await Promise.all(batch.map(async ({x,z}) => {
-        try { return await loader(x,z,signal); }
-        catch (error) {
-          if (signal.aborted) throw error;
-          return undefined;
-        }
+      const loaded=await Promise.all(queue.slice(i,i+2).map(async ({x,z})=>{
+        try{return await loader(x,z,signal);}
+        catch(error){if(signal.aborted)throw error;return undefined;}
       }));
-      for (const chunk of loaded) if (chunk) addChunk(graph,chunk);
+      for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
     }
   }
-}
+}}
 
 function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkData}>):string {
   const hash=createHash('sha256');
@@ -317,16 +313,6 @@ function compressPath(path:NavNode[]):Position[]{
 
 function heuristic(node:NavNode,target:Position):number {
   return Math.abs(node.x+0.5-target.x)+Math.abs(node.z+0.5-target.z)+Math.abs(node.y-target.y)*0.25;
-}
-
-function chunkLine(x0:number,z0:number,x1:number,z1:number):Array<{x:number;z:number}>{
-  const result:Array<{x:number;z:number}>=[],dx=Math.abs(x1-x0),dz=Math.abs(z1-z0);
-  const sx=x0<x1?1:-1,sz=z0<z1?1:-1;let err=dx-dz,x=x0,z=z0;
-  while(true){
-    result.push({x,z});if(x===x1&&z===z1)break;
-    const e2=2*err;if(e2>-dz){err-=dz;x+=sx;}if(e2<dx){err+=dx;z+=sz;}
-  }
-  return result;
 }
 
 function chunkKey(x:number,z:number):string{return `${x},${z}`;}
