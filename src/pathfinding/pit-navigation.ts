@@ -13,6 +13,7 @@ export interface PitChunkData {
 }
 export type PitChunkLoader = (chunkX: number, chunkZ: number, signal: AbortSignal) => Promise<PitChunkData | undefined>;
 export type PitLoadedChunkLister = (signal: AbortSignal) => Promise<Array<{x:number;z:number}>>;
+export type PitScanProgress = (done:number,total:number)=>void;
 
 export interface PitNavigationPlan {
   fingerprint: string;
@@ -74,10 +75,11 @@ export class PitNavigationService {
     loader: PitChunkLoader,
     signal: AbortSignal,
     avoidColumns: ReadonlyArray<Pick<Position,'x'|'z'>> = [],
-    listLoadedChunks?: PitLoadedChunkLister
+    listLoadedChunks?: PitLoadedChunkLister,
+    onScanProgress?: PitScanProgress
   ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
-    const prepared = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks);
+    const prepared = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks, onScanProgress);
     const graph=prepared.graph;
 
     const startNode = nearestNode(graph, start, 4, 5);
@@ -107,7 +109,8 @@ export class PitNavigationService {
     start: Position,
     loader: PitChunkLoader,
     signal: AbortSignal,
-    listLoadedChunks?: PitLoadedChunkLister
+    listLoadedChunks?: PitLoadedChunkLister,
+    onScanProgress?: PitScanProgress
   ): Promise<{graph:TerrainGraph;cacheStatus:PitNavigationPlan['cacheStatus'];previousFingerprint?:string}> {
     const now = Date.now();
     const instanceKey=instanceId.toLowerCase();
@@ -150,16 +153,23 @@ export class PitNavigationService {
       // First observation of a fingerprint performs one complete scan of every
       // chunk the client currently has. Later bots/paths reuse this graph.
       const queue=[...unique.values()];
+      const total=queue.length;
+      let done=0;
+      onScanProgress?.(0,total);
       for(let i=0;i<queue.length;i+=2){
         signal.throwIfAborted();
-        const loaded=await Promise.all(queue.slice(i,i+2).map(async ({x,z})=>{
+        const batch=queue.slice(i,i+2);
+        const loaded=await Promise.all(batch.map(async ({x,z})=>{
           const sample=samples.find(value=>value.chunk.chunkX===x&&value.chunk.chunkZ===z)?.chunk;
           if(sample)return sample;
           try{return await loader(x,z,signal);}
           catch(error){if(signal.aborted)throw error;return undefined;}
         }));
         for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
+        done+=batch.length;
+        onScanProgress?.(done,total);
       }
+      if(total===0)onScanProgress?.(0,0);
       this.cache.setGraph(fingerprint, graph, now);
       return {graph,cacheStatus:'FULL_SCAN',previousFingerprint:existingFingerprint};
     }
