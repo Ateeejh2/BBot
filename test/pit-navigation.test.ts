@@ -177,6 +177,14 @@ test('volatile Pit blocks do not change the shared terrain fingerprint', async (
   const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
   const states=[OBSIDIAN,COBBLESTONE,BEDROCK,OAK_PLANK];
   const fingerprints:string[]=[];
+  const clearPlan=await service.plan(
+    'volatile-clear',
+    start,
+    target,
+    async (x,z)=>x===0&&z===0?flatChunk(0):undefined,
+    signal
+  );
+  fingerprints.push(clearPlan.fingerprint);
   for(let i=0;i<states.length;i++){
     const terrain=volatileBarrierChunk(states[i]!);
     const plan=await service.plan(
@@ -269,6 +277,36 @@ test('live volatile block placement and removal changes only the instance overla
   assert.ok(restored.overlayRevision>blocked.overlayRevision);
   assert.equal(restored.dynamicBlocks,0);
   assert.ok(restored.waypoints.every(point=>point.z===2.5));
+});
+
+test('world reset invalidates the instance overlay and rescans only current volatile blocks', async () => {
+  const service=new PitNavigationService();
+  const terrain=flatChunk(0);
+  const signal=new AbortController().signal;
+  const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
+  const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+    x===0&&z===0?terrain:undefined;
+  const lister=async()=>[{x:0,z:0}];
+
+  let dynamic=[
+    {x:5,y:64,z:2,stateId:OBSIDIAN},
+    {x:5,y:65,z:2,stateId:OBSIDIAN}
+  ];
+  const dynamicLoader=async()=>dynamic;
+
+  const blocked=await service.plan(
+    'reset-instance',start,target,loader,signal,[],lister,undefined,dynamicLoader
+  );
+  assert.equal(blocked.dynamicBlocks,2);
+  assert.ok(blocked.waypoints.some(point=>point.z!==2.5));
+
+  service.invalidateOverlay('reset-instance');
+  dynamic=[];
+  const rescanned=await service.plan(
+    'reset-instance',start,target,loader,signal,[],lister,undefined,dynamicLoader
+  );
+  assert.equal(rescanned.dynamicBlocks,0);
+  assert.ok(rescanned.waypoints.every(point=>point.z===2.5));
 });
 
 test('different weekly terrains coexist as separate fingerprint generations', async () => {
