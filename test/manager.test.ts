@@ -211,12 +211,22 @@ test('web Start automatically continues from lobby into Pit after cooldown', () 
   f.join(t, 'auto'); assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); assert.equal(f.manager.views()[0]?.instanceId, 'auto');
   f.manager.stop();
 });
-test('Care Package starts from the live announcement and keeps the launched bot for the chest path', async () => {
+test('Care Package launches, moves toward prediction, then corrects to the real chest', async () => {
   const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[{timestamp:1000}]}),eventsBetween:()=>[{timestamp:1000}]};
   const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3);
   const f=fixture(1,new MockTaskHandler(),false,coordinator);
   f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
   let finishLaunch!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finishLaunch=resolve;});
+  let predictionStarted=false;
+  t.navigation=(_target,signal)=>{
+    if(predictionStarted)return Promise.resolve();
+    predictionStarted=true;
+    return new Promise<void>((_resolve,reject)=>{
+      const abort=()=>reject(new Error('prediction corrected'));
+      if(signal.aborted){abort();return;}
+      signal.addEventListener('abort',abort,{once:true});
+    });
+  };
 
   // Schedule time only arms detection. Carrier entities alone must not launch the bot.
   t.events.chickenSpawn?.({x:80,y:110,z:-30});
@@ -230,20 +240,24 @@ test('Care Package starts from the live announcement and keeps the launched bot 
   t.events.message('MINOR EVENT! CARE PACKAGE in Water Area');
   assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
   assert.equal(t.launches.length,1);
-  assert.deepEqual(t.launchCompletions,['LAUNCH']);
+  assert.deepEqual(t.launchCompletions,['LANDING']);
   assert.ok(Math.abs(t.launches[0]!.x-81)<0.01);
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'LAUNCHING');
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.area,'Water Area');
 
-  const chest={x:79,y:64,z:-32};
-  t.events.chestAppeared?.(chest);
-  assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a'),undefined);
+  // After landing, move toward the carrier-derived prediction even before the chest exists.
+  finishLaunch();await delay(0);await delay(0);
+  assert.deepEqual(t.navigations[0],{x:81,y:64,z:-30});
   assert.equal(f.manager.views()[0]?.state,'PREPARING_EVENT');
 
-  finishLaunch();await delay(0);await delay(0);await delay(0);
+  // Once the real chest appears, cancel the prediction path and immediately correct to it.
+  const chest={x:79,y:64,z:-32};
+  t.events.chestAppeared?.(chest);
+  await delay(0);await delay(0);await delay(0);await delay(0);
   assert.deepEqual(t.navigations.at(-1),chest);
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'CHEST_DETECTED');
   assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
+  assert.equal(f.manager.performanceSnapshot().bots[0]?.pathFailed,0);
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
   f.manager.stop();
 });
