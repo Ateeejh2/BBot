@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { PitNavigationService, type PitChunkData } from '../src/pathfinding/pit-navigation.js';
 
 const STONE=1;
@@ -280,78 +279,72 @@ test('live volatile block placement and removal changes only the instance overla
   assert.ok(restored.waypoints.every(point=>point.z===2.5));
 });
 
-test('shared live overlay skips validation while another bot still watches the instance', async () => {
+test('shared live overlay skips rescanning while another bot still watches the instance', async () => {
   const service=new PitNavigationService();
   const terrain=flatChunk(0);
   const signal=new AbortController().signal;
   const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
     x===0&&z===0?terrain:undefined;
   const lister=async()=>[{x:0,z:0}];
-  let summaryCalls=0,dynamicCalls=0;
-  const summary=async()=>{
-    summaryCalls++;
-    return {signature:`volatile:${createHash('sha256').update('').digest('hex').slice(0,24)}`,count:0};
-  };
+  let dynamicCalls=0;
   const dynamicLoader=async()=>{dynamicCalls++;return [];};
 
   service.retainInstance('watched-instance',{x:2.5,y:64,z:2.5});
   service.retainInstance('watched-instance',{x:2.5,y:64,z:2.5});
-  await service.plan('watched-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
-    loader,signal,[],lister,undefined,dynamicLoader,summary);
-  const afterInitialDynamic=dynamicCalls;
+  await service.plan(
+    'watched-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
+    loader,signal,[],lister,undefined,dynamicLoader
+  );
+  const afterInitialScan=dynamicCalls;
 
   service.releaseInstance('watched-instance');
-  await service.plan('watched-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
-    loader,signal,[],lister,undefined,dynamicLoader,summary);
+  await service.plan(
+    'watched-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
+    loader,signal,[],lister,undefined,dynamicLoader
+  );
 
-  assert.equal(summaryCalls,0);
-  assert.equal(dynamicCalls,afterInitialDynamic);
+  assert.equal(dynamicCalls,afterInitialScan);
 });
 
-test('first bot after an unwatched gap validates signature and only rescans when it changed', async () => {
+test('first bot after an unwatched gap rescans the instance overlay exactly once', async () => {
   const service=new PitNavigationService();
   const terrain=flatChunk(0);
   const signal=new AbortController().signal;
   const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
     x===0&&z===0?terrain:undefined;
   const lister=async()=>[{x:0,z:0}];
-  const emptySignature=`volatile:${createHash('sha256').update('').digest('hex').slice(0,24)}`;
-  let summarySignature=emptySignature;
-  let summaryCalls=0,dynamicCalls=0;
+  let dynamicCalls=0;
   let dynamic:Array<{x:number;y:number;z:number;stateId:number}>=[];
-  const summary=async()=>({signature:summarySignature,count:dynamic.length});
-  const countedSummary=async()=>{summaryCalls++;return summary();};
   const dynamicLoader=async()=>{dynamicCalls++;return dynamic;};
 
   service.retainInstance('gap-instance',{x:2.5,y:64,z:2.5});
-  await service.plan('gap-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
-    loader,signal,[],lister,undefined,dynamicLoader,countedSummary);
-  const initialDynamicCalls=dynamicCalls;
-  service.releaseInstance('gap-instance');
-
-  service.retainInstance('gap-instance',{x:2.5,y:64,z:2.5});
-  const unchanged=await service.plan('gap-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
-    loader,signal,[],lister,undefined,dynamicLoader,countedSummary);
-  assert.equal(summaryCalls,1);
-  assert.equal(dynamicCalls,initialDynamicCalls);
-  assert.equal(unchanged.dynamicBlocks,0);
+  await service.plan(
+    'gap-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
+    loader,signal,[],lister,undefined,dynamicLoader
+  );
+  const initialCalls=dynamicCalls;
   service.releaseInstance('gap-instance');
 
   dynamic=[
     {x:5,y:64,z:2,stateId:OBSIDIAN},
     {x:5,y:65,z:2,stateId:OBSIDIAN}
   ];
-  const changedHash=createHash('sha256');
-  for(const block of dynamic)changedHash.update(`${block.x},${block.y},${block.z},${block.stateId};`);
-  summarySignature=`volatile:${changedHash.digest('hex').slice(0,24)}`;
-
   service.retainInstance('gap-instance',{x:2.5,y:64,z:2.5});
-  const changed=await service.plan('gap-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
-    loader,signal,[],lister,undefined,dynamicLoader,countedSummary);
-  assert.equal(summaryCalls,2);
-  assert.ok(dynamicCalls>initialDynamicCalls);
+  const changed=await service.plan(
+    'gap-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
+    loader,signal,[],lister,undefined,dynamicLoader
+  );
+
+  assert.equal(dynamicCalls,initialCalls+1);
   assert.equal(changed.dynamicBlocks,2);
   assert.ok(changed.waypoints.some(point=>point.z!==2.5));
+
+  const again=await service.plan(
+    'gap-instance',{x:2.5,y:64,z:2.5},{x:9.5,y:64,z:2.5},
+    loader,signal,[],lister,undefined,dynamicLoader
+  );
+  assert.equal(dynamicCalls,initialCalls+1);
+  assert.equal(again.dynamicBlocks,2);
 });
 
 test('world reset invalidates the instance overlay and rescans only current volatile blocks', async () => {
