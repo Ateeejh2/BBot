@@ -633,6 +633,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       return;
     }
 
+    const avoided=new Map<string,{x:number;z:number}>();
     let replans=0;
     while(replans++<12){
       signal.throwIfAborted();
@@ -644,7 +645,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if(horizontal<=range&&vertical<=1.5)return;
 
       const plannedAt=Date.now();
-      const plan=await sharedPitNavigation.plan(instanceId,start,target,loadPitChunk,signal);
+      const plan=await sharedPitNavigation.plan(instanceId,start,target,loadPitChunk,signal,[...avoided.values()]);
       events.diagnostic?.('pit path planned',{
         instanceId,
         fingerprint:plan.fingerprint,
@@ -666,9 +667,17 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         }catch(error){
           const message=error instanceof Error?error.message:'';
           if(message==='Control walk collision'||message==='Control walk stuck'){
+            const blockedFrom=current;
+            if(blockedFrom){
+              const dx=waypoint.x-blockedFrom.x,dz=waypoint.z-blockedFrom.z,length=Math.hypot(dx,dz)||1;
+              const blockedX=Math.floor(blockedFrom.x+dx/length*0.9);
+              const blockedZ=Math.floor(blockedFrom.z+dz/length*0.9);
+              avoided.set(`${blockedX},${blockedZ}`,{x:blockedX,z:blockedZ});
+            }
             events.diagnostic?.('pit path replan requested',{
               instanceId,
               reason:message,
+              avoidedColumns:avoided.size,
               waypointX:Math.round(waypoint.x*10)/10,
               waypointY:Math.round(waypoint.y*10)/10,
               waypointZ:Math.round(waypoint.z*10)/10
