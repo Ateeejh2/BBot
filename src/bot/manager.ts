@@ -629,7 +629,7 @@ export class BotManager {
     void this.paths.submit(`care-prediction:${bot.id}:${preparation.timestamp}:${preparation.generation}`,controller.signal,async signal=>{
       const startedAt=this.now();bot.pathStartedAt=startedAt;bot.lastPathQueueMs=Math.max(0,startedAt-queuedAt);
       try{await transport.navigate(target,signal);bot.pathCompleted++;}
-      catch(error){bot.pathFailed++;throw error;}
+      catch(error){if(!signal.aborted)bot.pathFailed++;throw error;}
       finally{if(bot.pathStartedAt===startedAt){bot.lastPathMs=Math.max(0,this.now()-startedAt);bot.pathStartedAt=undefined;}}
     },()=>transport.stopPath()).then(()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation))return;
