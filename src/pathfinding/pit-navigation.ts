@@ -39,6 +39,7 @@ const HAZARDOUS_FLOOR_IDS = new Set([8,9,10,11,30,51,81]);
 
 export class PitNavigationService {
   readonly cache: PitMapCache<TerrainGraph>;
+  private readonly anchors = new Map<string,{x:number;z:number}>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
@@ -92,12 +93,18 @@ export class PitNavigationService {
 
   private async ensureGraph(instanceId: string, start: Position, loader: PitChunkLoader, signal: AbortSignal): Promise<TerrainGraph> {
     const now = Date.now();
+    const instanceKey=instanceId.toLowerCase();
     const existingFingerprint = this.cache.fingerprintForInstance(instanceId);
     const existingGraph = this.cache.graphForInstance(instanceId);
     if (existingFingerprint && existingGraph && !this.cache.refreshDue(instanceId, now)) return existingGraph;
 
-    const centerX = Math.floor(start.x / 16);
-    const centerZ = Math.floor(start.z / 16);
+    let anchor=this.anchors.get(instanceKey);
+    if(!anchor){
+      anchor={x:Math.floor(start.x/16),z:Math.floor(start.z/16)};
+      this.anchors.set(instanceKey,anchor);
+    }
+    const centerX = anchor.x;
+    const centerZ = anchor.z;
     const samples: Array<{dx:number;dz:number;chunk:PitChunkData}> = [];
     for (const [dx,dz] of SAMPLE_OFFSETS) {
       signal.throwIfAborted();
