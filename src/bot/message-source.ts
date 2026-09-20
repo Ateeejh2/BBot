@@ -23,3 +23,12 @@ export function eligibleServerAnnouncementChannel(
 ): boolean {
   return exactAnnouncement && !sender && (position === 'system' || position === 'chat');
 }
+
+
+/** Exact Hypixel Limbo notice. Matching the entire normalized line prevents a
+ * normal player message such as "<name>: You were spawned in Limbo." from
+ * triggering recovery.
+ */
+export function isLimboNotice(text: string): boolean {
+  return text.replace(/§[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim() === 'You were spawned in Limbo.';
+}
