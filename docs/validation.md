@@ -36,7 +36,7 @@ npmが提示した自動修正はMineflayer 1.4.0への大幅変更で、現在�
 
 [Mineflayer公式README](https://github.com/PrismarineJS/mineflayer)はMinecraft 1.8系列を対象にし、`version: "1.8.9"`を指定例に挙げる。[node-minecraft-protocol公式README](https://github.com/PrismarineJS/node-minecraft-protocol)は対応一覧に1.8.8を掲げ、1.8.9をversion指定例に挙げる。lockfileの`minecraft-data`は1.8.9指定をプロトコル47/1.8.8系データへ解決する。導入済みライブラリのserializer/deserializerとpathfinder exportをオフラインで確認した。プロトコル番号の整合だけで1.8.9実サーバーの挙動は保証しない。[mineflayer-pathfinder公式README](https://github.com/PrismarineJS/mineflayer-pathfinder)にも、1.8.9固有の全機能の動作確認結果は示されていない。
 
-spawn/respawn、chat/system message、`/play pit`後の通知、backend切替、block/movement physics、pathfinder、inventory/window、disconnect/reconnectはすべて1.8.9実機テスト待ち。最新版向けの挙動を1.8.9へそのまま当てはめていない。
+Mineflayer経路のspawn/respawn、chat/system message、backend切替、block/movement physics、pathfinder、inventory/windowは引き続き1.8.9実機テスト待ち。Headless Forge経路のWeb操作ライフサイクル（Launch / Start / Disconnect / 再Start / Quit）は2026-09-20にCodespaces上の実Minecraft 1.8.9クライアントで確認した。最新版向けの挙動を1.8.9へそのまま当てはめていない。
 
 ## 残っている検証・仕様
 
@@ -47,3 +47,64 @@ spawn/respawn、chat/system message、`/play pit`後の通知、backend切替、
 - TaskHandlerがsignalを無視する場合の外部効果までは取り消せない。実pluginは冪等・協調キャンセルが必須。
 - Snapshot保存間隔内のクラッシュによる更新消失と再実行。厳密なtransactional処理が必要になればstoreを差し替える。
 - 同じDATA_DIRを複数プロセスで共有する運用は対象外。
+
+
+## 2026-09-20 Headless Forge / Web control 検証
+
+Codespaces / Linux / Java 8 / HeadlessMC / Forge 1.8.9 の実クライアントを使用して、Web control の基本ライフサイクルを手動検証した。
+
+確認済み:
+
+- `Launch`: HeadlessMC経由でForge 1.8.9 clientが起動し、bridgeが `LAUNCHED` になる。
+- `Start`: Webに保存されたMinecraft serverへ接続し、spawn後5秒待機、`/play pit`、instance確認を経てIdleへ到達する。
+- `Disconnect`: Minecraft server sessionだけを切断し、Forge worker / bridgeは `LAUNCHED` のまま保持される。
+- Disconnect後の再 `Start`: 同じForge transportを再利用して再接続できる。
+- `Quit`: Forge workerを停止し、BotはDisconnectedへ揃う。
+- Start / Disconnectの連打、Start中のQuit、接続失敗後の復帰を手動確認。
+- Webの狭いカード幅で lifecycle buttons が見切れず折り返すことを確認。
+- Performance表示がNode processではなくHeadlessMC + Minecraft process treeのForge CPU/RSSを示し、MC pingをForge bridgeから取得することを確認。
+
+この挙動を固定するため、`test/forge-lifecycle.test.ts` に以下の回帰テストを追加した。
+
+- server Disconnect後もForge transportをcloseしない。
+- Disconnect後のStartで同じtransportを再利用する。
+- 再接続失敗時もForge transportを保持したままDisconnectedへ戻れる。
+- 二重Start / 二重Disconnectを状態エラーとして拒否する。
+
+### Codespacesでのローカル検証
+
+Backend + Node tests + Forge mod build:
+
+```bash
+cd /workspaces/BBot
+git pull --ff-only
+npm ci
+npm run validate:forge-local
+```
+
+Web:
+
+```bash
+cd /workspaces/BBot-Web
+git pull --ff-only
+npm ci
+npm test
+npm run build
+```
+
+実Minecraftを含む最終E2Eは、Backend/Web起動後に次の順で確認する。
+
+```text
+Launch
+→ Start
+→ Idle
+→ Disconnect
+→ Forge LAUNCHEDのまま
+→ Start
+→ Idle
+→ Disconnect
+→ Quit
+→ Forge STOPPED
+```
+
+2026-09-20時点ではGitHub Actionsの月間利用上限到達のため、BBot側Actionsの赤表示をコード品質の判定には使用していない。この検証ラウンドではCodespaces上のローカルbuild/testと上記手動E2Eを基準とする。
