@@ -1,0 +1,32 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven {
+            name = "forge"
+            url = "https://maven.minecraftforge.net/"
+        }
+    }
+    dependencies {
+        classpath "net.minecraftforge.gradle:ForgeGradle:2.1-SNAPSHOT"
+    }
+}
+
+apply plugin: "net.minecraftforge.gradle.forge"
+
+version = "0.1.0"
+group = "com.bbot.poc"
+archivesBaseName = "bbot-headless-poc"
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+compileJava {
+    options.encoding = "UTF-8"
+}
+
+minecraft {
+    version = "1.8.9-11.15.1.2318-1.8.9"
+    mappings = "stable_22"
+    runDir = "run"
+    makeObfSourceJar = false
+}
