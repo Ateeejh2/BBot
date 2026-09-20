@@ -309,6 +309,15 @@ public final class BBotHeadlessPoc {
             return;
         }
 
+        net.minecraft.block.Block previous = null;
+        if (mc.theWorld != null) {
+            try {
+                previous = mc.theWorld.getBlockState(pos).getBlock();
+            } catch (Throwable ignored) {
+                previous = null;
+            }
+        }
+
         JsonObject message = new JsonObject();
         message.addProperty("type", "event");
         message.addProperty("event", "blockUpdate");
@@ -318,8 +327,10 @@ public final class BBotHeadlessPoc {
         message.addProperty("stateId", Block.getStateId(state));
         bridge.emit(message);
 
-        if (state.getBlock() == Blocks.chest) {
+        if (state.getBlock() == Blocks.chest && previous != Blocks.chest) {
             emitBridgePositionEvent("chestAppeared", pos.getX(), pos.getY(), pos.getZ());
+        } else if (previous == Blocks.chest && state.getBlock() != Blocks.chest) {
+            emitBridgePositionEvent("chestDisappeared", pos.getX(), pos.getY(), pos.getZ());
         }
     }
 
