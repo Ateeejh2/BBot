@@ -380,6 +380,8 @@ public final class BBotHeadlessPoc {
                 emitSlimePadResponse(command);
             } else if ("getChunk".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
                 emitChunkResponse(command);
+            } else if ("getLoadedChunks".equals(type) && command.has("requestId")) {
+                emitLoadedChunksResponse(command);
             }
         }
     }
@@ -504,6 +506,47 @@ public final class BBotHeadlessPoc {
 
         response.addProperty("ok", true);
         response.add("blocks", blocks);
+        bridge.emit(response);
+    }
+
+    private void emitLoadedChunksResponse(JsonObject command) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", command.get("requestId").getAsString());
+        response.addProperty("kind", "loadedChunks");
+
+        if (mc.theWorld == null || mc.thePlayer == null) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "WORLD_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        int centerX = ((int) Math.floor(mc.thePlayer.posX)) >> 4;
+        int centerZ = ((int) Math.floor(mc.thePlayer.posZ)) >> 4;
+        // Client render distance is normally the loaded-world bound. Probe a
+        // generous radius so server/client edge chunks are included as well.
+        int radius = Math.max(8, Math.min(32, mc.gameSettings.renderDistanceChunks + 4));
+        JsonArray chunks = new JsonArray();
+
+        for (int x = centerX - radius; x <= centerX + radius; x++) {
+            for (int z = centerZ - radius; z <= centerZ + radius; z++) {
+                if (!mc.theWorld.getChunkProvider().chunkExists(x, z)) {
+                    continue;
+                }
+                JsonObject chunk = new JsonObject();
+                chunk.addProperty("x", x);
+                chunk.addProperty("z", z);
+                chunks.add(chunk);
+            }
+        }
+
+        response.addProperty("ok", true);
+        response.add("chunks", chunks);
         bridge.emit(response);
     }
 
