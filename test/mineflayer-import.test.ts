@@ -51,7 +51,7 @@ test('movement executor does not skip one-block jumps and replans after horizont
 
 test('sprint stays held across flat waypoints and movement cadence is traced', async () => {
   const source = await readFile('src/bot/mineflayer.ts','utf8');
-  assert.match(source,/const canSprint = aligned && !collided && !needsJump;/);
+  assert.match(source,/const canSprint = moveForward && !needsJump && \(aligned \|\| \(wasSprint && keepTurn\)\);/);
   assert.doesNotMatch(source,/canSprint = [^;]*horizontal >/);
   assert.match(source,/movementPacketTimes/);
   assert.match(source,/sprintActionTimes/);
