@@ -45,6 +45,7 @@ interface BridgeResponse {
   ok: boolean;
   error?: string;
   blocks?: Array<{ x?: unknown; y?: unknown; z?: unknown }>;
+  chunks?: Array<{ x?: unknown; z?: unknown }>;
   chunkX?: number;
   chunkZ?: number;
   sections?: Array<{ y?: unknown; states?: unknown }>;
@@ -206,6 +207,14 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     if (!response.ok || response.kind !== 'serverControl') {
       throw new Error(response.error === 'NOT_CONNECTED' ? 'NOT_CONNECTED' : 'SERVER_DISCONNECT_FAILED');
     }
+  };
+
+  const listLoadedPitChunks = async (signal:AbortSignal):Promise<Array<{x:number;z:number}>> => {
+    const response=await request({type:'getLoadedChunks'},signal,5000);
+    if(!response.ok||response.kind!=='loadedChunks'||!Array.isArray(response.chunks))return [];
+    return response.chunks.flatMap(value=>
+      isFiniteNumber(value.x)&&isFiniteNumber(value.z)?[{x:value.x,z:value.z}]:[]
+    );
   };
 
   const loadPitChunk = async (chunkX:number, chunkZ:number, signal:AbortSignal):Promise<PitChunkData|undefined> => {
@@ -645,7 +654,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if(horizontal<=range&&vertical<=1.5)return;
 
       const plannedAt=Date.now();
-      const plan=await sharedPitNavigation.plan(instanceId,start,target,loadPitChunk,signal,[...avoided.values()]);
+      const plan=await sharedPitNavigation.plan(
+        instanceId,start,target,loadPitChunk,signal,[...avoided.values()],listLoadedPitChunks
+      );
       events.diagnostic?.('pit path planned',{
         instanceId,
         fingerprint:plan.fingerprint,
