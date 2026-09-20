@@ -769,6 +769,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       let advanced=false;
       let replanRequested=false;
       let debounceUntil:number|undefined;
+      let checkedOverlayRevision=plan.overlayRevision;
       for(let waypointIndex=0;waypointIndex<plan.waypoints.length;waypointIndex++){
         const waypoint=plan.waypoints[waypointIndex]!;
         signal.throwIfAborted();
@@ -778,13 +779,21 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             0.7,
             signal,
             ()=>{
-              const relevant=overlayChanges.some(change=>
-                change.revision>plan.overlayRevision&&
-                pathChangeRelevant(change,plan.waypoints,waypointIndex)
-              );
-              if(!relevant){debounceUntil=undefined;return false;}
-              debounceUntil??=Date.now()+75;
-              return Date.now()>=debounceUntil;
+              const newChanges=overlayChanges.filter(change=>change.revision>checkedOverlayRevision);
+              if(newChanges.length){
+                let maxRevision=checkedOverlayRevision;
+                let relevant=false;
+                for(const change of newChanges){
+                  maxRevision=Math.max(maxRevision,change.revision);
+                  if(pathChangeRelevant(change,plan.waypoints,waypointIndex))relevant=true;
+                }
+                checkedOverlayRevision=maxRevision;
+                for(let i=overlayChanges.length-1;i>=0;i--){
+                  if(overlayChanges[i]!.revision<=checkedOverlayRevision)overlayChanges.splice(i,1);
+                }
+                if(relevant)debounceUntil??=Date.now()+75;
+              }
+              return debounceUntil!==undefined&&Date.now()>=debounceUntil;
             }
           );
           advanced=true;
