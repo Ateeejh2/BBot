@@ -17,6 +17,8 @@ export interface ForgeWorkerView {
   /** Aggregate resident memory for the HeadlessMC/Minecraft process tree. */
   rssMb?: number;
   processCount?: number;
+  /** Observed Forge startup milestone, 0..100. Present while launching and at ready. */
+  launchProgress?: number;
 }
 
 interface WorkerResourceSample {
@@ -186,8 +188,9 @@ export class ForgeWorkerSupervisor {
           };
         }
       }
-      const { botId, phase, bridgePort, lastError } = worker;
-      return { botId, phase, bridgePort, ...(lastError ? { lastError } : {}), ...resource };
+      const { botId, phase, bridgePort, lastError, launchProgress } = worker;
+      return { botId, phase, bridgePort, ...(lastError ? { lastError } : {}),
+        ...(launchProgress !== undefined ? { launchProgress } : {}), ...resource };
     });
   }
 
@@ -211,6 +214,7 @@ export class ForgeWorkerSupervisor {
     worker.phase = 'LAUNCHING';
     worker.lastError = undefined;
     worker.resourceSample = undefined;
+    worker.launchProgress = 5;
 
     const env: NodeJS.ProcessEnv = { ...process.env, BBOT_POC_BRIDGE_PORT: String(worker.bridgePort), BBOT_POC_AUTOTEST: 'false' };
     const resolvedJava8 = java8Home(this.config);
@@ -243,8 +247,16 @@ export class ForgeWorkerSupervisor {
       const inspect = (chunk: Buffer | string) => {
         output += chunk.toString();
         if (output.length > 32_768) output = output.slice(-16_384);
+        const advance = (value:number) => {
+          worker.launchProgress = Math.max(worker.launchProgress ?? 0, Math.min(100, value));
+        };
+        advance(10);
+        if (/launch\s+forge:1\.8\.9/i.test(output)) advance(30);
+        if (/minecraft forge|forge mod loader|\bfml\b|forge.*1\.8\.9/i.test(output)) advance(55);
+        if (/bbotheadlesspoc|bbot headless poc|\[bbotpoc\].*ready/i.test(output)) advance(85);
         const marker = `bridge listening on 127.0.0.1:${worker.bridgePort}`;
         if (!output.includes(marker)) return;
+        worker.launchProgress = 100;
         worker.phase = 'LAUNCHED';
         worker.lastError = undefined;
         this.logger.log('info', 'forge worker launched', { botId, bridgePort: worker.bridgePort });
@@ -261,6 +273,7 @@ export class ForgeWorkerSupervisor {
       child.once('error', () => {
         worker.child = undefined;
         worker.resourceSample = undefined;
+        worker.launchProgress = undefined;
         worker.phase = 'STOPPED';
         fail('WORKER_LAUNCH_FAILED');
       });
@@ -268,6 +281,7 @@ export class ForgeWorkerSupervisor {
         const wasLaunching = worker.phase === 'LAUNCHING';
         worker.child = undefined;
         worker.resourceSample = undefined;
+        worker.launchProgress = undefined;
         worker.phase = 'STOPPED';
         this.logger.log('info', 'forge worker stopped', { botId, bridgePort: worker.bridgePort });
         if (wasLaunching) fail(worker.lastError ?? 'WORKER_LAUNCH_FAILED');
@@ -279,6 +293,7 @@ export class ForgeWorkerSupervisor {
           return;
         }
         child.stdin.write(LAUNCH_COMMAND);
+        worker.launchProgress = Math.max(worker.launchProgress ?? 0, 20);
       }, 250).unref();
     });
   }
@@ -304,6 +319,7 @@ export class ForgeWorkerSupervisor {
     }
     worker.child = undefined;
     worker.resourceSample = undefined;
+    worker.launchProgress = undefined;
     worker.phase = 'STOPPED';
     worker.lastError = undefined;
   }
@@ -336,6 +352,7 @@ export class ForgeWorkerSupervisor {
     }
     worker.child = undefined;
     worker.resourceSample = undefined;
+    worker.launchProgress = undefined;
     worker.phase = 'STOPPED';
   }
 }
