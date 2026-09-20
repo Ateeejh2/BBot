@@ -1,0 +1,51 @@
+name: Build Headless Forge PoC
+
+on:
+  push:
+    branches:
+      - experiment/headless-forge-1.8.9
+    paths:
+      - "poc/headless-forge-1.8.9/**"
+      - ".github/workflows/headless-forge-poc.yml"
+    paths-ignore:
+      - "poc/headless-forge-1.8.9/dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/headless-forge-1.8.9
+
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Build Forge 1.8.9 PoC
+        working-directory: poc/headless-forge-1.8.9
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build.sh
+
+      - name: Store built mod on experiment branch
+        run: |
+          mkdir -p poc/headless-forge-1.8.9/dist
+          cp poc/headless-forge-1.8.9/build/libs/bbot-headless-poc-0.1.0.jar \
+             poc/headless-forge-1.8.9/dist/bbot-headless-poc-0.1.0.jar
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f poc/headless-forge-1.8.9/dist/bbot-headless-poc-0.1.0.jar
+          if git diff --cached --quiet; then
+            echo "Built jar is unchanged"
+          else
+            git commit -m "build(poc): publish Forge 1.8.9 test mod"
+            git push
+          fi
