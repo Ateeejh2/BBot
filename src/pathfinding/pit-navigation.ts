@@ -40,19 +40,24 @@ const HAZARDOUS_FLOOR_IDS = new Set([8,9,10,11,30,51,81]);
 export class PitNavigationService {
   readonly cache: PitMapCache<TerrainGraph>;
   private readonly anchors = new Map<string,{x:number;z:number}>();
+  private readonly instanceUsers = new Map<string,number>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
   }
 
-  bindHint(instanceId: string): void {
-    // Instance binding is established lazily after a terrain fingerprint is observed.
-    // This method exists so transports can make the intended lifecycle explicit.
-    void instanceId;
+  retainInstance(instanceId:string):void {
+    const key=instanceId.toLowerCase();
+    this.instanceUsers.set(key,(this.instanceUsers.get(key)??0)+1);
   }
 
-  unbind(instanceId: string): void {
+  releaseInstance(instanceId:string):void {
+    const key=instanceId.toLowerCase();
+    const next=(this.instanceUsers.get(key)??0)-1;
+    if(next>0){this.instanceUsers.set(key,next);return;}
+    this.instanceUsers.delete(key);
     this.cache.unbind(instanceId);
+    this.anchors.delete(key);
   }
 
   invalidate(instanceId: string): void {
