@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node scripts/run-tests.mjs",
+    "validate:forge-local": "npm test && bash poc/headless-forge-1.8.9/scripts/build.sh",
     "start": "node dist/src/index.js",
     "start:mock": "node dist/src/index.js --mock",
     "test:soak": "npm run build && node dist/scripts/soak.js",
