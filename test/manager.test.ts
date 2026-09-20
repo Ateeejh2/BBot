@@ -18,9 +18,13 @@ class ControlledTransport implements BotTransport {
   launches: Array<Pick<Position,'x'|'z'>> = [];
   launchCompletions: Array<'LAUNCH'|'LANDING'> = [];
   navigations: Position[] = [];
+  serverConnections: Array<{host:string;port:number}> = [];
+  serverDisconnects = 0;
   constructor(readonly events: TransportEvents) {}
   position() { return { x: 0, y: 64, z: 0 }; }
   chat(command: string) { this.commands.push(command); }
+  async connectServer(host: string, port: number) { this.serverConnections.push({host,port}); }
+  async disconnectServer() { this.serverDisconnects++; }
   navigate(target: Position, signal: AbortSignal) { this.navigations.push({...target}); return this.navigation(target, signal); }
   launchToward(target: Pick<Position,'x'|'z'>, signal: AbortSignal, completion: 'LAUNCH'|'LANDING' = 'LANDING') { this.launches.push({...target}); this.launchCompletions.push(completion); return this.launcher(target,signal,completion); }
   stopPath() { this.stopped++; }
@@ -91,6 +95,36 @@ test('Forge API mode can attach a stopped bot without an account assignment', ()
   f.manager.connectBot('bot-1');
   assert.equal(f.connections.length, 1);
   assert.equal(f.manager.views()[0]?.state, 'CONNECTING');
+  f.manager.stop();
+});
+
+test('Forge Start connects selected server, waits five seconds after spawn, then confirms Pit instance', async () => {
+  const f = fixture(1, new MockTaskHandler(), true);
+  f.config.mode = 'live';
+  f.config.transport = 'forge';
+
+  f.manager.startServer('bot-1', 'mc.example.test', 25565);
+  const t = f.connections[0]!;
+  await delay(0);
+  assert.deepEqual(t.serverConnections, [{ host: 'mc.example.test', port: 25565 }]);
+  assert.equal(f.manager.views()[0]?.state, 'CONNECTING');
+
+  t.events.spawn();
+  assert.equal(f.manager.views()[0]?.state, 'LOBBY');
+  f.tick(4999);
+  assert.deepEqual(t.commands, []);
+  f.tick(5000);
+  assert.deepEqual(t.commands, ['/play pit']);
+  assert.equal(f.manager.views()[0]?.state, 'JOINING_PIT');
+
+  f.join(t, 'forge-auto');
+  assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE');
+  assert.equal(f.manager.views()[0]?.instanceId, 'forge-auto');
+
+  await f.manager.disconnectServer('bot-1');
+  assert.equal(t.serverDisconnects, 1);
+  assert.equal(t.closed, true);
+  assert.equal(f.manager.views()[0]?.state, 'DISCONNECTED');
   f.manager.stop();
 });
 
