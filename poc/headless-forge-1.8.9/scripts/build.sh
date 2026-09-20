@@ -40,8 +40,8 @@ GRADLE="$GRADLE_HOME/bin/gradle"
 cd "$ROOT"
 
 if [[ ! -f ".poc-workspace-ready" ]]; then
-  echo "[BBotPoC] preparing Forge 1.8.9 workspace (first run only)"
-  "$GRADLE" --no-daemon setupDecompWorkspace
+  echo "[BBotPoC] preparing Forge 1.8.9 CI workspace (first run only; skips legacy asset download)"
+  "$GRADLE" --no-daemon setupCIWorkspace
   touch ".poc-workspace-ready"
 fi
 
