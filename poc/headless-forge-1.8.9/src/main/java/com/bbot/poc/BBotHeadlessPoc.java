@@ -1,12 +1,21 @@
 package com.bbot.poc;
 
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandlerContext;
+import java.lang.reflect.Field;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
+import net.minecraft.entity.SharedMonsterAttributes;
+import net.minecraft.network.NetworkManager;
+import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
+import net.minecraftforge.fml.common.network.FMLNetworkEvent;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -56,6 +65,7 @@ public final class BBotHeadlessPoc {
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(this);
+        FMLCommonHandler.instance().bus().register(this);
         LOG.info(
             "[BBotPoC] ready warmup={} walk={} sprint={} traceEvery={}",
             warmupTicks,
@@ -63,6 +73,11 @@ public final class BBotHeadlessPoc {
             sprintTicks,
             traceEveryTicks
         );
+    }
+
+    @SubscribeEvent
+    public void onClientConnected(FMLNetworkEvent.ClientConnectedToServerEvent event) {
+        installInboundPositionTrace(event.manager);
     }
 
     @SubscribeEvent
@@ -85,7 +100,7 @@ public final class BBotHeadlessPoc {
         hadWorld = true;
         totalTicks++;
 
-        tracePositionJump();
+        traceLargeClientStep();
 
         switch (phase) {
             case WAITING_FOR_WORLD:
@@ -121,6 +136,68 @@ public final class BBotHeadlessPoc {
         }
     }
 
+    private void installInboundPositionTrace(final NetworkManager manager) {
+        try {
+            final Channel channel = findChannel(manager);
+            if (channel == null) {
+                LOG.warn("[BBotPoC] could not find NetworkManager channel; S08 trace unavailable");
+                return;
+            }
+
+            final String handlerName = "bbot_poc_s08_trace";
+            if (channel.pipeline().get(handlerName) != null) {
+                return;
+            }
+
+            channel.pipeline().addBefore("packet_handler", handlerName, new ChannelDuplexHandler() {
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                    if (msg instanceof S08PacketPlayerPosLook) {
+                        S08PacketPlayerPosLook packet = (S08PacketPlayerPosLook) msg;
+                        double playerX = mc.thePlayer == null ? Double.NaN : mc.thePlayer.posX;
+                        double playerY = mc.thePlayer == null ? Double.NaN : mc.thePlayer.posY;
+                        double playerZ = mc.thePlayer == null ? Double.NaN : mc.thePlayer.posZ;
+
+                        LOG.warn(
+                            "[BBotPoC] server-pos-look raw={},{},{} yaw={} pitch={} flags={} clientBefore={},{},{}",
+                            round3(packet.getX()),
+                            round3(packet.getY()),
+                            round3(packet.getZ()),
+                            round3(packet.getYaw()),
+                            round3(packet.getPitch()),
+                            packet.func_179834_f(),
+                            round3(playerX),
+                            round3(playerY),
+                            round3(playerZ)
+                        );
+                    }
+
+                    super.channelRead(ctx, msg);
+                }
+            });
+
+            LOG.info("[BBotPoC] installed passive S08 position trace");
+        } catch (Throwable t) {
+            LOG.warn("[BBotPoC] failed to install passive S08 position trace", t);
+        }
+    }
+
+    private static Channel findChannel(NetworkManager manager) throws IllegalAccessException {
+        for (Field field : NetworkManager.class.getDeclaredFields()) {
+            if (!Channel.class.isAssignableFrom(field.getType())) {
+                continue;
+            }
+
+            field.setAccessible(true);
+            Object value = field.get(manager);
+            if (value instanceof Channel) {
+                return (Channel) value;
+            }
+        }
+
+        return null;
+    }
+
     private void transitionTo(Phase next) {
         phase = next;
         phaseTicks = 0;
@@ -153,7 +230,7 @@ public final class BBotHeadlessPoc {
         havePreviousPosition = false;
     }
 
-    private void tracePositionJump() {
+    private void traceLargeClientStep() {
         double x = mc.thePlayer.posX;
         double y = mc.thePlayer.posY;
         double z = mc.thePlayer.posZ;
@@ -164,9 +241,9 @@ public final class BBotHeadlessPoc {
             double dz = z - previousZ;
             double horizontal = Math.sqrt(dx * dx + dz * dz);
 
-            if (horizontal > 0.75D || Math.abs(dy) > 1.0D) {
+            if (horizontal > 2.0D || Math.abs(dy) > 1.0D) {
                 LOG.warn(
-                    "[BBotPoC] position-jump phase={} dh={} dy={} from={},{},{} to={},{},{}",
+                    "[BBotPoC] large-client-step phase={} dh={} dy={} from={},{},{} to={},{},{}",
                     phase,
                     round3(horizontal),
                     round3(dy),
@@ -191,8 +268,12 @@ public final class BBotHeadlessPoc {
             return;
         }
 
+        double movementSpeed = mc.thePlayer
+            .getEntityAttribute(SharedMonsterAttributes.movementSpeed)
+            .getAttributeValue();
+
         LOG.info(
-            "[BBotPoC] {} phase={} tick={} pos={},{},{} vel={},{},{} yaw={} ground={} sprint={} collidedH={}",
+            "[BBotPoC] {} phase={} tick={} pos={},{},{} vel={},{},{} yaw={} ground={} sprint={} collidedH={} allowFly={} flying={} moveAttr={}",
             reason,
             phase,
             totalTicks,
@@ -205,7 +286,10 @@ public final class BBotHeadlessPoc {
             round3(mc.thePlayer.rotationYaw),
             mc.thePlayer.onGround,
             mc.thePlayer.isSprinting(),
-            mc.thePlayer.isCollidedHorizontally
+            mc.thePlayer.isCollidedHorizontally,
+            mc.thePlayer.capabilities.allowFlying,
+            mc.thePlayer.capabilities.isFlying,
+            round3(movementSpeed)
         );
     }
 
