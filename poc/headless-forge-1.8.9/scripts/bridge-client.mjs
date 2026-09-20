@@ -12,7 +12,8 @@ if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
 const controls = {
   forward: false,
   sprint: false,
-  sneak: false
+  sneak: false,
+  jump: false
 };
 
 let stateCount = 0;
@@ -30,6 +31,7 @@ function printHelp() {
       '  forward on|off',
       '  sprint on|off',
       '  sneak on|off',
+      '  jump on|off',
       '  look <yaw> <pitch>',
       '  chat <message>',
       '  release',
@@ -107,7 +109,7 @@ rl.on('line', line => {
 
   const [command, ...args] = trimmed.split(/\s+/);
 
-  if (command === 'forward' || command === 'sprint' || command === 'sneak') {
+  if (command === 'forward' || command === 'sprint' || command === 'sneak' || command === 'jump') {
     const enabled = parseToggle(args[0]);
     if (enabled === undefined) {
       process.stdout.write(`Usage: ${command} on|off\n`);
@@ -146,6 +148,7 @@ rl.on('line', line => {
     controls.forward = false;
     controls.sprint = false;
     controls.sneak = false;
+    controls.jump = false;
     send(socket, { type: 'release' });
     return;
   }
