@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -12,13 +12,64 @@ export interface ForgeWorkerView {
   phase: ForgeWorkerPhase;
   bridgePort: number;
   lastError?: string;
+  /** Aggregate CPU usage for the HeadlessMC/Minecraft process group. 100% = one full CPU core. */
+  cpuPercent?: number;
+  /** Aggregate resident memory for the HeadlessMC/Minecraft process group. */
+  rssMb?: number;
+  processCount?: number;
+}
+
+interface WorkerResourceSample {
+  at: number;
+  cpuTicks: number;
+  cpuPercent: number;
+  rssMb: number;
+  processCount: number;
 }
 
 interface WorkerRecord extends ForgeWorkerView {
   child?: ChildProcessWithoutNullStreams;
+  resourceSample?: WorkerResourceSample;
 }
 
 const LAUNCH_COMMAND = 'launch forge:1.8.9 -specifics -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
+
+function processGroupSample(groupId: number): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
+  if (process.platform !== 'linux') return undefined;
+  let cpuTicks = 0;
+  let rssKb = 0;
+  let processCount = 0;
+
+  let entries: string[];
+  try { entries = readdirSync('/proc'); } catch { return undefined; }
+
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+      const close = stat.lastIndexOf(')');
+      if (close < 0) continue;
+      const fields = stat.slice(close + 2).trim().split(/\s+/);
+      // fields starts at proc stat field 3 (state): pgrp=field 5, utime=14, stime=15.
+      if (Number(fields[2]) !== groupId) continue;
+      const utime = Number(fields[11]);
+      const stime = Number(fields[12]);
+      if (Number.isFinite(utime)) cpuTicks += utime;
+      if (Number.isFinite(stime)) cpuTicks += stime;
+
+      const status = readFileSync(`/proc/${entry}/status`, 'utf8');
+      const rss = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
+      if (rss) rssKb += Number(rss[1]);
+      processCount++;
+    } catch {
+      // Processes can disappear while /proc is being sampled.
+    }
+  }
+
+  return processCount ? { cpuTicks, rssMb: rssKb / 1024, processCount } : undefined;
+}
+
+const LINUX_CLOCK_TICKS = 100;
 
 function java8Home(config: Config): string | undefined {
   if (config.forge.java8Home && existsSync(join(config.forge.java8Home, 'bin', 'java'))) return config.forge.java8Home;
@@ -70,9 +121,37 @@ export class ForgeWorkerSupervisor {
   }
 
   snapshot(): ForgeWorkerView[] {
-    return [...this.workers.values()].map(({ botId, phase, bridgePort, lastError }) => ({
-      botId, phase, bridgePort, ...(lastError ? { lastError } : {})
-    }));
+    const now = Date.now();
+    return [...this.workers.values()].map(worker => {
+      const childPid = worker.child?.pid;
+      let resource: Pick<ForgeWorkerView, 'cpuPercent' | 'rssMb' | 'processCount'> = {};
+      if (childPid && worker.phase !== 'STOPPED') {
+        const raw = processGroupSample(childPid);
+        if (raw) {
+          const previous = worker.resourceSample;
+          let cpuPercent = previous?.cpuPercent ?? 0;
+          if (previous && now > previous.at && raw.cpuTicks >= previous.cpuTicks) {
+            const elapsedSeconds = (now - previous.at) / 1000;
+            cpuPercent = ((raw.cpuTicks - previous.cpuTicks) / LINUX_CLOCK_TICKS / elapsedSeconds) * 100;
+          }
+          const oneDecimal = (value: number) => Math.round(value * 10) / 10;
+          worker.resourceSample = {
+            at: now,
+            cpuTicks: raw.cpuTicks,
+            cpuPercent: oneDecimal(Math.max(0, cpuPercent)),
+            rssMb: oneDecimal(Math.max(0, raw.rssMb)),
+            processCount: raw.processCount
+          };
+          resource = {
+            cpuPercent: worker.resourceSample.cpuPercent,
+            rssMb: worker.resourceSample.rssMb,
+            processCount: worker.resourceSample.processCount
+          };
+        }
+      }
+      const { botId, phase, bridgePort, lastError } = worker;
+      return { botId, phase, bridgePort, ...(lastError ? { lastError } : {}), ...resource };
+    });
   }
 
   isLaunched(botId: string): boolean {
@@ -94,6 +173,7 @@ export class ForgeWorkerSupervisor {
 
     worker.phase = 'LAUNCHING';
     worker.lastError = undefined;
+    worker.resourceSample = undefined;
 
     const env: NodeJS.ProcessEnv = { ...process.env, BBOT_POC_BRIDGE_PORT: String(worker.bridgePort), BBOT_POC_AUTOTEST: 'false' };
     const resolvedJava8 = java8Home(this.config);
@@ -143,12 +223,14 @@ export class ForgeWorkerSupervisor {
       child.stderr.on('data', inspect);
       child.once('error', () => {
         worker.child = undefined;
+        worker.resourceSample = undefined;
         worker.phase = 'STOPPED';
         fail('WORKER_LAUNCH_FAILED');
       });
       child.once('exit', () => {
         const wasLaunching = worker.phase === 'LAUNCHING';
         worker.child = undefined;
+        worker.resourceSample = undefined;
         worker.phase = 'STOPPED';
         this.logger.log('info', 'forge worker stopped', { botId, bridgePort: worker.bridgePort });
         if (wasLaunching) fail(worker.lastError ?? 'WORKER_LAUNCH_FAILED');
@@ -184,6 +266,7 @@ export class ForgeWorkerSupervisor {
       if (!(await waitForExit(child, 3000))) this.killGroup(child, 'SIGKILL');
     }
     worker.child = undefined;
+    worker.resourceSample = undefined;
     worker.phase = 'STOPPED';
     worker.lastError = undefined;
   }
@@ -215,6 +298,7 @@ export class ForgeWorkerSupervisor {
       if (!(await waitForExit(child, 3000))) this.killGroup(child, 'SIGKILL');
     }
     worker.child = undefined;
+    worker.resourceSample = undefined;
     worker.phase = 'STOPPED';
   }
 }
