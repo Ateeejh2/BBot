@@ -691,17 +691,19 @@ export class BotManager {
     const bot=candidates.find(value=>value.id===source.id)??candidates[0];
     if(!bot)return;
     const transport=bot.transport!;
-    const expiresAt=this.carePackages.expiresAt(bot.instanceId!,timestamp);
+    const instanceId=bot.instanceId;
+    if(!instanceId)return;
+    const expiresAt=this.carePackages.expiresAt(instanceId,timestamp);
     const existing=bot.carePackage;
-    if(!existing||existing.timestamp!==timestamp||existing.instanceId!==bot.instanceId){
-      bot.carePackage={timestamp,instanceId:bot.instanceId,target:{...target},expiresAt};
+    if(!existing||existing.timestamp!==timestamp||existing.instanceId!==instanceId){
+      bot.carePackage={timestamp,instanceId,target:{...target},expiresAt};
     }else{
       existing.target={...target};existing.expiresAt=expiresAt;
     }
     const preparation:EventPreparation={timestamp,generation:bot.generation.current,abort:new AbortController(),
       expiresAt,chestEvent:bot.carePackage?.chestEvent};
     bot.preparation=preparation; bot.machine.transition('PREPARING_EVENT');
-    this.carePackages.markLaunch(bot.instanceId!,timestamp,'LAUNCHING');
+    this.carePackages.markLaunch(instanceId,timestamp,'LAUNCHING');
     this.log(bot,'care package launch started',{scheduledAt:timestamp,targetX:target.x,targetZ:target.z});
     void transport.launchToward!({x:target.x,z:target.z},preparation.abort.signal,'LANDING').then(()=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
