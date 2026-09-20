@@ -170,10 +170,24 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
   const key=chunkKey(chunk.chunkX,chunk.chunkZ);
   if(graph.chunks.has(key))return;
   graph.chunks.set(key,chunk);
+  const sectionMap=new Map(chunk.sections.map(section=>[section.y,section.states] as const));
+  const sectionYs=[...sectionMap.keys()];
+  if(!sectionYs.length)return;
+  const minY=Math.max(1,Math.min(...sectionYs)*16);
+  const maxY=Math.min(254,Math.max(...sectionYs)*16+18);
   const minX=chunk.chunkX*16,minZ=chunk.chunkZ*16;
+  const state=(lx:number,y:number,lz:number):number=>{
+    if(y<0||y>255)return 0;
+    const section=sectionMap.get(y>>4);
+    if(!section)return 0;
+    return section[((y&15)*256)+(lz*16)+lx]??0;
+  };
   for(let lx=0;lx<16;lx++)for(let lz=0;lz<16;lz++){
-    for(let y=1;y<255;y++){
-      if(!standable(chunk,lx,y,lz))continue;
+    for(let y=minY;y<=maxY;y++){
+      const feet=state(lx,y,lz),head=state(lx,y+1,lz),floor=state(lx,y-1,lz);
+      if(!isPassable(feet)||!isPassable(head))continue;
+      const floorId=floor>>>4;
+      if(floor===0||isPassable(floor)||HAZARDOUS_FLOOR_IDS.has(floorId))continue;
       const node={x:minX+lx,y,z:minZ+lz};
       const nKey=nodeKey(node.x,node.y,node.z);
       graph.nodes.set(nKey,node);
@@ -183,21 +197,6 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
       ys.add(node.y);
     }
   }
-}
-
-function standable(chunk:PitChunkData,lx:number,y:number,lz:number):boolean {
-  const feet=stateAt(chunk,lx,y,lz),head=stateAt(chunk,lx,y+1,lz),floor=stateAt(chunk,lx,y-1,lz);
-  if(!isPassable(feet)||!isPassable(head))return false;
-  const floorId=floor>>>4;
-  return floor!==0&&!isPassable(floor)&&!HAZARDOUS_FLOOR_IDS.has(floorId);
-}
-
-function stateAt(chunk:PitChunkData,lx:number,y:number,lz:number):number {
-  if(y<0||y>255)return 0;
-  const section=chunk.sections.find(value=>value.y===(y>>4));
-  if(!section)return 0;
-  const index=((y&15)*256)+(lz*16)+lx;
-  return section.states[index]??0;
 }
 
 function isPassable(state:number):boolean {
