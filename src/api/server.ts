@@ -10,6 +10,7 @@ import { safeKickReason, type Logger } from '../logging/logger.js';
 import type { ControlStore } from '../runtime/control.js';
 import { RuntimePerformanceMonitor } from '../runtime/performance.js';
 import type { CarePackageSchedule } from '../events/brooke.js';
+import type { ForgeWorkerSupervisor } from '../forge/worker-supervisor.js';
 
 function runtimeViewerUrl(config: Config): string | undefined {
   try {
@@ -50,7 +51,8 @@ function manualJob(value: unknown, now: number): GameEvent {
 }
 
 // Only fixed, operator-facing fields cross the API boundary. Never serialize transports or config.
-export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore, carePackages?: CarePackageSchedule) {
+export function createManagementApi(manager: BotManager, config: Config, logger: Logger, controls?: ControlStore,
+  carePackages?: CarePackageSchedule, forgeWorkers?: ForgeWorkerSupervisor) {
   const origin = config.api.origin!;
   const performance = new RuntimePerformanceMonitor();
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
@@ -89,7 +91,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   });
   const snapshot = () => {
     const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
-    return { version: 1, transport: config.transport, bots: manager.views(),
+    return { version: 1, transport: config.transport, forgeWorkers: forgeWorkers?.snapshot() ?? [], bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
@@ -128,6 +130,9 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       send(res, 200, { challenge: controls.getAuthChallenge(authChallenge[1]!) ?? null });
       return;
     }
+    const forgeAction = forgeWorkers
+      ? /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(launch|quit|start|disconnect)$/.exec(req.url ?? '')
+      : null;
     const match = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/actions\/(connect|join-pit|disconnect|test-launch-pad|test-care-package|oof)$/.exec(req.url ?? '');
     const fleetAction = /^\/api\/v1\/fleet\/actions\/(start-assigned|stop-all)$/.exec(req.url ?? '');
     const assignment = /^\/api\/v1\/bots\/(bot-[1-9]\d*)\/account$/.exec(req.url ?? '');
@@ -152,7 +157,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       return;
     }
     const fleetWrite = !!controls && req.method === 'POST' && !!fleetAction;
-    if (!(req.method === 'POST' && match) && !settingsWrite && !movementDebugWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite && !jobWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
+    if (!(req.method === 'POST' && (match || forgeAction)) && !settingsWrite && !movementDebugWrite && !accountWrite && !assignmentWrite && !retryWrite && !sessionTokenWrite && !fleetWrite && !jobWrite) { send(res, 404, { error: 'NOT_FOUND' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { send(res, 415, { error: 'CONTENT_TYPE' }); return; }
     let size = 0, body = '';
     const bodyLimit = accountWrite || sessionTokenWrite ? 8192 : jobWrite ? 2048 : 1024;
@@ -190,6 +195,28 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         }
         if (JSON.stringify(data) !== '{}') throw Error('INVALID_INPUT');
         if (controls?.busy) throw Error('CONFLICT');
+        if (forgeAction) {
+          const [, id, action] = forgeAction;
+          if (action === 'launch') {
+            const operation = forgeWorkers!.launch(id!);
+            broadcast();
+            await operation;
+          } else if (action === 'quit') {
+            const view = manager.views().find(bot => bot.id === id);
+            if (view && (view.state !== 'DISCONNECTED' || view.startQueued)) manager.disconnectBot(id!);
+            const operation = forgeWorkers!.quit(id!);
+            broadcast();
+            await operation;
+          } else if (action === 'start') {
+            if (!forgeWorkers!.isLaunched(id!)) throw Error('WORKER_NOT_LAUNCHED');
+            const server = controls?.getServer() ?? { host: config.host, port: config.port };
+            manager.startServer(id!, server.host, server.port);
+          } else {
+            if (!forgeWorkers!.isLaunched(id!)) throw Error('WORKER_NOT_LAUNCHED');
+            await manager.disconnectServer(id!);
+          }
+          broadcast(); send(res, 200, snapshot()); return;
+        }
         const [, id, action] = match!;
         if (action === 'connect') {
           await controls?.prepareBotStart(id!);
@@ -203,9 +230,12 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         broadcast(); send(res, 200, snapshot());
       } catch (error) {
         const code = error instanceof Error ? error.message : '';
-        const status = code === 'INVALID_INPUT' ? 400 : ['UNSUPPORTED_AUTH','UNSUPPORTED_ACTION','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED'].includes(code) ? 422 :
+        const status = code === 'INVALID_INPUT' ? 400 :
+          ['UNSUPPORTED_AUTH','UNSUPPORTED_ACTION','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED','WORKER_NOT_BOOTSTRAPPED'].includes(code) ? 422 :
           ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
-          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH', 'JOB_REJECTED'].includes(code) ? 409 : 500;
+          ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH', 'JOB_REJECTED',
+           'WORKER_NOT_LAUNCHED', 'WORKER_RUNTIME_BUSY', 'ALREADY_CONNECTED', 'NOT_CONNECTED'].includes(code) ? 409 :
+          ['WORKER_LAUNCH_FAILED', 'WORKER_LAUNCH_TIMEOUT', 'SERVER_CONNECT_FAILED', 'SERVER_DISCONNECT_FAILED'].includes(code) ? 503 : 500;
         if (code === 'SESSION_AUTH_REQUIRED') broadcast();
         send(res, status, { error: status === 500 ? 'INTERNAL_ERROR' : code });
       }
