@@ -140,6 +140,55 @@ export BBOT_POC_TRACE_EVERY_TICKS=20
 ./scripts/run-hmc.sh
 ```
 
+## Localhost bridge
+
+PoCにはNode ↔ Forgeの最小bridgeがあります。Forge側は `127.0.0.1:3010` にだけbindし、外部インターフェースへは公開しません。
+
+Forgeはbridgeへ現在のposition / yaw / pitch / onGround / sprint / collision / flight stateをJSON Linesで送ります。Node側からはforward / sprint / sneak / look / chatを送れます。
+
+Forge起動・サーバー接続後、別ターミナルで:
+
+```bash
+cd /workspaces/BBot/poc/headless-forge-1.8.9
+node scripts/bridge-client.mjs
+```
+
+対話クライアントでは:
+
+```text
+forward on
+forward off
+sprint on
+sprint off
+sneak on
+sneak off
+look -90 0
+chat hello
+release
+quit
+```
+
+最初の `controls` コマンドを受けると、そのworldでは自動PoC movementを停止し、bridgeがKeyBindingを制御します。`release` やbridge切断時はキーを解放しますが、自動テストは勝手に再開しません。worldを抜けるとこの状態はリセットされます。
+
+ポートを変える場合はForgeとNode側で同じ値を指定します。
+
+```bash
+export BBOT_POC_BRIDGE_PORT=3011
+./scripts/run-hmc.sh
+```
+
+別ターミナル:
+
+```bash
+BBOT_POC_BRIDGE_PORT=3011 node scripts/bridge-client.mjs
+```
+
+bridge自体を無効にする場合:
+
+```bash
+BBOT_POC_BRIDGE_ENABLED=false ./scripts/run-hmc.sh
+```
+
 ## Headless render最適化
 
 接続中はデフォルトで `Minecraft.skipRenderWorld=true` を維持し、Minecraft本体のworld renderをスキップします。
@@ -177,4 +226,4 @@ Minecraft側はHeadlessMC/hmc-specificsの `quit` command、またはプロセ�
 - 半ブロックからの移動でも同じ問題が再現しない
 - OCI上のRAM/CPUが許容範囲
 
-このPoCが安定した場合のみ、次段階で既存 `BotTransport` とForge側のlocalhost bridgeを設計します。
+次段階ではこのlocalhost bridgeを既存 `BotTransport` のForge実装へ接続し、Web/API側の契約を維持したままMineflayer transportを置き換えます。
