@@ -33,6 +33,7 @@ public final class BBotHeadlessPoc {
     public static final String VERSION = "0.1.0";
 
     private static final Logger LOG = LogManager.getLogger(NAME);
+    private static final int DEFAULT_DESCEND_TICKS = 60;
     private static final int DEFAULT_WARMUP_TICKS = 300;
     private static final int DEFAULT_WALK_TICKS = 200;
     private static final int DEFAULT_SPRINT_TICKS = 200;
@@ -40,6 +41,8 @@ public final class BBotHeadlessPoc {
 
     private enum Phase {
         WAITING_FOR_WORLD,
+        DESCEND,
+        WAITING_FOR_GROUND,
         WARMUP,
         WALK,
         SPRINT,
@@ -57,6 +60,7 @@ public final class BBotHeadlessPoc {
     private double previousY;
     private double previousZ;
 
+    private final int descendTicks = envInt("BBOT_POC_DESCEND_TICKS", DEFAULT_DESCEND_TICKS);
     private final int warmupTicks = envInt("BBOT_POC_WARMUP_TICKS", DEFAULT_WARMUP_TICKS);
     private final int walkTicks = envInt("BBOT_POC_WALK_TICKS", DEFAULT_WALK_TICKS);
     private final int sprintTicks = envInt("BBOT_POC_SPRINT_TICKS", DEFAULT_SPRINT_TICKS);
@@ -67,7 +71,8 @@ public final class BBotHeadlessPoc {
         MinecraftForge.EVENT_BUS.register(this);
         FMLCommonHandler.instance().bus().register(this);
         LOG.info(
-            "[BBotPoC] ready warmup={} walk={} sprint={} traceEvery={}",
+            "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={}",
+            descendTicks,
             warmupTicks,
             walkTicks,
             sprintTicks,
@@ -104,7 +109,22 @@ public final class BBotHeadlessPoc {
 
         switch (phase) {
             case WAITING_FOR_WORLD:
-                transitionTo(Phase.WARMUP);
+                transitionTo(Phase.DESCEND);
+                break;
+            case DESCEND:
+                setMovement(false, false);
+                setSneak(true);
+                if (++phaseTicks >= descendTicks) {
+                    setSneak(false);
+                    transitionTo(Phase.WAITING_FOR_GROUND);
+                }
+                break;
+            case WAITING_FOR_GROUND:
+                setMovement(false, false);
+                setSneak(false);
+                if (!mc.thePlayer.capabilities.isFlying && mc.thePlayer.onGround) {
+                    transitionTo(Phase.WARMUP);
+                }
                 break;
             case WARMUP:
                 setMovement(false, false);
@@ -215,12 +235,17 @@ public final class BBotHeadlessPoc {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), sprint);
     }
 
+    private void setSneak(boolean sneak) {
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindSneak.getKeyCode(), sneak);
+    }
+
     private void releaseMovementKeys() {
         if (mc.gameSettings == null) {
             return;
         }
 
         setMovement(false, false);
+        setSneak(false);
     }
 
     private void resetTest() {
