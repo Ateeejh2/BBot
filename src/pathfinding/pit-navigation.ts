@@ -285,7 +285,6 @@ export class PitNavigationService {
       }
       if(queue.length===0)onScanProgress?.(0,0);
       overlay.revision++;
-      overlay.signature=overlaySignature(overlay);
       this.overlayReady.add(instanceKey);
       this.cache.setGraph(fingerprint, graph, now);
       return {graph,cacheStatus:'FULL_SCAN',previousFingerprint:existingFingerprint};
