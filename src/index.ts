@@ -40,7 +40,10 @@ async function main(): Promise<void> {
   const logger = new Logger(config.level, config.logDir, config.logMaxBytes, config.logFiles, config.accounts.map(a => a.username));
   let factory: TransportFactory;
   if (config.mode === 'mock') factory = (_index, events) => new MockTransport(events, () => `mock-pit-${1 + Math.floor(Math.random() * 3)}`);
-  else {
+  else if (config.transport === 'forge') {
+    const { createForgeTransport } = await import('./bot/forge.js');
+    factory = (index, events) => createForgeTransport(config, index, events);
+  } else {
     const { createMineflayerTransport } = await import('./bot/mineflayer.js');
     factory = (index, events) => createMineflayerTransport(config, index, events);
   }
@@ -74,8 +77,8 @@ async function main(): Promise<void> {
     else if (command === 'recover' && botId) manager.notifyLobbyReturn(botId);
   });
   try { await api?.listen(); await app.start(); } catch (error) { input.close(); manager.stop(); await api?.close(); throw error; }
-  logger.log('info', 'BBot started', { mode: config.mode, botCount: config.count, pathConcurrency: config.pathConcurrency,
-    eventProvider: config.eventProviderUrl ? 'http' : 'disabled' });
+  logger.log('info', 'BBot started', { mode: config.mode, transport: config.transport, botCount: config.count,
+    pathConcurrency: config.pathConcurrency, eventProvider: config.eventProviderUrl ? 'http' : 'disabled' });
 }
 function safeStartupError(error: unknown): string {
   const raw = error instanceof Error ? error.message : '';
