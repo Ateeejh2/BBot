@@ -11,14 +11,19 @@ export interface PitChunkData {
   chunkZ: number;
   sections: PitChunkSection[];
 }
+export interface PitDynamicBlock extends Position { stateId:number }
+
 export type PitChunkLoader = (chunkX: number, chunkZ: number, signal: AbortSignal) => Promise<PitChunkData | undefined>;
 export type PitLoadedChunkLister = (signal: AbortSignal) => Promise<Array<{x:number;z:number}>>;
+export type PitDynamicChunkLoader = (chunkX:number,chunkZ:number,signal:AbortSignal)=>Promise<PitDynamicBlock[]>;
 export type PitScanProgress = (done:number,total:number)=>void;
 
 export interface PitNavigationPlan {
   fingerprint: string;
   previousFingerprint?: string;
   cacheStatus: 'HIT' | 'SHARED_HIT' | 'FULL_SCAN' | 'REVALIDATED';
+  overlayRevision: number;
+  dynamicBlocks: number;
   waypoints: Position[];
   complete: boolean;
   scannedChunks: number;
@@ -31,6 +36,11 @@ interface TerrainGraph {
   chunks: Map<string, PitChunkData>;
   nodes: Map<string, NavNode>;
   columns: Map<string, Set<number>>;
+}
+interface DynamicOverlay {
+  blocks: Map<string,number>;
+  columns: Map<string,Set<number>>;
+  revision: number;
 }
 
 const SAMPLE_OFFSETS = [[0,0],[-1,0],[1,0],[0,-1],[0,1]] as const;
@@ -45,27 +55,46 @@ export class PitNavigationService {
   readonly cache: PitMapCache<TerrainGraph>;
   private readonly anchors = new Map<string,{x:number;z:number}>();
   private readonly instanceUsers = new Map<string,number>();
+  private readonly overlays = new Map<string,DynamicOverlay>();
+  private readonly overlayReady = new Set<string>();
+  private readonly overlayLoads = new Map<string,Promise<void>>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
   }
 
   retainInstance(instanceId:string):void {
-    const key=instanceId.toLowerCase();
+    const key=normalizeInstance(instanceId);
     this.instanceUsers.set(key,(this.instanceUsers.get(key)??0)+1);
   }
 
   releaseInstance(instanceId:string):void {
-    const key=instanceId.toLowerCase();
+    const key=normalizeInstance(instanceId);
     const next=(this.instanceUsers.get(key)??0)-1;
     if(next>0){this.instanceUsers.set(key,next);return;}
     this.instanceUsers.delete(key);
     this.cache.unbind(instanceId);
     this.anchors.delete(key);
+    this.overlays.delete(key);
+    this.overlayReady.delete(key);
+    this.overlayLoads.delete(key);
   }
 
   invalidate(instanceId: string): void {
     this.cache.invalidateInstance(instanceId);
+  }
+
+  overlayRevision(instanceId:string):number {
+    return this.overlays.get(normalizeInstance(instanceId))?.revision??0;
+  }
+
+  updateDynamicBlock(instanceId:string, position:Position, stateId:number):void {
+    const key=normalizeInstance(instanceId);
+    const overlay=this.overlay(key);
+    const x=Math.floor(position.x),y=Math.floor(position.y),z=Math.floor(position.z);
+    if(y<0||y>255)return;
+    if(isVolatileState(stateId)) setOverlayBlock(overlay,x,y,z,stateId);
+    else deleteOverlayBlock(overlay,x,y,z);
   }
 
   async plan(
@@ -76,18 +105,21 @@ export class PitNavigationService {
     signal: AbortSignal,
     avoidColumns: ReadonlyArray<Pick<Position,'x'|'z'>> = [],
     listLoadedChunks?: PitLoadedChunkLister,
-    onScanProgress?: PitScanProgress
+    onScanProgress?: PitScanProgress,
+    loadDynamicChunk?: PitDynamicChunkLoader
   ): Promise<PitNavigationPlan> {
     signal.throwIfAborted();
     const prepared = await this.ensureGraph(instanceId, start, loader, signal, listLoadedChunks, onScanProgress);
+    await this.ensureOverlay(instanceId,signal,listLoadedChunks,loadDynamicChunk,onScanProgress);
     const graph=prepared.graph;
+    const overlay=this.overlay(normalizeInstance(instanceId));
 
-    const startNode = nearestNode(graph, start, 4, 5);
+    const startNode = nearestNode(graph,overlay,start,4,5);
     if (!startNode) throw new Error('No path to the goal!');
 
-    const goalNode = nearestNode(graph, target, 3, 5);
+    const goalNode = nearestNode(graph,overlay,target,3,5);
     const avoided=new Set(avoidColumns.map(value=>columnKey(Math.floor(value.x),Math.floor(value.z))));
-    const search = searchGraph(graph, startNode, target, goalNode, 50_000, avoided);
+    const search = searchGraph(graph,overlay,startNode,target,goalNode,50_000,avoided);
     if (search.path.length < 2) {
       const horizontal = Math.hypot(target.x - start.x, target.z - start.z);
       if (horizontal > 1.25) throw new Error('No path to the goal!');
@@ -97,11 +129,68 @@ export class PitNavigationService {
       fingerprint: graph.fingerprint,
       previousFingerprint: prepared.previousFingerprint,
       cacheStatus: prepared.cacheStatus,
+      overlayRevision: overlay.revision,
+      dynamicBlocks: overlay.blocks.size,
       waypoints: compressPath(search.path),
       complete: search.complete,
       scannedChunks: graph.chunks.size,
       expandedNodes: search.expanded
     };
+  }
+
+  private overlay(instanceKey:string):DynamicOverlay {
+    let overlay=this.overlays.get(instanceKey);
+    if(!overlay){
+      overlay={blocks:new Map(),columns:new Map(),revision:0};
+      this.overlays.set(instanceKey,overlay);
+    }
+    return overlay;
+  }
+
+  private async ensureOverlay(
+    instanceId:string,
+    signal:AbortSignal,
+    listLoadedChunks?:PitLoadedChunkLister,
+    loadDynamicChunk?:PitDynamicChunkLoader,
+    onScanProgress?:PitScanProgress
+  ):Promise<void>{
+    const key=normalizeInstance(instanceId);
+    if(this.overlayReady.has(key))return;
+    const pending=this.overlayLoads.get(key);
+    if(pending){await pending;return;}
+    if(!listLoadedChunks||!loadDynamicChunk){
+      this.overlayReady.add(key);
+      return;
+    }
+
+    const task=(async()=>{
+      const coords=await listLoadedChunks(signal);
+      const unique=new Map<string,{x:number;z:number}>();
+      for(const value of coords)unique.set(chunkKey(value.x,value.z),value);
+      const queue=[...unique.values()];
+      const overlay=this.overlay(key);
+      overlay.blocks.clear();overlay.columns.clear();overlay.revision++;
+      let done=0;
+      onScanProgress?.(0,queue.length);
+      for(let i=0;i<queue.length;i+=2){
+        signal.throwIfAborted();
+        const batch=queue.slice(i,i+2);
+        const results=await Promise.all(batch.map(async ({x,z})=>{
+          try{return await loadDynamicChunk(x,z,signal);}
+          catch(error){if(signal.aborted)throw error;return [];}
+        }));
+        for(const blocks of results)for(const block of blocks){
+          if(isVolatileState(block.stateId))setOverlayBlock(overlay,Math.floor(block.x),Math.floor(block.y),Math.floor(block.z),block.stateId,false);
+        }
+        done+=batch.length;
+        onScanProgress?.(done,queue.length);
+      }
+      if(queue.length===0)onScanProgress?.(0,0);
+      overlay.revision++;
+      this.overlayReady.add(key);
+    })().finally(()=>this.overlayLoads.delete(key));
+    this.overlayLoads.set(key,task);
+    await task;
   }
 
   private async ensureGraph(
@@ -113,7 +202,7 @@ export class PitNavigationService {
     onScanProgress?: PitScanProgress
   ): Promise<{graph:TerrainGraph;cacheStatus:PitNavigationPlan['cacheStatus'];previousFingerprint?:string}> {
     const now = Date.now();
-    const instanceKey=instanceId.toLowerCase();
+    const instanceKey=normalizeInstance(instanceId);
     const existingFingerprint = this.cache.fingerprintForInstance(instanceId);
     const existingGraph = this.cache.graphForInstance(instanceId);
     if (existingFingerprint && existingGraph && !this.cache.refreshDue(instanceId, now)) {
@@ -125,12 +214,10 @@ export class PitNavigationService {
       anchor={x:Math.floor(start.x/16),z:Math.floor(start.z/16)};
       this.anchors.set(instanceKey,anchor);
     }
-    const centerX = anchor.x;
-    const centerZ = anchor.z;
     const samples: Array<{dx:number;dz:number;chunk:PitChunkData}> = [];
     for (const [dx,dz] of SAMPLE_OFFSETS) {
       signal.throwIfAborted();
-      const chunk = await loader(centerX + dx, centerZ + dz, signal);
+      const chunk = await loader(anchor.x + dx, anchor.z + dz, signal);
       if (chunk) samples.push({ dx, dz, chunk });
     }
     if (!samples.length) {
@@ -150,12 +237,11 @@ export class PitNavigationService {
         x:sample.chunk.chunkX,z:sample.chunk.chunkZ
       });
 
-      // First observation of a fingerprint performs one complete scan of every
-      // chunk the client currently has. Later bots/paths reuse this graph.
       const queue=[...unique.values()];
-      const total=queue.length;
+      const overlay=this.overlay(instanceKey);
+      overlay.blocks.clear();overlay.columns.clear();overlay.revision++;
       let done=0;
-      onScanProgress?.(0,total);
+      onScanProgress?.(0,queue.length);
       for(let i=0;i<queue.length;i+=2){
         signal.throwIfAborted();
         const batch=queue.slice(i,i+2);
@@ -165,17 +251,20 @@ export class PitNavigationService {
           try{return await loader(x,z,signal);}
           catch(error){if(signal.aborted)throw error;return undefined;}
         }));
-        for(const chunk of loaded)if(chunk)addChunk(graph,chunk);
+        for(const chunk of loaded)if(chunk){
+          collectDynamicBlocks(overlay,chunk);
+          addChunk(graph,chunk);
+        }
         done+=batch.length;
-        onScanProgress?.(done,total);
+        onScanProgress?.(done,queue.length);
       }
-      if(total===0)onScanProgress?.(0,0);
+      if(queue.length===0)onScanProgress?.(0,0);
+      overlay.revision++;
+      this.overlayReady.add(instanceKey);
       this.cache.setGraph(fingerprint, graph, now);
       return {graph,cacheStatus:'FULL_SCAN',previousFingerprint:existingFingerprint};
     }
     if (this.cache.refreshDue(instanceId, now)) {
-      // TTL only forces the fixed fingerprint sample to be checked. If it is
-      // unchanged, keep the already-built graph and refresh its validation time.
       this.cache.setGraph(fingerprint, graph, now);
       return {graph,cacheStatus:'REVALIDATED',previousFingerprint:existingFingerprint};
     }
@@ -192,13 +281,7 @@ function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkDat
     for (const section of sections) {
       hash.update(String(section.y));
       const normalized=Buffer.allocUnsafe(section.states.length*2);
-      for (let i=0;i<section.states.length;i++) {
-        const state=section.states[i]??0;
-        const id=blockId(state);
-        // Care Package chests are dynamic and must not create a new map generation.
-        const stable=id===54?0:state;
-        normalized.writeUInt16LE(stable,i*2);
-      }
+      for (let i=0;i<section.states.length;i++) normalized.writeUInt16LE(baseState(section.states[i]??0),i*2);
       hash.update(normalized);
     }
   }
@@ -219,7 +302,7 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
     if(y<0||y>255)return 0;
     const section=sectionMap.get(y>>4);
     if(!section)return 0;
-    return section[((y&15)*256)+(lz*16)+lx]??0;
+    return baseState(section[((y&15)*256)+(lz*16)+lx]??0);
   };
   for(let lx=0;lx<16;lx++)for(let lz=0;lz<16;lz++){
     for(let y=minY;y<=maxY;y++){
@@ -228,8 +311,7 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
       const floorId=blockId(floor);
       if(floor===0||isPassable(floor)||HAZARDOUS_FLOOR_IDS.has(floorId))continue;
       const node={x:minX+lx,y,z:minZ+lz};
-      const nKey=nodeKey(node.x,node.y,node.z);
-      graph.nodes.set(nKey,node);
+      graph.nodes.set(nodeKey(node.x,node.y,node.z),node);
       const cKey=columnKey(node.x,node.z);
       let ys=graph.columns.get(cKey);
       if(!ys){ys=new Set<number>();graph.columns.set(cKey,ys);}
@@ -238,9 +320,51 @@ function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
   }
 }
 
+function collectDynamicBlocks(overlay:DynamicOverlay,chunk:PitChunkData):void {
+  for(const section of chunk.sections){
+    for(let i=0;i<section.states.length;i++){
+      const state=section.states[i]??0;
+      if(!isVolatileState(state))continue;
+      const y=section.y*16+Math.floor(i/256);
+      const rem=i%256;
+      const z=Math.floor(rem/16),x=rem%16;
+      setOverlayBlock(overlay,chunk.chunkX*16+x,y,chunk.chunkZ*16+z,state,false);
+    }
+  }
+}
+
+function setOverlayBlock(overlay:DynamicOverlay,x:number,y:number,z:number,stateId:number,bump=true):void {
+  const key=positionKey(x,y,z);
+  const previous=overlay.blocks.get(key);
+  if(previous===stateId)return;
+  overlay.blocks.set(key,stateId);
+  const cKey=columnKey(x,z);
+  let ys=overlay.columns.get(cKey);
+  if(!ys){ys=new Set<number>();overlay.columns.set(cKey,ys);}
+  ys.add(y);
+  if(bump)overlay.revision++;
+}
+
+function deleteOverlayBlock(overlay:DynamicOverlay,x:number,y:number,z:number,bump=true):void {
+  const key=positionKey(x,y,z);
+  if(!overlay.blocks.delete(key))return;
+  const cKey=columnKey(x,z),ys=overlay.columns.get(cKey);
+  ys?.delete(y);
+  if(ys?.size===0)overlay.columns.delete(cKey);
+  if(bump)overlay.revision++;
+}
+
+function baseState(state:number):number {
+  const id=blockId(state);
+  return id===54||isVolatileState(state)?0:state;
+}
+
+function isVolatileState(state:number):boolean {
+  const id=blockId(state),metadata=state>>>12&0x0f;
+  return id===49||id===4||id===7||(id===5&&metadata===0);
+}
+
 function blockId(state:number):number {
-  // Minecraft 1.8.9 Block.getStateId stores block id in the low 12 bits
-  // and metadata in the high 4 bits.
   return state & 0x0fff;
 }
 
@@ -248,16 +372,41 @@ function isPassable(state:number):boolean {
   return PASSABLE_BLOCK_IDS.has(blockId(state));
 }
 
-function nearestNode(graph:TerrainGraph,target:Position,radius:number,vertical:number):NavNode|undefined {
+function baseStateAt(graph:TerrainGraph,x:number,y:number,z:number):number {
+  if(y<0||y>255)return 0;
+  const chunk=graph.chunks.get(chunkKey(Math.floor(x/16),Math.floor(z/16)));
+  if(!chunk)return 0;
+  const section=chunk.sections.find(value=>value.y===(y>>4));
+  if(!section)return 0;
+  return baseState(section.states[((y&15)*256)+((z&15)*16)+(x&15)]??0);
+}
+
+function effectiveState(graph:TerrainGraph,overlay:DynamicOverlay,x:number,y:number,z:number):number {
+  return overlay.blocks.get(positionKey(x,y,z))??baseStateAt(graph,x,y,z);
+}
+
+function effectiveStandable(graph:TerrainGraph,overlay:DynamicOverlay,x:number,y:number,z:number):boolean {
+  const feet=effectiveState(graph,overlay,x,y,z);
+  const head=effectiveState(graph,overlay,x,y+1,z);
+  const floor=effectiveState(graph,overlay,x,y-1,z);
+  return isPassable(feet)&&isPassable(head)&&floor!==0&&!isPassable(floor)&&!HAZARDOUS_FLOOR_IDS.has(blockId(floor));
+}
+
+function candidateYs(graph:TerrainGraph,overlay:DynamicOverlay,x:number,z:number):Set<number> {
+  const result=new Set(graph.columns.get(columnKey(x,z))??[]);
+  for(const y of overlay.columns.get(columnKey(x,z))??[])result.add(y+1);
+  return result;
+}
+
+function nearestNode(graph:TerrainGraph,overlay:DynamicOverlay,target:Position,radius:number,vertical:number):NavNode|undefined {
   let best:NavNode|undefined,bestScore=Number.POSITIVE_INFINITY;
   const baseX=Math.floor(target.x),baseZ=Math.floor(target.z);
   for(let dx=-radius;dx<=radius;dx++)for(let dz=-radius;dz<=radius;dz++){
-    const ys=graph.columns.get(columnKey(baseX+dx,baseZ+dz));
-    if(!ys)continue;
-    for(const y of ys){
-      if(Math.abs(y-target.y)>vertical)continue;
-      const score=Math.hypot(baseX+dx+0.5-target.x,baseZ+dz+0.5-target.z)+Math.abs(y-target.y)*0.35;
-      if(score<bestScore){bestScore=score;best=graph.nodes.get(nodeKey(baseX+dx,y,baseZ+dz));}
+    const x=baseX+dx,z=baseZ+dz;
+    for(const y of candidateYs(graph,overlay,x,z)){
+      if(Math.abs(y-target.y)>vertical||!effectiveStandable(graph,overlay,x,y,z))continue;
+      const score=Math.hypot(x+0.5-target.x,z+0.5-target.z)+Math.abs(y-target.y)*0.35;
+      if(score<bestScore){bestScore=score;best={x,y,z};}
     }
   }
   return best;
@@ -265,6 +414,7 @@ function nearestNode(graph:TerrainGraph,target:Position,radius:number,vertical:n
 
 function searchGraph(
   graph:TerrainGraph,
+  overlay:DynamicOverlay,
   start:NavNode,
   target:Position,
   goal:NavNode|undefined,
@@ -283,15 +433,15 @@ function searchGraph(
   while(open.size&&expanded<maxExpanded){
     const currentKey=open.pop()!;
     if(closed.has(currentKey))continue;
-    const current=graph.nodes.get(currentKey);
-    if(!current)continue;
+    const current=parseNodeKey(currentKey);
+    if(!current||!effectiveStandable(graph,overlay,current.x,current.y,current.z))continue;
     closed.add(currentKey);expanded++;
     const h=heuristic(current,target);
     if(h<bestH){bestH=h;bestKey=currentKey;}
-    if(goalKey&&currentKey===goalKey)return {path:reconstruct(graph,parent,currentKey),complete:true,expanded};
+    if(goalKey&&currentKey===goalKey)return {path:reconstruct(parent,currentKey),complete:true,expanded};
 
     const currentG=g.get(currentKey)??Number.POSITIVE_INFINITY;
-    for(const next of neighbors(graph,current,avoided)){
+    for(const next of neighbors(graph,overlay,current,avoided)){
       const key=nodeKey(next.x,next.y,next.z);
       if(closed.has(key))continue;
       const vertical=next.y-current.y;
@@ -303,37 +453,37 @@ function searchGraph(
     }
   }
 
-  return {path:reconstruct(graph,parent,bestKey),complete:false,expanded};
+  return {path:reconstruct(parent,bestKey),complete:false,expanded};
 }
 
-function neighbors(graph:TerrainGraph,node:NavNode,avoided:Set<string>):NavNode[]{
+function neighbors(graph:TerrainGraph,overlay:DynamicOverlay,node:NavNode,avoided:Set<string>):NavNode[]{
   const result:NavNode[]=[];
   for(const [dx,dz] of CARDINAL){
     const x=node.x+dx,z=node.z+dz,cKey=columnKey(x,z);
     if(avoided.has(cKey))continue;
-    const ys=graph.columns.get(cKey);
-    if(!ys)continue;
+    const valid=[...candidateYs(graph,overlay,x,z)]
+      .filter(y=>effectiveStandable(graph,overlay,x,y,z))
+      .sort((a,b)=>b-a);
     let nextY:number|undefined;
-    if(ys.has(node.y))nextY=node.y;
-    else if(ys.has(node.y+1))nextY=node.y+1;
-    else{
-      // The Pit has no fall damage: walking off an edge may target the highest
-      // reachable floor below, with no artificial three-block drop limit.
-      for(const y of ys)if(y<node.y&&(nextY===undefined||y>nextY))nextY=y;
-    }
-    if(nextY!==undefined){
-      const next=graph.nodes.get(nodeKey(x,nextY,z));
-      if(next)result.push(next);
-    }
+    if(valid.includes(node.y))nextY=node.y;
+    else if(valid.includes(node.y+1))nextY=node.y+1;
+    else nextY=valid.find(y=>y<node.y);
+    if(nextY!==undefined)result.push({x,y:nextY,z});
   }
   return result;
 }
 
-function reconstruct(graph:TerrainGraph,parent:Map<string,string>,endKey:string):NavNode[]{
+function reconstruct(parent:Map<string,string>,endKey:string):NavNode[]{
   const keys=[endKey];let cursor=endKey;
   while(parent.has(cursor)){cursor=parent.get(cursor)!;keys.push(cursor);}
   keys.reverse();
-  return keys.flatMap(key=>{const node=graph.nodes.get(key);return node?[node]:[];});
+  return keys.flatMap(key=>{const node=parseNodeKey(key);return node?[node]:[];});
+}
+
+function parseNodeKey(key:string):NavNode|undefined {
+  const parts=key.split(',').map(Number);
+  if(parts.length!==3||parts.some(value=>!Number.isFinite(value)))return;
+  return {x:parts[0]!,y:parts[1]!,z:parts[2]!};
 }
 
 function compressPath(path:NavNode[]):Position[]{
@@ -356,8 +506,10 @@ function heuristic(node:NavNode,target:Position):number {
   return Math.abs(node.x+0.5-target.x)+Math.abs(node.z+0.5-target.z)+Math.abs(node.y-target.y)*0.25;
 }
 
+function normalizeInstance(value:string):string{return value.toLowerCase();}
 function chunkKey(x:number,z:number):string{return `${x},${z}`;}
 function columnKey(x:number,z:number):string{return `${x},${z}`;}
+function positionKey(x:number,y:number,z:number):string{return `${x},${y},${z}`;}
 function nodeKey(x:number,y:number,z:number):string{return `${x},${y},${z}`;}
 
 class MinHeap {
