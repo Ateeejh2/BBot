@@ -654,7 +654,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       y: Math.max(...cluster.map(p => p.y)) + 1,
       z: cluster.reduce((sum, p) => sum + p.z, 0) / cluster.length + 0.5,
       blocks: cluster.length
-    }));
+    })).filter(center => Math.hypot(center.x - start.x, center.z - start.z) >= 4);
+
+    if (!centers.length) throw new Error('Launch pad not found');
 
     const tx = target.x - start.x;
     const tz = target.z - start.z;
@@ -683,9 +685,21 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     const distance = Math.hypot(dx, dz) || 1;
     const approach = {
       x: pad.x - dx / distance * 2.2,
-      y: pad.y,
+      // Keep the approach on the player's current walking plane. Using pad.y here
+      // can make navigateTo jump in place before any horizontal progress.
+      y: start.y,
       z: pad.z - dz / distance * 2.2
     };
+
+    events.diagnostic?.('launch pad approach', {
+      startX: Math.round(start.x * 10) / 10,
+      startY: Math.round(start.y * 10) / 10,
+      startZ: Math.round(start.z * 10) / 10,
+      approachX: Math.round(approach.x * 10) / 10,
+      approachY: Math.round(approach.y * 10) / 10,
+      approachZ: Math.round(approach.z * 10) / 10,
+      distance: Math.round(distance * 10) / 10
+    });
 
     await navigateTo(approach, 0.8, signal);
     signal.throwIfAborted();
