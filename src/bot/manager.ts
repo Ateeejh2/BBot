@@ -627,6 +627,7 @@ export class BotManager {
   private recoverFromLimbo(b:ManagedBot):void {
     if(b.limboRecovery)return;
     const now=this.now();
+    b.carePackage=undefined;b.careRetryAt=undefined;
     this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
     this.registry.leave(b.id,now,'LIMBO');
     b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.stableSince=undefined;b.ready=false;
