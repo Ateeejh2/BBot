@@ -577,7 +577,12 @@ export class BotManager {
     b.limboRecovery={playAt:now+2000,phase:'WAIT_LOBBY'};
     b.deadline=now+2000+this.config.joinTimeoutMs;
     b.dueAt=Number.POSITIVE_INFINITY;
-    this.log(b,'limbo detected; starting special recovery',{lobbyCommand:'/l',pitDelayMs:2000});
+    this.log(b,'limbo detected; starting special recovery',{
+      lobbyCommand:'/l',
+      pitDelayMs:2000,
+      pingMs:b.transport?.ping?.(),
+      sincePositionCorrectionMs:b.lastPositionCorrectionAt===undefined?null:Math.max(0,now-b.lastPositionCorrectionAt)
+    });
     try{b.transport?.chat('/l');}
     catch{b.limboRecovery=undefined;this.disconnected(b);}
   }
