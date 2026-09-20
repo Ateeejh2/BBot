@@ -1,12 +1,12 @@
 import { instanceKey, type GameEvent, type Position } from '../core/types.js';
 import type { CarePackageSchedule } from './brooke.js';
 
-export type CarePackageInstanceState = 'ARMED' | 'STARTED' | 'CARRIER_DETECTED' | 'LAUNCHING' | 'DROPPED' | 'CHEST_DETECTED' | 'LAUNCH_FAILED';
+export type CarePackageInstanceState = 'ARMED' | 'STARTED' | 'CARRIER_DETECTED' | 'LAUNCHING' | 'DROPPED' | 'CHEST_DETECTED' | 'LAUNCH_FAILED' | 'ENDED';
 
 interface Observation { at:number; position:Position }
 interface TrackedInstance {
   timestamp:number; instanceId:string; state:CarePackageInstanceState;
-  observations:Observation[]; startedAt?:number; area?:string; carrier?:Position; chest?:Position;
+  observations:Observation[]; startedAt?:number; area?:string; carrier?:Position; chest?:Position; endedAt?:number;
 }
 
 export interface CarePackageCarrierDetection { timestamp:number; instanceId:string; target:Position }
@@ -26,7 +26,7 @@ export class CarePackageCoordinator {
     this.prune(now);
     const scheduled=this.activeTimestamp(now);
     const active=[...this.tracked.values()].filter(v =>
-      v.startedAt!==undefined ? now<=v.startedAt+this.activeAfterMs : scheduled!==undefined&&v.timestamp===scheduled);
+      v.endedAt===undefined && (v.startedAt!==undefined ? now<=v.startedAt+this.activeAfterMs : scheduled!==undefined&&v.timestamp===scheduled));
     const timestamp=active.find(v=>v.startedAt!==undefined)?.timestamp??scheduled;
     return { timestamp, instances:active
       .filter(v=>timestamp===undefined||v.timestamp===timestamp)
@@ -84,6 +84,21 @@ export class CarePackageCoordinator {
     };
   }
 
+  observeChestDisappeared(instanceId:string, position:Position, now:number):{timestamp:number;instanceId:string;eventId:string}|undefined {
+    const normalized=instanceKey(instanceId);
+    const tracked=[...this.tracked.values()].find(value =>
+      value.instanceId===normalized&&value.endedAt===undefined&&value.chest!==undefined&&
+      value.chest.x===position.x&&value.chest.y===position.y&&value.chest.z===position.z);
+    if(!tracked)return;
+    tracked.endedAt=now;tracked.state='ENDED';
+    return {timestamp:tracked.timestamp,instanceId:tracked.instanceId,eventId:`care-package:${tracked.timestamp}:${tracked.instanceId}`};
+  }
+
+  isActive(instanceId:string,timestamp:number,now:number):boolean {
+    const tracked=this.tracked.get(`${timestamp}:${instanceKey(instanceId)}`);
+    return !!tracked&&tracked.endedAt===undefined&&tracked.startedAt!==undefined&&now<=tracked.startedAt+this.activeAfterMs;
+  }
+
   expiresAt(instanceId:string,timestamp:number):number {
     const tracked=this.get(timestamp,instanceId);
     return (tracked.startedAt??timestamp)+this.activeAfterMs;
@@ -92,7 +107,7 @@ export class CarePackageCoordinator {
   private activeTimestampForInstance(instanceId:string,now:number):number|undefined {
     const normalized=instanceKey(instanceId);
     const started=[...this.tracked.values()]
-      .filter(v=>v.instanceId===normalized&&v.startedAt!==undefined&&now<=v.startedAt+this.activeAfterMs)
+      .filter(v=>v.instanceId===normalized&&v.endedAt===undefined&&v.startedAt!==undefined&&now<=v.startedAt+this.activeAfterMs)
       .sort((a,b)=>(b.startedAt??0)-(a.startedAt??0))[0];
     return started?.timestamp??this.activeTimestamp(now);
   }
