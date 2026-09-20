@@ -32,3 +32,12 @@ export function eligibleServerAnnouncementChannel(
 export function isLimboNotice(text: string): boolean {
   return text.replace(/§[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim() === 'You were spawned in Limbo.';
 }
+
+
+/** Exact Pit death recap line. Player chat includes a sender/prefix, so anchoring
+ * the whole normalized line prevents players from spoofing this event.
+ */
+export function isDeathNotice(text: string): boolean {
+  const normalized=text.replace(/§[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim();
+  return /^DEATH!\s+by\s+.+?\s+VIEW RECAP$/i.test(normalized);
+}
