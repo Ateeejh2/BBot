@@ -91,6 +91,7 @@ test('first fingerprint scans every loaded chunk once and later paths reuse the 
     [0,flatChunk(0)],[1,flatChunk(1)],[2,flatChunk(2)]
   ]);
   let listCalls=0,loadCalls=0;
+  const progress:Array<{done:number;total:number}>=[];
   const loader=async (x:number,z:number):Promise<PitChunkData|undefined>=>{
     loadCalls++;
     return z===0?chunks.get(x):undefined;
@@ -108,11 +109,14 @@ test('first fingerprint scans every loaded chunk once and later paths reuse the 
     loader,
     signal,
     [],
-    lister
+    lister,
+    (done,total)=>progress.push({done,total})
   );
   assert.equal(first.complete,true);
   assert.equal(first.scannedChunks,3);
   assert.equal(listCalls,1);
+  assert.deepEqual(progress[0],{done:0,total:3});
+  assert.deepEqual(progress.at(-1),{done:3,total:3});
   const afterFirst=loadCalls;
 
   const second=await service.plan(
@@ -122,11 +126,13 @@ test('first fingerprint scans every loaded chunk once and later paths reuse the 
     loader,
     signal,
     [],
-    lister
+    lister,
+    (done,total)=>progress.push({done,total})
   );
   assert.equal(second.complete,true);
   assert.equal(listCalls,1);
   assert.equal(loadCalls,afterFirst);
+  assert.equal(progress.length,3);
 });
 
 test('A-star allows arbitrarily deep Pit drops when a lower floor exists', async () => {
