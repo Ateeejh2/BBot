@@ -164,8 +164,7 @@ export class ForgeWorkerSupervisor {
 
   async quit(botId: string): Promise<void> {
     const worker = this.worker(botId);
-    if (worker.phase === 'STOPPED') throw Error('INVALID_STATE');
-    if (worker.phase === 'STOPPING') throw Error('CONFLICT');
+    if (worker.phase !== 'LAUNCHED') throw Error(worker.phase === 'STOPPING' ? 'CONFLICT' : 'INVALID_STATE');
 
     worker.phase = 'STOPPING';
     const child = worker.child;
