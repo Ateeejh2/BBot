@@ -1,6 +1,9 @@
 import net from 'node:net';
 import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
+import { parseInstance } from '../instances/parser.js';
+import { parseCarePackageAnnouncement } from '../events/care-package.js';
+import { eligibleServerAnnouncementChannel, eligibleTransferChannel } from './message-source.js';
 import type { BotTransport, TransportEvents } from './transport.js';
 
 interface BridgeState {
@@ -131,13 +134,24 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         break;
       case 'message': {
         if (typeof message.text !== 'string') break;
-        const text = message.text.replace(/[\r\n]+/g, ' ').slice(0, 500);
-        events.diagnostic?.('chat message received', {
-          channel: typeof message.channel === 'string' ? message.channel.slice(0, 32) : 'unknown',
+        const raw = message.text;
+        const clean = raw.replace(/§[0-9a-fk-or]/gi, '').trim();
+        const text = clean.replace(/[\r\n]+/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 500);
+        const channel = typeof message.channel === 'string' ? message.channel.slice(0, 32) : 'unknown';
+
+        if (text) events.diagnostic?.('chat message received', {
+          channel,
           senderPresent: false,
           chatText: text
         });
-        events.message(text);
+
+        const candidate = parseInstance(raw);
+        const eligible = eligibleTransferChannel(channel, null, config.transferMessageChannel, candidate !== undefined);
+        const careAnnouncement = parseCarePackageAnnouncement(raw);
+        const careEligible = eligibleServerAnnouncementChannel(channel, null, careAnnouncement !== undefined);
+
+        if (!eligible && !careEligible) break;
+        events.message(raw);
         break;
       }
       case 'end':
