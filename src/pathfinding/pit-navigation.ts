@@ -59,6 +59,7 @@ export class PitNavigationService {
   private readonly overlayReady = new Set<string>();
   private readonly overlayLoads = new Map<string,Promise<void>>();
   private readonly overlayEpoch = new Map<string,number>();
+  private readonly overlayChanges = new Map<string,Array<{revision:number;x:number;y:number;z:number}>>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
@@ -85,6 +86,7 @@ export class PitNavigationService {
     this.overlayReady.delete(key);
     this.overlayLoads.delete(key);
     this.overlayEpoch.delete(key);
+    this.overlayChanges.delete(key);
   }
 
   invalidate(instanceId: string): void {
@@ -95,6 +97,7 @@ export class PitNavigationService {
     const key=normalizeInstance(instanceId);
     this.overlayReady.delete(key);
     this.overlays.delete(key);
+    this.overlayChanges.delete(key);
     this.overlayEpoch.set(key,(this.overlayEpoch.get(key)??0)+1);
   }
 
@@ -108,16 +111,21 @@ export class PitNavigationService {
     const x=Math.floor(position.x),y=Math.floor(position.y),z=Math.floor(position.z);
     if(y<0||y>255)return;
     const positionId=positionKey(x,y,z);
-    if(isVolatileState(stateId)){
-      setOverlayBlock(overlay,x,y,z,stateId);
-      // Every bot in the same instance receives the packet. Even if another bot
-      // already applied it to the shared overlay, this transport still needs the
-      // current revision to decide whether its own active corridor is affected.
-      return overlay.revision;
-    }
-    if(!overlay.blocks.has(positionId))return;
-    deleteOverlayBlock(overlay,x,y,z);
+    const changed=isVolatileState(stateId)
+      ?setOverlayBlock(overlay,x,y,z,stateId)
+      :overlay.blocks.has(positionId)&&deleteOverlayBlock(overlay,x,y,z);
+    if(!changed)return;
+    let journal=this.overlayChanges.get(key);
+    if(!journal){journal=[];this.overlayChanges.set(key,journal);}
+    journal.push({revision:overlay.revision,x,y,z});
+    if(journal.length>256)journal.splice(0,journal.length-256);
     return overlay.revision;
+  }
+
+  dynamicChangesSince(instanceId:string, revision:number):Array<{revision:number;x:number;y:number;z:number}> {
+    const journal=this.overlayChanges.get(normalizeInstance(instanceId));
+    if(!journal)return [];
+    return journal.filter(change=>change.revision>revision);
   }
 
   async plan(
@@ -194,6 +202,7 @@ export class PitNavigationService {
       const queue=[...unique.values()];
       const overlay=this.overlay(key);
       overlay.blocks.clear();overlay.columns.clear();overlay.revision++;
+      this.overlayChanges.delete(key);
       let done=0;
       onScanProgress?.(0,queue.length);
       for(let i=0;i<queue.length;i+=2){
@@ -265,6 +274,7 @@ export class PitNavigationService {
       const queue=[...unique.values()];
       const overlay=this.overlay(instanceKey);
       overlay.blocks.clear();overlay.columns.clear();overlay.revision++;
+      this.overlayChanges.delete(instanceKey);
       let done=0;
       onScanProgress?.(0,queue.length);
       for(let i=0;i<queue.length;i+=2){
