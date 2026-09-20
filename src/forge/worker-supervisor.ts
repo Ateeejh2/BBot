@@ -305,6 +305,7 @@ export class ForgeWorkerSupervisor {
     worker.phase = 'STOPPING';
     const child = worker.child;
     if (!child) {
+      worker.launchProgress = undefined;
       worker.phase = 'STOPPED';
       return;
     }
