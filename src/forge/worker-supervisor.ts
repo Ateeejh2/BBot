@@ -12,9 +12,9 @@ export interface ForgeWorkerView {
   phase: ForgeWorkerPhase;
   bridgePort: number;
   lastError?: string;
-  /** Aggregate CPU usage for the HeadlessMC/Minecraft process group. 100% = one full CPU core. */
+  /** Aggregate CPU usage for the HeadlessMC/Minecraft process tree. 100% = one full CPU core. */
   cpuPercent?: number;
-  /** Aggregate resident memory for the HeadlessMC/Minecraft process group. */
+  /** Aggregate resident memory for the HeadlessMC/Minecraft process tree. */
   rssMb?: number;
   processCount?: number;
 }
@@ -34,39 +34,57 @@ interface WorkerRecord extends ForgeWorkerView {
 
 const LAUNCH_COMMAND = 'launch forge:1.8.9 -specifics -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
 
-function processGroupSample(groupId: number): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
+function processTreeSample(rootPid: number): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
   if (process.platform !== 'linux') return undefined;
-  let cpuTicks = 0;
-  let rssKb = 0;
-  let processCount = 0;
 
   let entries: string[];
   try { entries = readdirSync('/proc'); } catch { return undefined; }
 
+  const records = new Map<number, { ppid: number; cpuTicks: number; rssKb: number }>();
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
     try {
+      const pid = Number(entry);
       const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
       const close = stat.lastIndexOf(')');
       if (close < 0) continue;
       const fields = stat.slice(close + 2).trim().split(/\s+/);
-      // fields starts at proc stat field 3 (state): pgrp=field 5, utime=14, stime=15.
-      if (Number(fields[2]) !== groupId) continue;
+      // fields starts at proc stat field 3 (state): ppid=field 4, utime=14, stime=15.
+      const ppid = Number(fields[1]);
       const utime = Number(fields[11]);
       const stime = Number(fields[12]);
-      if (Number.isFinite(utime)) cpuTicks += utime;
-      if (Number.isFinite(stime)) cpuTicks += stime;
+      if (!Number.isFinite(ppid) || !Number.isFinite(utime) || !Number.isFinite(stime)) continue;
 
       const status = readFileSync(`/proc/${entry}/status`, 'utf8');
       const rss = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
-      if (rss) rssKb += Number(rss[1]);
-      processCount++;
+      records.set(pid, { ppid, cpuTicks: utime + stime, rssKb: rss ? Number(rss[1]) : 0 });
     } catch {
       // Processes can disappear while /proc is being sampled.
     }
   }
 
-  return processCount ? { cpuTicks, rssMb: rssKb / 1024, processCount } : undefined;
+  if (!records.has(rootPid)) return undefined;
+  const included = new Set<number>([rootPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, record] of records) {
+      if (!included.has(pid) && included.has(record.ppid)) {
+        included.add(pid);
+        changed = true;
+      }
+    }
+  }
+
+  let cpuTicks = 0;
+  let rssKb = 0;
+  for (const pid of included) {
+    const record = records.get(pid);
+    if (!record) continue;
+    cpuTicks += record.cpuTicks;
+    rssKb += record.rssKb;
+  }
+  return { cpuTicks, rssMb: rssKb / 1024, processCount: included.size };
 }
 
 function linuxClockTicks(): number {
@@ -138,18 +156,25 @@ export class ForgeWorkerSupervisor {
       const childPid = worker.child?.pid;
       let resource: Pick<ForgeWorkerView, 'cpuPercent' | 'rssMb' | 'processCount'> = {};
       if (childPid && worker.phase !== 'STOPPED') {
-        const raw = processGroupSample(childPid);
+        const raw = processTreeSample(childPid);
         if (raw) {
           const previous = worker.resourceSample;
+          const elapsedMs = previous ? now - previous.at : 0;
           let cpuPercent = previous?.cpuPercent ?? 0;
-          if (previous && now > previous.at && raw.cpuTicks >= previous.cpuTicks) {
-            const elapsedSeconds = (now - previous.at) / 1000;
-            cpuPercent = ((raw.cpuTicks - previous.cpuTicks) / LINUX_CLOCK_TICKS / elapsedSeconds) * 100;
+          let sampleAt = previous?.at ?? now;
+          let sampleTicks = previous?.cpuTicks ?? raw.cpuTicks;
+          if (!previous || (elapsedMs >= 250 && raw.cpuTicks >= previous.cpuTicks)) {
+            if (previous && elapsedMs > 0) {
+              const elapsedSeconds = elapsedMs / 1000;
+              cpuPercent = ((raw.cpuTicks - previous.cpuTicks) / LINUX_CLOCK_TICKS / elapsedSeconds) * 100;
+            }
+            sampleAt = now;
+            sampleTicks = raw.cpuTicks;
           }
           const oneDecimal = (value: number) => Math.round(value * 10) / 10;
           worker.resourceSample = {
-            at: now,
-            cpuTicks: raw.cpuTicks,
+            at: sampleAt,
+            cpuTicks: sampleTicks,
             cpuPercent: oneDecimal(Math.max(0, cpuPercent)),
             rssMb: oneDecimal(Math.max(0, raw.rssMb)),
             processCount: raw.processCount
