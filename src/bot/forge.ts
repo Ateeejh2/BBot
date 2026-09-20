@@ -22,6 +22,7 @@ interface BridgeState {
   flying: boolean;
   phase: string;
   bridgeControl: boolean;
+  pingMs?: number;
 }
 
 interface BridgeEvent {
@@ -71,7 +72,8 @@ function parseState(value: unknown): BridgeState | undefined {
       typeof state.allowFlying !== 'boolean' ||
       typeof state.flying !== 'boolean' ||
       typeof state.phase !== 'string' ||
-      typeof state.bridgeControl !== 'boolean') return undefined;
+      typeof state.bridgeControl !== 'boolean' ||
+      (state.pingMs !== undefined && (!isFiniteNumber(state.pingMs) || state.pingMs < 0))) return undefined;
   return state as BridgeState;
 }
 
@@ -729,6 +731,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
   return {
     position: () => current ? { x: current.x, y: current.y, z: current.z } : undefined,
+    ping: () => current?.pingMs,
     chat: command => {
       if (closed) throw new Error('Transport closed');
       send({ type: 'chat', message: command });
