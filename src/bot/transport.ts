@@ -10,6 +10,7 @@ export interface TransportEvents {
   diagnostic?(name: string, fields?: Record<string, unknown>): void;
   chickenSpawn?(position: Position): void;
   chestAppeared?(position: Position): void;
+  chestDisappeared?(position: Position): void;
 }
 export interface BotTransport {
   position(): Position | undefined;
