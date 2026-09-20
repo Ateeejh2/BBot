@@ -142,6 +142,8 @@ export class ForgeWorkerSupervisor {
       child.stdout.on('data', inspect);
       child.stderr.on('data', inspect);
       child.once('error', () => {
+        worker.child = undefined;
+        worker.phase = 'STOPPED';
         fail('WORKER_LAUNCH_FAILED');
       });
       child.once('exit', () => {
