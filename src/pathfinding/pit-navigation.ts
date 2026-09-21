@@ -46,6 +46,8 @@ interface DynamicOverlay {
 
 const SAMPLE_OFFSETS = [[0,0],[-1,0],[1,0],[0,-1],[0,1]] as const;
 const CARDINAL = [[1,0],[-1,0],[0,1],[0,-1]] as const;
+const FULL_SCAN_CONCURRENCY = 4;
+const OVERLAY_SCAN_CONCURRENCY = 8;
 const PASSABLE_BLOCK_IDS = new Set([
   0, 6, 31, 32, 37, 38, 39, 40, 50, 55, 59, 63, 65, 66, 68, 69, 70, 72,
   75, 76, 77, 78, 83, 106, 115, 131, 132, 141, 142, 143, 171, 175
@@ -249,9 +251,9 @@ export class PitNavigationService {
       this.overlayChanges.delete(key);
       let done=0;
       onScanProgress?.(0,queue.length);
-      for(let i=0;i<queue.length;i+=2){
+      for(let i=0;i<queue.length;i+=OVERLAY_SCAN_CONCURRENCY){
         signal.throwIfAborted();
-        const batch=queue.slice(i,i+2);
+        const batch=queue.slice(i,i+OVERLAY_SCAN_CONCURRENCY);
         const results=await Promise.all(batch.map(async ({x,z})=>{
           try{return await loadDynamicChunk(x,z,signal);}
           catch(error){if(signal.aborted)throw error;return [];}
@@ -339,9 +341,9 @@ export class PitNavigationService {
         this.overlayChanges.delete(instanceKey);
         let done=0;
         onScanProgress?.(0,queue.length);
-        for(let i=0;i<queue.length;i+=2){
+        for(let i=0;i<queue.length;i+=FULL_SCAN_CONCURRENCY){
           signal.throwIfAborted();
-          const batch=queue.slice(i,i+2);
+          const batch=queue.slice(i,i+FULL_SCAN_CONCURRENCY);
           const loaded=await Promise.all(batch.map(async ({x,z})=>{
             const sample=samples.find(value=>value.chunk.chunkX===x&&value.chunk.chunkZ===z)?.chunk;
             if(sample)return sample;
