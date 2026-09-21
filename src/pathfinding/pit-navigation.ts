@@ -348,9 +348,17 @@ function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkDat
     hash.update(`${sample.dx},${sample.dz}|`);
     const sections=[...sample.chunk.sections].sort((a,b)=>a.y-b.y);
     for (const section of sections) {
-      hash.update(String(section.y));
       const normalized=Buffer.allocUnsafe(section.states.length*2);
-      for (let i=0;i<section.states.length;i++) normalized.writeUInt16LE(baseState(section.states[i]??0),i*2);
+      let hasStaticState=false;
+      for (let i=0;i<section.states.length;i++) {
+        const state=baseState(section.states[i]??0);
+        if(state!==0)hasStaticState=true;
+        normalized.writeUInt16LE(state,i*2);
+      }
+      // A section created only because an instance-local block exists must be
+      // identical to an absent all-air section for the shared map fingerprint.
+      if(!hasStaticState)continue;
+      hash.update(`${section.y}|`);
       hash.update(normalized);
     }
   }
