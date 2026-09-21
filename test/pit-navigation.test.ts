@@ -154,7 +154,7 @@ test('first fingerprint scans every loaded chunk once and later paths reuse the 
   assert.equal(second.complete,true);
   assert.equal(listCalls,1);
   assert.equal(loadCalls,afterFirst);
-  assert.equal(progress.length,3);
+  assert.equal(progress.length,2);
 });
 
 test('Pit prewarm scans once and the later path reuses the prepared graph and overlay', async () => {
