@@ -60,18 +60,43 @@ test('registry memory cap evicts only inactive empty records', () => {
   assert.throws(() => r.observe('c', 1)); r.maintain(100, 10, 20); r.observe('c', 101);
   assert.equal(r.records.size, 2); assert.ok(r.records.has('b')); assert.ok(!r.records.has('a'));
 });
-test('distribution chooses crowded idle bot and stops at bounded attempt budget', () => {
-  const r = new InstanceRegistry(); const bots = [bot('b1'), bot('b2'), bot('b3')];
-  for (const b of bots) r.join('mega10c', b.id, 0); r.observe('empty', 0);
-  const d = new DistributionManager(1, 100);
-  assert.equal(d.choose(bots, r, 0)?.id, 'b1'); d.recordAttempt('b1', 0);
+test('distribution spreads duplicate bots toward one bot per Pit instance', () => {
+  const r = new InstanceRegistry();
+  const bots = [bot('b1'), bot('b2'), bot('b3')];
+  for (const b of bots) r.join('mega10c', b.id, 0);
+
+  const d = new DistributionManager(2, 100);
+  assert.equal(d.choose(bots, r, 0)?.id, 'b3');
+  d.recordAttempt('b3', 0);
+
+  // If the moving bot lands back on the same occupied instance, keep moving
+  // that bot rather than disturbing a resident.
+  assert.equal(d.choose(bots, r, 100)?.id, 'b3');
+  d.recordAttempt('b3', 100);
+
+  // Once b3 has exhausted its bounded budget, another duplicate can be tried.
   assert.equal(d.choose(bots, r, 100000)?.id, 'b2');
-  d.recordAttempt('b2', 0); d.recordAttempt('b3', 0); assert.equal(d.choose(bots, r, 100000), undefined);
 });
-test('more instances than bots is valid; balanced assignment causes no reroll', () => {
-  const r = new InstanceRegistry(); r.join('mega10c', 'b1', 0);
+
+test('distribution does not stop at an even split while duplicate coverage remains', () => {
+  const r = new InstanceRegistry();
+  const bots = [
+    {...bot('b1'),instanceId:'a'}, {...bot('b2'),instanceId:'a'},
+    {...bot('b3'),instanceId:'b'}, {...bot('b4'),instanceId:'b'}
+  ];
+  for(const value of bots) r.join(value.instanceId!,value.id,0);
+  assert.ok(new DistributionManager(3,10).choose(bots,r,0),
+    '2/2 is numerically balanced but still wastes possible instance coverage');
+});
+
+test('unique instance coverage and extra known empty instances cause no reroll', () => {
+  const r = new InstanceRegistry();
+  r.join('a','b1',0); r.join('b','b2',0); r.join('c','b3',0);
   for (let i = 0; i < 100; i++) r.observe(`new${i}`, 0);
-  assert.equal(new DistributionManager(2, 10).choose([bot('b1')], r, 0), undefined);
+  const bots = [
+    {...bot('b1'),instanceId:'a'}, {...bot('b2'),instanceId:'b'}, {...bot('b3'),instanceId:'c'}
+  ];
+  assert.equal(new DistributionManager(2,10).choose(bots,r,0),undefined);
 });
 test('scheduler chooses nearest eligible same-instance bot without double assignment', () => {
   const s = new Scheduler(); s.enqueue(event(), 0); s.enqueue(event('e2'), 0);
