@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Config } from '../config/index.js';
 import type { BotManager } from '../bot/manager.js';
@@ -20,11 +20,17 @@ function transportAccount(account: StoredAccount): Account {
 }
 export interface PublicAuthChallenge { verificationUri: string; userCode: string; expiresAt: number }
 interface AuthChallengeInput { verificationUri: string; userCode: string; expiresIn: number }
+type MicrosoftAccountRef = { id?:string; label:string; cacheKey:string; folder:string };
 type StartAuth = (
-  account: { label: string; cacheKey: string; folder: string },
+  account: MicrosoftAccountRef,
   config: Config,
   reportChallenge: (challenge: AuthChallengeInput) => void
 ) => Promise<{ minecraftName?: string } | void>;
+type ResolveMicrosoftSession = (
+  account: MicrosoftAccountRef,
+  config: Config,
+  reportChallenge: (challenge: AuthChallengeInput) => void
+) => Promise<SessionCredential>;
 
 export function validateConnection(body: unknown): Pick<ServerConnection, 'host' | 'port' | 'version'> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
@@ -62,8 +68,11 @@ export class ControlStore {
   private challenges = new Map<string, PublicAuthChallenge>();
   private pending = 0;
   private queue: Promise<unknown> = Promise.resolve();
+  private botConfigurationAvailable: (botId:string)=>boolean = () => true;
   constructor(private config: Config, private startAuth: StartAuth,
-    private resolveSession: (accessToken: string) => Promise<SessionCredential> = resolveSessionCredential) {}
+    private resolveSession: (accessToken: string) => Promise<SessionCredential> = resolveSessionCredential,
+    private resolveMicrosoftSession?: ResolveMicrosoftSession) {}
+  setBotConfigurationGuard(guard:(botId:string)=>boolean):void { this.botConfigurationAvailable=guard; }
   get busy(): boolean { return this.pending > 0; }
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
@@ -127,7 +136,6 @@ export class ControlStore {
   async bind(manager: BotManager): Promise<void> {
     this.manager = manager;
     manager.setSessionFailureHandler((botId, accountId) => this.revalidateSessionAfterConnectFailure(botId, accountId));
-    if (this.config.transport === 'forge') return;
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
       transportAccount(a), a.minecraftName);
     if (this.config.count === 1 && !this.entries.some(a => a.assignedBot)) {
@@ -167,6 +175,44 @@ export class ControlStore {
       return false;
     }
   }
+  async getLaunchCredential(botId:string):Promise<SessionCredential> {
+    return this.exclusive(async()=>{
+      const bot=this.manager?.views().find(b=>b.id===botId);
+      if(!bot)throw Error('UNKNOWN_BOT');
+      if(!bot.accountId)throw Error('ACCOUNT_REQUIRED');
+      const account=this.entries.find(a=>a.id===bot.accountId);
+      if(!account||account.assignedBot!==botId)throw Error('ACCOUNT_REQUIRED');
+      if(account.status!=='READY')throw Error('ACCOUNT_NOT_READY');
+
+      if(account.kind==='SESSION'){
+        let stored:SessionCredential;
+        try{
+          stored=readSessionCredential(this.config.authDir,account.id);
+          const checked=await this.resolveSession(stored.accessToken);
+          if(checked.selectedProfile.id!==stored.selectedProfile.id)throw Error('INVALID_SESSION_TOKEN');
+          return checked;
+        }catch{
+          await this.markSessionTokenInvalid(account.id);
+          throw Error('SESSION_AUTH_REQUIRED');
+        }
+      }
+
+      if(!this.resolveMicrosoftSession)throw Error('AUTH_FAILED');
+      try{
+        return await this.resolveMicrosoftSession(
+          account,
+          this.config,
+          challenge=>this.reportAuthChallenge(account.id,challenge)
+        );
+      }catch{
+        const updated=this.entries.map(a=>a.id===account.id?{...a,status:'ERROR' as const}:a);
+        await atomicJson(join(this.config.dataDir,'accounts-runtime.json'),updated);
+        this.entries=updated;
+        throw Error('AUTH_FAILED');
+      }
+    });
+  }
+
   async prepareBotStart(botId: string): Promise<void> {
     return this.exclusive(async () => {
       const bot = this.manager?.views().find(b => b.id === botId);
@@ -201,17 +247,6 @@ export class ControlStore {
     const started: string[] = [], skipped: Array<{ botId: string; reason: string }> = [];
     for (const bot of this.manager.views()) {
       if (bot.state !== 'DISCONNECTED' || bot.startQueued) { skipped.push({ botId: bot.id, reason: bot.startQueued ? 'ALREADY_QUEUED' : 'NOT_DISCONNECTED' }); continue; }
-
-      if (this.config.transport === 'forge') {
-        try {
-          this.manager.connectBot(bot.id);
-          started.push(bot.id);
-        } catch (error) {
-          const code = error instanceof Error ? error.message : 'START_FAILED';
-          skipped.push({ botId: bot.id, reason: ['INVALID_STATE','CONFLICT'].includes(code) ? code : 'START_FAILED' });
-        }
-        continue;
-      }
 
       if (!bot.accountId) { skipped.push({ botId: bot.id, reason: 'UNASSIGNED' }); continue; }
       const account = this.entries.find(a => a.id === bot.accountId);
@@ -296,13 +331,13 @@ export class ControlStore {
       if (botId) {
         const bot = this.manager?.views().find(b => b.id === botId);
         if (!bot) throw Error('UNKNOWN_BOT');
-        if (!this.manager!.isBotStopped(botId)) throw Error('INVALID_STATE');
+        if (!this.manager!.isBotStopped(botId) || !this.botConfigurationAvailable(botId)) throw Error('INVALID_STATE');
       }
       const previous = readSessionCredential(this.config.authDir, id);
       const next = await this.resolveSession(accessToken);
       if (next.selectedProfile.id !== previous.selectedProfile.id) throw Error('PROFILE_MISMATCH');
       return this.manager!.withConfigurationLock(
-        () => !botId || this.manager!.isBotStopped(botId),
+        () => !botId || (this.manager!.isBotStopped(botId) && this.botConfigurationAvailable(botId)),
         async () => {
           await saveSessionCredential(this.config.authDir, id, next);
           try {
@@ -375,7 +410,7 @@ export class ControlStore {
     return this.exclusive(async () => {
       const bot = this.manager?.views().find(b => b.id === botId);
       if (!bot) throw Error('UNKNOWN_BOT');
-      if (!this.manager!.isBotStopped(botId)) throw Error('INVALID_STATE');
+      if (!this.manager!.isBotStopped(botId) || !this.botConfigurationAvailable(botId)) throw Error('INVALID_STATE');
       if (accountId === null) {
         return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId), async () => {
           const updated = this.entries.map(a => a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
@@ -413,6 +448,7 @@ export class ControlStore {
         async () => {
           const updated = this.entries.filter(a => a.id !== id);
           if (account.kind === 'SESSION') await deleteSessionCredential(this.config.authDir, id);
+          else await rm(join(this.config.authDir, account.folder), { recursive:true, force:true });
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
           this.challenges.delete(id);
           this.entries = updated;
