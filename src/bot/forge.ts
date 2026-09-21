@@ -962,6 +962,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     const controller=new AbortController();
     prewarmAbort=controller;
     prewarmInstanceId=instanceId;
+    let shouldRetry=false;
     const task=(async()=>{
       const start=await waitForCurrentPosition(controller.signal);
       if(!start)throw new Error('Pit prewarm position unavailable');
@@ -992,6 +993,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       }
     })().catch(error=>{
       if(controller.signal.aborted)return;
+      shouldRetry=true;
       events.diagnostic?.('pit navigation prewarm failed',{
         instanceId,
         attempt,
@@ -1002,9 +1004,11 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         prewarmAbort=undefined;
         prewarmPromise=undefined;
         prewarmInstanceId=undefined;
-        if(boundInstanceId===instanceId&&attempt<1){
+        if(shouldRetry&&boundInstanceId===instanceId&&attempt<1){
           setTimeout(()=>{
-            if(!closed&&boundInstanceId===instanceId&&!prewarmPromise)startPitPrewarm(instanceId,attempt+1);
+            if(!closed&&boundInstanceId===instanceId&&!prewarmPromise&&!sharedPitNavigation.isPrepared(instanceId)){
+              startPitPrewarm(instanceId,attempt+1);
+            }
           },150).unref();
         }
       }
