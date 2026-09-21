@@ -27,7 +27,11 @@ async function main(): Promise<void> {
   if(config.mode==='live'&&config.transport==='forge'){
     sharedPitNavigation.configurePersistence(join(config.dataDir,'pit-map-cache'));
   }
-  const controls = new ControlStore(config, async (account, settings, reportChallenge) => {
+  const resolveMicrosoftCredential = async (
+    account: { label:string; cacheKey:string; folder:string },
+    settings: typeof config,
+    reportChallenge: (challenge:{verificationUri:string;userCode:string;expiresIn:number})=>void
+  ) => {
     const auth = new Authflow(account.cacheKey, join(settings.authDir, account.folder),
       { flow: 'live', authTitle: Titles.MinecraftNintendoSwitch, deviceType: 'Nintendo' },
       data => {
@@ -35,18 +39,29 @@ async function main(): Promise<void> {
         process.stderr.write(`[${account.label}] Microsoft sign-in: ${data.verification_uri} code: ${data.user_code}\n`);
       });
     const result = await auth.getMinecraftJavaToken({ fetchProfile: true, fetchCertificates: false });
-    if (!result.profile?.id) throw Error('AUTH_FAILED');
-    const profile = result.profile as { name?: unknown };
-    const minecraftName = typeof profile.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(profile.name) ? profile.name : undefined;
-    // Access tokens stay inside prismarine-auth and its backend-only cache.
-    return { minecraftName };
-  });
+    const profile = result.profile as { id?:unknown; name?:unknown };
+    const id = typeof profile?.id === 'string' ? profile.id.replace(/-/g,'').toLowerCase() : '';
+    const minecraftName = typeof profile?.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(profile.name) ? profile.name : '';
+    if (typeof result.token !== 'string' || result.token.length === 0 || result.token.length > 2048 ||
+        !/^[0-9a-f]{32}$/.test(id) || !minecraftName) throw Error('AUTH_FAILED');
+    return { accessToken:result.token, selectedProfile:{ id, name:minecraftName } };
+  };
+  const controls = new ControlStore(
+    config,
+    async (account, settings, reportChallenge) => {
+      const credential=await resolveMicrosoftCredential(account,settings,reportChallenge);
+      return { minecraftName:credential.selectedProfile.name };
+    },
+    undefined,
+    resolveMicrosoftCredential
+  );
   if (config.api.enabled && config.mode === 'live') await controls.load();
   const logger = new Logger(config.level, config.logDir, config.logMaxBytes, config.logFiles, config.accounts.map(a => a.username));
   let forgeWorkers: ForgeWorkerSupervisor | undefined;
   if (config.mode === 'live' && config.transport === 'forge' && config.api.enabled) {
     const { ForgeWorkerSupervisor } = await import('./forge/worker-supervisor.js');
     forgeWorkers = new ForgeWorkerSupervisor(config, logger);
+    controls.setBotConfigurationGuard(botId => forgeWorkers!.isStopped(botId));
   }
   let factory: TransportFactory;
   if (config.mode === 'mock') factory = (_index, events) => new MockTransport(events, () => `mock-pit-${1 + Math.floor(Math.random() * 3)}`);
