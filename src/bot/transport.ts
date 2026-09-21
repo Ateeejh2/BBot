@@ -20,6 +20,8 @@ export interface BotTransport {
   playerCount?(): Promise<number | undefined>;
   /** Bind the transport to the currently confirmed Pit instance for shared terrain caching. */
   setInstance?(instanceId?: string): void;
+  /** Allow expensive Pit terrain scanning only after lobby population is accepted. */
+  setPitScanEnabled?(enabled: boolean): void;
   chat(command: string): void;
   /** Forge-backed transports can establish and end the Minecraft server session without restarting the client. */
   connectServer?(host: string, port: number): Promise<void>;
