@@ -114,6 +114,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let connected = false;
   let requestSequence = 0;
   let boundInstanceId: string | undefined;
+  let prewarmAbort: AbortController | undefined;
+  let prewarmPromise: Promise<void> | undefined;
+  let prewarmInstanceId: string | undefined;
   let viewerClose: (() => void) | undefined;
   let viewerState: ((state: BridgeState) => void) | undefined;
   let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
@@ -226,6 +229,36 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         ? [{x:block.x,y:block.y,z:block.z,stateId:block.stateId}]
         : []
     );
+  };
+
+  const reportPitScanProgress = (done:number,total:number) => {
+    const progress=total<=0?100:Math.floor(done/total*100);
+    events.diagnostic?.('pit chunk scan progress',{
+      done,total,progress,active:done<total
+    });
+  };
+
+  const waitForCurrentPosition = async (signal:AbortSignal, timeoutMs=2500):Promise<Position|undefined> => {
+    const deadline=Date.now()+timeoutMs;
+    while(Date.now()<deadline){
+      signal.throwIfAborted();
+      const state=current;
+      if(state)return {x:state.x,y:state.y,z:state.z};
+      await delay(50,signal);
+    }
+    return;
+  };
+
+  const waitForPrewarm = async (promise:Promise<void>,signal:AbortSignal):Promise<void> => {
+    signal.throwIfAborted();
+    await new Promise<void>((resolve,reject)=>{
+      const abort=()=>reject(signal.reason instanceof Error?signal.reason:new Error('Movement cancelled'));
+      signal.addEventListener('abort',abort,{once:true});
+      promise.then(
+        ()=>{signal.removeEventListener('abort',abort);resolve();},
+        error=>{signal.removeEventListener('abort',abort);reject(error);}
+      );
+    });
   };
 
   const loadPitChunk = async (chunkX:number, chunkZ:number, signal:AbortSignal):Promise<PitChunkData|undefined> => {
@@ -667,6 +700,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       return;
     }
 
+    if(prewarmPromise&&prewarmInstanceId===instanceId){
+      await waitForPrewarm(prewarmPromise,signal);
+    }
+
     const avoided=new Map<string,{x:number;z:number}>();
     let replans=0;
     while(replans++<12){
@@ -686,10 +723,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           instanceId,start,target,loadPitChunk,signal,[...avoided.values()],listLoadedPitChunks,
           (done,total)=>{
             scanReported=true;
-            const progress=total<=0?100:Math.floor(done/total*100);
-            events.diagnostic?.('pit chunk scan progress',{
-              done,total,progress,active:done<total
-            });
+            reportPitScanProgress(done,total);
           },
           loadPitVolatileChunk
         );
@@ -923,11 +957,64 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     }
   };
 
+  const startPitPrewarm = (instanceId:string) => {
+    prewarmAbort?.abort(new Error('Pit prewarm replaced'));
+    const controller=new AbortController();
+    prewarmAbort=controller;
+    prewarmInstanceId=instanceId;
+    const task=(async()=>{
+      const start=await waitForCurrentPosition(controller.signal);
+      if(!start)throw new Error('Pit prewarm position unavailable');
+      events.diagnostic?.('pit navigation prewarm started',{instanceId});
+      let scanReported=false;
+      try{
+        const result=await sharedPitNavigation.prewarm(
+          instanceId,
+          start,
+          loadPitChunk,
+          controller.signal,
+          listLoadedPitChunks,
+          (done,total)=>{
+            scanReported=true;
+            reportPitScanProgress(done,total);
+          },
+          loadPitVolatileChunk
+        );
+        events.diagnostic?.('pit navigation prewarm completed',{
+          instanceId,
+          fingerprint:result.fingerprint,
+          cacheStatus:result.cacheStatus,
+          scannedChunks:result.scannedChunks,
+          dynamicBlocks:result.dynamicBlocks
+        });
+      }finally{
+        if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
+      }
+    })().catch(error=>{
+      if(controller.signal.aborted)return;
+      events.diagnostic?.('pit navigation prewarm failed',{
+        instanceId,
+        reason:error instanceof Error?error.message.slice(0,200):'unknown'
+      });
+    }).finally(()=>{
+      if(prewarmAbort===controller){
+        prewarmAbort=undefined;
+        prewarmPromise=undefined;
+        prewarmInstanceId=undefined;
+      }
+    });
+    prewarmPromise=task;
+  };
+
   return {
     position: () => current ? { x: current.x, y: current.y, z: current.z } : undefined,
     ping: () => current?.pingMs,
     setInstance: instanceId => {
       if(boundInstanceId===instanceId)return;
+      prewarmAbort?.abort(new Error('Pit instance changed'));
+      prewarmAbort=undefined;
+      prewarmPromise=undefined;
+      prewarmInstanceId=undefined;
       if(boundInstanceId)sharedPitNavigation.releaseInstance(boundInstanceId);
       boundInstanceId=instanceId;
       if(instanceId){
@@ -936,6 +1023,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           instanceId,
           state?{x:state.x,y:state.y,z:state.z}:undefined
         );
+        startPitPrewarm(instanceId);
       }
     },
     chat: command => {
@@ -949,6 +1037,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     stopPath,
     close: () => {
       if (closed) return;
+      prewarmAbort?.abort(new Error('Transport closed'));
+      prewarmAbort=undefined;
+      prewarmPromise=undefined;
+      prewarmInstanceId=undefined;
       if(boundInstanceId){
         sharedPitNavigation.releaseInstance(boundInstanceId);
         boundInstanceId=undefined;
