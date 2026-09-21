@@ -16,6 +16,8 @@ export interface BotTransport {
   position(): Position | undefined;
   /** Server-reported ping for this player. May be unavailable briefly after login. */
   ping?(): number | undefined;
+  /** Current server tab-list population when the transport can query it reliably. */
+  playerCount?(): Promise<number | undefined>;
   /** Bind the transport to the currently confirmed Pit instance for shared terrain caching. */
   setInstance?(instanceId?: string): void;
   chat(command: string): void;
