@@ -326,6 +326,48 @@ test('Forge supervisor exposes ten independent worker slots and clears stale lau
   }
 });
 
+test('Web account creation works without display labels and Session needs only an access token', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-label-free-accounts-'));
+  const config=loadConfig({
+    MODE:'live',BBOT_TRANSPORT:'forge',BOT_COUNT:'2',API_ENABLED:'true',
+    API_ORIGIN:'http://localhost:5173',ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir
+  });
+  config.authDir=join(dir,'.auth');
+  const controls=new ControlStore(
+    config,
+    async()=>({minecraftName:'MicrosoftMC'}),
+    async token=>{
+      assert.equal(token,'SESSION_ACCESS_TOKEN');
+      return {
+        accessToken:token,
+        selectedProfile:{name:'SessionMC',id:'12345678123412341234123456789abc'}
+      };
+    }
+  );
+  const manager=new BotManager(
+    config,
+    (_index,events)=>new MockTransport(events,()=> 'mega'),
+    new InstanceRegistry(),new Scheduler(3,100,100),new PathfindingController(1,1000),
+    new MockTaskHandler(),new Logger('error')
+  );
+  try{
+    await controls.load();
+    await controls.bind(manager);
+
+    const microsoft=await controls.addAccount({kind:'MICROSOFT'});
+    const session=await controls.addAccount({kind:'SESSION',accessToken:'SESSION_ACCESS_TOKEN'});
+    await delay(10);
+
+    assert.match(microsoft.label,/^Microsoft(?:-\d+)?$/);
+    assert.equal(session.label,'SessionMC');
+    assert.equal(session.minecraftName,'SessionMC');
+    assert.equal(JSON.stringify(controls.listAccounts()).includes('SESSION_ACCESS_TOKEN'),false);
+  }finally{
+    manager.stop();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
+
 test('Minecraft Session ID wrapper resolves using only its access token', async () => {
   let authorization='';
   const credential=await resolveSessionCredential(
