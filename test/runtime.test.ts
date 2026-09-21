@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
@@ -246,6 +246,79 @@ test('one READY Session account auto assigns and stays credential-free on restar
   } finally {manager.stop();await rm(dir,{recursive:true,force:true});}
 });
 
+
+test('Minecraft Session ID wrapper resolves using only its access token', async () => {
+  let authorization='';
+  const credential=await resolveSessionCredential(
+    'token:MC_ACCESS_TOKEN:abcdefabcdefabcdefabcdefabcdefab',
+    async (_input,init) => {
+      authorization=String((init?.headers as Record<string,string>)?.Authorization??'');
+      return new Response(JSON.stringify({id:'abcdefabcdefabcdefabcdefabcdefab',name:'SessionUser'}), {
+        status:200,headers:{'content-type':'application/json'}
+      });
+    }
+  );
+  assert.equal(authorization,'Bearer MC_ACCESS_TOKEN');
+  assert.deepEqual(credential,{
+    accessToken:'MC_ACCESS_TOKEN',
+    selectedProfile:{name:'SessionUser',id:'abcdefabcdefabcdefabcdefabcdefab'}
+  });
+});
+
+test('Forge runtime accounts bind to bot slots and expose launch credentials only internally', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-forge-accounts-'));
+  const config=loadConfig({
+    MODE:'live',BBOT_TRANSPORT:'forge',BOT_COUNT:'2',API_ENABLED:'true',
+    API_ORIGIN:'http://localhost:5173',ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir
+  });
+  config.authDir=join(dir,'.auth');
+  const sessionProfile='12345678123412341234123456789abc';
+  const microsoftProfile='abcdefabcdefabcdefabcdefabcdefab';
+  const controls=new ControlStore(
+    config,
+    async account=>({minecraftName:account.label==='MicrosoftOne'?'MicrosoftMC':undefined}),
+    async token=>({accessToken:token,selectedProfile:{name:'SessionMC',id:sessionProfile}}),
+    async()=>({accessToken:'MICROSOFT_SECRET',selectedProfile:{name:'MicrosoftMC',id:microsoftProfile}})
+  );
+  const logger=new Logger('error');
+  const manager=new BotManager(config,(_index,events)=>new MockTransport(events,()=> 'mega'),
+    new InstanceRegistry(),new Scheduler(3,100,100),new PathfindingController(1,1000),new MockTaskHandler(),logger);
+  try{
+    await controls.load();
+    await controls.bind(manager);
+    const microsoft=await controls.addAccount({kind:'MICROSOFT',label:'MicrosoftOne'});
+    const session=await controls.addAccount({kind:'SESSION',label:'SessionOne',accessToken:'SESSION_SECRET'});
+    await delay(10);
+    await controls.assign('bot-1',{accountId:microsoft.id});
+    await controls.assign('bot-2',{accountId:session.id});
+
+    assert.equal(manager.views()[0]?.accountId,microsoft.id);
+    assert.equal(manager.views()[1]?.accountId,session.id);
+    assert.equal(JSON.stringify(controls.listAccounts()).includes('SECRET'),false);
+
+    const microsoftCredential=await controls.getLaunchCredential('bot-1');
+    const sessionCredential=await controls.getLaunchCredential('bot-2');
+    assert.equal(microsoftCredential.accessToken,'MICROSOFT_SECRET');
+    assert.equal(microsoftCredential.selectedProfile.id,microsoftProfile);
+    assert.equal(sessionCredential.accessToken,'SESSION_SECRET');
+    assert.equal(sessionCredential.selectedProfile.id,sessionProfile);
+
+    const cacheDir=join(config.authDir,'MicrosoftOne');
+    await mkdir(cacheDir,{recursive:true});
+    await writeFile(join(cacheDir,'cached.json'),'{}');
+    controls.setBotConfigurationGuard(botId=>botId!=='bot-1');
+    await assert.rejects(controls.assign('bot-1',{accountId:null}),/INVALID_STATE/);
+    await assert.rejects(controls.deleteAccount(microsoft.id),/INVALID_STATE/);
+
+    controls.setBotConfigurationGuard(()=>true);
+    await controls.assign('bot-1',{accountId:null});
+    await controls.deleteAccount(microsoft.id);
+    await assert.rejects(stat(cacheDir),{code:'ENOENT'});
+  }finally{
+    manager.stop();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
 
 test('Minecraft access token resolves MCID and UUID without client token', async () => {
   let authorization='';
