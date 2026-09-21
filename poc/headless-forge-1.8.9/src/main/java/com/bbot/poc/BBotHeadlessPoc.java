@@ -24,6 +24,8 @@ import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.network.play.server.S22PacketMultiBlockChange;
 import net.minecraft.network.play.server.S23PacketBlockChange;
 import net.minecraft.util.BlockPos;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.EntityJoinWorldEvent;
@@ -578,22 +580,37 @@ public final class BBotHeadlessPoc {
             return;
         }
 
+        Chunk chunk = mc.theWorld.getChunkFromChunkCoords(chunkX, chunkZ);
+        ExtendedBlockStorage[] storageArray = chunk.getBlockStorageArray();
         JsonArray blocks = new JsonArray();
-        for (int y = 0; y < 256; y++) {
-            for (int z = 0; z < 16; z++) {
-                for (int x = 0; x < 16; x++) {
-                    BlockPos pos = new BlockPos(chunkX * 16 + x, y, chunkZ * 16 + z);
-                    int stateId = Block.getStateId(mc.theWorld.getBlockState(pos));
-                    if (!isVolatileStateId(stateId)) {
-                        continue;
-                    }
-                    JsonObject block = new JsonObject();
-                    block.addProperty("x", pos.getX());
-                    block.addProperty("y", pos.getY());
-                    block.addProperty("z", pos.getZ());
-                    block.addProperty("stateId", stateId);
-                    blocks.add(block);
+
+        for (int sectionY = 0; sectionY < storageArray.length; sectionY++) {
+            ExtendedBlockStorage storage = storageArray[sectionY];
+            if (storage == null || storage.isEmpty()) {
+                continue;
+            }
+
+            char[] data = storage.getData();
+            for (int index = 0; index < data.length; index++) {
+                if (data[index] == 0) {
+                    continue;
                 }
+
+                int y = index >>> 8;
+                int rem = index & 255;
+                int z = rem >>> 4;
+                int x = rem & 15;
+                int stateId = Block.getStateId(storage.get(x, y, z));
+                if (!isVolatileStateId(stateId)) {
+                    continue;
+                }
+
+                JsonObject block = new JsonObject();
+                block.addProperty("x", chunkX * 16 + x);
+                block.addProperty("y", sectionY * 16 + y);
+                block.addProperty("z", chunkZ * 16 + z);
+                block.addProperty("stateId", stateId);
+                blocks.add(block);
             }
         }
 
@@ -637,29 +654,26 @@ public final class BBotHeadlessPoc {
             return;
         }
 
+        Chunk chunk = mc.theWorld.getChunkFromChunkCoords(chunkX, chunkZ);
+        ExtendedBlockStorage[] storageArray = chunk.getBlockStorageArray();
         JsonArray sections = new JsonArray();
-        for (int sectionY = 0; sectionY < 16; sectionY++) {
-            byte[] states = new byte[16 * 16 * 16 * 2];
-            boolean nonAir = false;
-            int offset = 0;
 
+        for (int sectionY = 0; sectionY < storageArray.length; sectionY++) {
+            ExtendedBlockStorage storage = storageArray[sectionY];
+            if (storage == null || storage.isEmpty()) {
+                continue;
+            }
+
+            byte[] states = new byte[16 * 16 * 16 * 2];
+            int offset = 0;
             for (int y = 0; y < 16; y++) {
-                int worldY = sectionY * 16 + y;
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
-                        BlockPos pos = new BlockPos(chunkX * 16 + x, worldY, chunkZ * 16 + z);
-                        int stateId = Block.getStateId(mc.theWorld.getBlockState(pos));
-                        if (stateId != 0) {
-                            nonAir = true;
-                        }
+                        int stateId = Block.getStateId(storage.get(x, y, z));
                         states[offset++] = (byte) (stateId & 0xff);
                         states[offset++] = (byte) ((stateId >>> 8) & 0xff);
                     }
                 }
-            }
-
-            if (!nonAir) {
-                continue;
             }
 
             JsonObject section = new JsonObject();
