@@ -74,6 +74,17 @@ export class ControlStore {
     private resolveMicrosoftSession?: ResolveMicrosoftSession) {}
   setBotConfigurationGuard(guard:(botId:string)=>boolean):void { this.botConfigurationAvailable=guard; }
   get busy(): boolean { return this.pending > 0; }
+  private uniqueLabel(base:string):string {
+    const clean=(base.replace(/[^A-Za-z0-9_-]/g,'_').slice(0,40)||'Account');
+    const used=new Set(this.entries.map(account=>account.label.toLowerCase()));
+    if(!used.has(clean.toLowerCase()))return clean;
+    for(let n=2;n<=99;n++){
+      const suffix=`-${n}`;
+      const candidate=`${clean.slice(0,40-suffix.length)}${suffix}`;
+      if(!used.has(candidate.toLowerCase()))return candidate;
+    }
+    return `Account-${randomUUID().slice(0,8)}`;
+  }
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
     return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError }) =>
@@ -288,11 +299,14 @@ export class ControlStore {
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
     const b = body as Record<string, unknown>;
     if (b.kind === 'SESSION') return this.addSession(body);
-    if (Object.keys(b).sort().join(',') !== 'kind,label' || b.kind !== 'MICROSOFT' ||
-      typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label)) throw Error('INVALID_INPUT');
-    const label = b.label;
+    const keys=Object.keys(b).sort().join(',');
+    if (!['kind','kind,label'].includes(keys) || b.kind !== 'MICROSOFT' ||
+      (b.label !== undefined && (typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label)))) throw Error('INVALID_INPUT');
+    const requestedLabel=typeof b.label==='string'?b.label:undefined;
     return this.exclusive(async () => {
-      if (this.entries.length >= 20 || this.entries.some(a => a.label.toLowerCase() === label.toLowerCase())) throw Error('CONFLICT');
+      if (this.entries.length >= 20 ||
+          (requestedLabel && this.entries.some(a => a.label.toLowerCase() === requestedLabel.toLowerCase()))) throw Error('CONFLICT');
+      const label=requestedLabel??this.uniqueLabel('Microsoft');
       const entry: StoredAccount = { id: randomUUID(), label, kind: 'MICROSOFT', status: 'WAITING_FOR_LOGIN',
         createdAt: Date.now(), cacheKey: label, folder: label };
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
@@ -304,10 +318,12 @@ export class ControlStore {
     });
   }
   private addSession(body: unknown): Promise<PublicAccount> {
-    const { label, accessToken } = validateSessionInput(body);
+    const { label:requestedLabel, accessToken } = validateSessionInput(body);
     return this.exclusive(async () => {
-      if (this.entries.length >= 20 || this.entries.some(a => a.label.toLowerCase() === label.toLowerCase())) throw Error('CONFLICT');
+      if (this.entries.length >= 20 ||
+          (requestedLabel && this.entries.some(a => a.label.toLowerCase() === requestedLabel.toLowerCase()))) throw Error('CONFLICT');
       const credential = await this.resolveSession(accessToken);
+      const label=requestedLabel??this.uniqueLabel(credential.selectedProfile.name);
       const entry: StoredAccount = { id: randomUUID(), label, kind: 'SESSION', status: 'READY',
         minecraftName: credential.selectedProfile.name, createdAt: Date.now() };
       await saveSessionCredential(this.config.authDir, entry.id, credential);
