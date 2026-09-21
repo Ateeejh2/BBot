@@ -1,9 +1,12 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Config } from '../config/index.js';
 import type { Logger } from '../logging/logger.js';
+import type { SessionCredential } from '../runtime/session.js';
 
 export type ForgeWorkerPhase = 'STOPPED' | 'LAUNCHING' | 'LAUNCHED' | 'STOPPING';
 
@@ -32,9 +35,10 @@ interface WorkerResourceSample {
 interface WorkerRecord extends ForgeWorkerView {
   child?: ChildProcessWithoutNullStreams;
   resourceSample?: WorkerResourceSample;
+  sessionFile?: string;
 }
 
-const LAUNCH_COMMAND = 'launch forge:1.8.9 -specifics -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
+const LAUNCH_COMMAND = 'launch forge:1.8.9 -offline -specifics -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
 
 function processTreeSample(rootPid: number): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
   if (process.platform !== 'linux') return undefined;
@@ -198,25 +202,50 @@ export class ForgeWorkerSupervisor {
     return this.worker(botId).phase === 'LAUNCHED';
   }
 
-  async launch(botId: string): Promise<void> {
+  isStopped(botId:string):boolean {
+    return this.worker(botId).phase === 'STOPPED';
+  }
+
+  async launch(botId: string, credential:SessionCredential): Promise<void> {
     const worker = this.worker(botId);
     if (worker.phase !== 'STOPPED') throw Error('INVALID_STATE');
 
-    // The current PoC uses one shared HeadlessMC game directory. Prevent concurrent
-    // launches until per-worker runtime directories are introduced.
-    if ([...this.workers.values()].some(other => other.botId !== botId && other.phase !== 'STOPPED')) {
-      throw Error('WORKER_RUNTIME_BUSY');
-    }
-
     const script = join(this.config.forge.pocDir, 'scripts', 'run-hmc.sh');
     if (!existsSync(script)) throw Error('WORKER_NOT_BOOTSTRAPPED');
+    if (!credential || typeof credential.accessToken !== 'string' || credential.accessToken.length < 1 ||
+        credential.accessToken.length > 2048 || !/^[A-Za-z0-9_]{1,16}$/.test(credential.selectedProfile?.name ?? '') ||
+        !/^[0-9a-f]{32}$/i.test(credential.selectedProfile?.id ?? '')) throw Error('AUTH_FAILED');
+
+    const runtimeDir=join(this.config.dataDir,'forge-workers',botId);
+    const sessionDir=join(this.config.authDir,'forge-workers',botId);
+    await mkdir(runtimeDir,{recursive:true,mode:0o700});
+    await mkdir(sessionDir,{recursive:true,mode:0o700});
+    const sessionFile=join(sessionDir,'session.json');
+    const temp=`${sessionFile}.${randomUUID()}.tmp`;
+    try{
+      await writeFile(temp,JSON.stringify({
+        accessToken:credential.accessToken,
+        selectedProfile:{name:credential.selectedProfile.name,id:credential.selectedProfile.id.toLowerCase()}
+      }),{encoding:'utf8',mode:0o600,flag:'wx'});
+      await rename(temp,sessionFile);
+    }catch(error){
+      await rm(temp,{force:true});
+      throw error;
+    }
 
     worker.phase = 'LAUNCHING';
     worker.lastError = undefined;
     worker.resourceSample = undefined;
     worker.launchProgress = 5;
 
-    const env: NodeJS.ProcessEnv = { ...process.env, BBOT_POC_BRIDGE_PORT: String(worker.bridgePort), BBOT_POC_AUTOTEST: 'false' };
+    worker.sessionFile=sessionFile;
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      BBOT_POC_BRIDGE_PORT: String(worker.bridgePort),
+      BBOT_POC_AUTOTEST: 'false',
+      BBOT_HMC_RUNTIME: runtimeDir,
+      BBOT_SESSION_FILE: sessionFile
+    };
     const resolvedJava8 = java8Home(this.config);
     if (resolvedJava8) env.JAVA8_HOME = resolvedJava8;
 
@@ -260,6 +289,7 @@ export class ForgeWorkerSupervisor {
         worker.phase = 'LAUNCHED';
         worker.lastError = undefined;
         this.logger.log('info', 'forge worker launched', { botId, bridgePort: worker.bridgePort });
+        void this.clearSessionFile(worker);
         finish();
       };
 
@@ -271,6 +301,7 @@ export class ForgeWorkerSupervisor {
       child.stdout.on('data', inspect);
       child.stderr.on('data', inspect);
       child.once('error', () => {
+        void this.clearSessionFile(worker);
         worker.child = undefined;
         worker.resourceSample = undefined;
         worker.launchProgress = undefined;
@@ -278,6 +309,7 @@ export class ForgeWorkerSupervisor {
         fail('WORKER_LAUNCH_FAILED');
       });
       child.once('exit', () => {
+        void this.clearSessionFile(worker);
         const wasLaunching = worker.phase === 'LAUNCHING';
         worker.child = undefined;
         worker.resourceSample = undefined;
@@ -323,6 +355,7 @@ export class ForgeWorkerSupervisor {
     worker.launchProgress = undefined;
     worker.phase = 'STOPPED';
     worker.lastError = undefined;
+    await this.clearSessionFile(worker);
   }
 
   async close(): Promise<void> {
@@ -330,6 +363,12 @@ export class ForgeWorkerSupervisor {
       if (worker.phase === 'STOPPED') continue;
       try { await this.quit(worker.botId); } catch { await this.forceStop(worker); }
     }
+  }
+
+  private async clearSessionFile(worker:WorkerRecord):Promise<void>{
+    const file=worker.sessionFile;
+    worker.sessionFile=undefined;
+    if(file)await rm(file,{force:true}).catch(()=>{});
   }
 
   private worker(botId: string): WorkerRecord {
@@ -355,5 +394,6 @@ export class ForgeWorkerSupervisor {
     worker.resourceSample = undefined;
     worker.launchProgress = undefined;
     worker.phase = 'STOPPED';
+    await this.clearSessionFile(worker);
   }
 }
