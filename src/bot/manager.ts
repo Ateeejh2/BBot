@@ -535,8 +535,8 @@ export class BotManager {
       this.disconnected(b);
     }
   }
-  private confirmJoinedInstance(b: ManagedBot): void {
-    if (b.machine.state !== 'JOINING_PIT' || !b.pendingInstance || !b.joinSpawnObserved) return;
+  private confirmJoinedInstance(b: ManagedBot, authoritativeLocation = false): void {
+    if (b.machine.state !== 'JOINING_PIT' || !b.pendingInstance || (!b.joinSpawnObserved && !authoritativeLocation)) return;
     try { this.registry.join(b.pendingInstance, b.id, this.now()); }
     catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
     b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false;
@@ -630,7 +630,22 @@ export class BotManager {
       try { this.registry.observe(instance, this.now()); } catch { this.log(b, 'registry capacity reached'); }
       this.log(b, transferInstance?'transfer destination observed':'Pit instance observed from locraw',
         { destination: instance });
-      this.confirmJoinedInstance(b);
+      if(locrawInstance){
+        // A verified /locraw response naming The Pit is authoritative: it proves
+        // the client already reached this backend even if the world/spawn event
+        // was missed during the Bungee transfer.
+        this.confirmJoinedInstance(b,true);
+      }else{
+        this.confirmJoinedInstance(b);
+        if(b.machine.state==='JOINING_PIT'&&!b.joinSpawnObserved){
+          try{
+            b.transport?.chat('/locraw');
+            this.log(b,'Pit instance fallback requested',{source:'transfer-no-spawn'});
+          }catch{
+            this.log(b,'Pit instance fallback request failed');
+          }
+        }
+      }
     }
     const reason = this.classifier.classify(text);
     if (reason && b.machine.state !== 'DISCONNECTED' && b.machine.state !== 'CONNECTING') this.recover(b, reason);
