@@ -232,9 +232,10 @@ test('configuration defaults are safe and malformed values fail closed', () => {
   assert.equal(loadConfig({}).version, '1.8.9'); assert.equal(loadConfig({ MC_VERSION: '' }).version, '1.8.9');
   assert.equal(loadConfig({ MC_VERSION: '1.16.5' }).version, '1.16.5');
   assert.equal(loadConfig({}).transferMessageChannel, 'system');
+  assert.equal(loadConfig({}).pitEventMinPlayers, 20);
   assert.equal(loadConfig({}).eventProviderUrl, undefined);
   assert.equal(loadConfig({ EVENT_PROVIDER_URL: 'https://events.example.test/feed?region=jp' }).eventProviderUrl, 'https://events.example.test/feed?region=jp');
   assert.equal(loadConfig({ EVENT_PROVIDER_URL: 'http://127.0.0.1:8080/feed' }).eventProviderUrl, 'http://127.0.0.1:8080/feed');
-  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }, { TRANSFER_MESSAGE_CHANNEL: 'title' },
+  for (const env of [{ BOT_COUNT: '21' }, { BOT_COUNT: '1.5' }, { PIT_EVENT_MIN_PLAYERS: '-1' }, { PATH_CONCURRENCY: '0' }, { DEBUG: 'yes' }, { MODE: 'production' }, { LOBBY_COMMAND: '/server pit' }, { TRANSFER_MESSAGE_CHANNEL: 'title' },
     { EVENT_PROVIDER_URL: 'http://events.example.test/feed' }, { EVENT_PROVIDER_URL: 'https://user:pass@events.example.test/feed' }, { EVENT_PROVIDER_URL: 'https://events.example.test/feed#secret' }]) assert.throws(() => loadConfig(env));
 });
