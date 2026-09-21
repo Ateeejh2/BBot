@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Position } from '../core/types.js';
 import { PitMapCache } from './map-cache.js';
+import { PitMapDiskStore, PIT_MAP_DISK_FORMAT_VERSION, type PitDiskGraph } from './pit-map-persistence.js';
 
 export interface PitChunkSection {
   y: number;
@@ -21,7 +22,7 @@ export type PitScanProgress = (done:number,total:number)=>void;
 export interface PitNavigationPlan {
   fingerprint: string;
   previousFingerprint?: string;
-  cacheStatus: 'HIT' | 'SHARED_HIT' | 'FULL_SCAN' | 'REVALIDATED';
+  cacheStatus: 'HIT' | 'SHARED_HIT' | 'DISK_HIT' | 'FULL_SCAN' | 'REVALIDATED';
   overlayRevision: number;
   dynamicBlocks: number;
   waypoints: Position[];
@@ -61,9 +62,18 @@ export class PitNavigationService {
   private readonly overlayEpoch = new Map<string,number>();
   private readonly overlayChanges = new Map<string,Array<{revision:number;x:number;y:number;z:number}>>();
   private readonly graphBuilds = new Map<string,Promise<TerrainGraph>>();
+  private readonly diskLoads = new Map<string,Promise<TerrainGraph|undefined>>();
+  private diskStore?: PitMapDiskStore;
 
-  constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
+  constructor(
+    refreshAfterMs = 7 * 24 * 60 * 60 * 1000,
+    private readonly maxGenerations = 6
+  ) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
+  }
+
+  configurePersistence(directory:string):void {
+    this.diskStore=new PitMapDiskStore(directory,this.maxGenerations);
   }
 
   retainInstance(instanceId:string, position?:Position):void {
@@ -285,6 +295,12 @@ export class PitNavigationService {
     this.cache.bind(instanceId, fingerprint, now);
     let graph = this.cache.graphForInstance(instanceId);
     if (!graph) {
+      const diskGraph=await this.loadDiskGraph(fingerprint);
+      if(diskGraph){
+        this.cache.setGraph(fingerprint,diskGraph,now);
+        return {graph:diskGraph,cacheStatus:'DISK_HIT',previousFingerprint:existingFingerprint};
+      }
+
       const existingBuild=this.graphBuilds.get(fingerprint);
       if(existingBuild){
         graph=await existingBuild;
@@ -326,6 +342,7 @@ export class PitNavigationService {
         overlay.revision++;
         this.overlayReady.add(instanceKey);
         this.cache.setGraph(fingerprint,built,Date.now());
+        await this.saveDiskGraph(built);
         return built;
       })().finally(()=>this.graphBuilds.delete(fingerprint));
       this.graphBuilds.set(fingerprint,build);
@@ -339,6 +356,84 @@ export class PitNavigationService {
     return {graph,cacheStatus:'SHARED_HIT',previousFingerprint:existingFingerprint};
   }
 
+  private async loadDiskGraph(fingerprint:string):Promise<TerrainGraph|undefined>{
+    if(!this.diskStore)return;
+    const existing=this.diskLoads.get(fingerprint);
+    if(existing)return existing;
+    const task=this.diskStore.load(fingerprint)
+      .then(snapshot=>snapshot?terrainGraphFromDisk(snapshot):undefined)
+      .catch(()=>undefined)
+      .finally(()=>this.diskLoads.delete(fingerprint));
+    this.diskLoads.set(fingerprint,task);
+    return task;
+  }
+
+  private async saveDiskGraph(graph:TerrainGraph):Promise<void>{
+    if(!this.diskStore)return;
+    try{await this.diskStore.save(terrainGraphToDisk(graph));}
+    catch{/* Disk cache failure must never block live navigation. */}
+  }
+
+}
+
+function terrainGraphToDisk(graph:TerrainGraph):PitDiskGraph {
+  const chunks=[...graph.chunks.values()]
+    .sort((a,b)=>a.chunkX-b.chunkX||a.chunkZ-b.chunkZ)
+    .map(chunk=>({
+      chunkX:chunk.chunkX,
+      chunkZ:chunk.chunkZ,
+      sections:[...chunk.sections]
+        .sort((a,b)=>a.y-b.y)
+        .flatMap(section=>{
+          const bytes=Buffer.allocUnsafe(section.states.length*2);
+          let hasStatic=false;
+          for(let i=0;i<section.states.length;i++){
+            const state=baseState(section.states[i]??0);
+            if(state!==0)hasStatic=true;
+            bytes.writeUInt16LE(state,i*2);
+          }
+          return hasStatic?[{y:section.y,states:bytes.toString('base64')}]:[];
+        })
+    }));
+  const nodes=[...graph.nodes.values()]
+    .sort((a,b)=>a.x-b.x||a.z-b.z||a.y-b.y)
+    .map(node=>[node.x,node.y,node.z] as [number,number,number]);
+  return {
+    formatVersion:PIT_MAP_DISK_FORMAT_VERSION,
+    fingerprint:graph.fingerprint,
+    savedAt:Date.now(),
+    chunks,
+    nodes
+  };
+}
+
+function terrainGraphFromDisk(snapshot:PitDiskGraph):TerrainGraph {
+  const graph:TerrainGraph={
+    fingerprint:snapshot.fingerprint,
+    chunks:new Map(),
+    nodes:new Map(),
+    columns:new Map()
+  };
+  for(const persisted of snapshot.chunks){
+    const sections:PitChunkSection[]=[];
+    for(const section of persisted.sections){
+      const bytes=Buffer.from(section.states,'base64');
+      const states=new Uint16Array(4096);
+      for(let i=0;i<4096;i++)states[i]=bytes.readUInt16LE(i*2);
+      sections.push({y:section.y,states});
+    }
+    const chunk={chunkX:persisted.chunkX,chunkZ:persisted.chunkZ,sections};
+    graph.chunks.set(chunkKey(chunk.chunkX,chunk.chunkZ),chunk);
+  }
+  for(const [x,y,z] of snapshot.nodes){
+    const node={x,y,z};
+    graph.nodes.set(nodeKey(x,y,z),node);
+    const key=columnKey(x,z);
+    let ys=graph.columns.get(key);
+    if(!ys){ys=new Set<number>();graph.columns.set(key,ys);}
+    ys.add(y);
+  }
+  return graph;
 }
 
 function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkData}>):string {
