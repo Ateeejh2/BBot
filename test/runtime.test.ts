@@ -258,7 +258,7 @@ test('Forge supervisor launches different bot runtimes concurrently and rejects 
 set -euo pipefail
 while IFS= read -r line; do
   if [[ "$line" == launch* ]]; then
-    echo "bridge listening on 127.0.0.1:${BBOT_POC_BRIDGE_PORT}"
+    echo "bridge listening on 127.0.0.1:\${BBOT_POC_BRIDGE_PORT}"
   elif [[ "$line" == "quit" ]]; then
     exit 0
   fi
