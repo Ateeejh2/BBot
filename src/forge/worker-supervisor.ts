@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -146,6 +146,10 @@ export class ForgeWorkerSupervisor {
   private workers = new Map<string, WorkerRecord>();
 
   constructor(private config: Config, private logger: Logger) {
+    // Launch credentials are short-lived copies. A previous backend crash may
+    // have left one behind, so clear the entire ephemeral worker credential area
+    // before accepting any new Launch request.
+    try { rmSync(join(config.authDir,'forge-workers'),{recursive:true,force:true}); } catch {}
     for (let i = 0; i < config.count; i++) {
       const botId = `bot-${i + 1}`;
       this.workers.set(botId, {
