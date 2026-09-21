@@ -587,7 +587,19 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         else events.chestDisappeared?.(position);
         break;
       }
-      case 'serverDisconnected':
+      case 'serverDisconnected': {
+        if (typeof message.text === 'string') {
+          const reason=message.text
+            .replace(/§[0-9a-fk-or]/gi,'')
+            .replace(/[\r\n]+/g,' ')
+            .replace(/[\u0000-\u001f\u007f]/g,' ')
+            .trim()
+            .slice(0,500);
+          if(reason)events.diagnostic?.('server disconnect reason',{reason});
+        }
+        events.serverDisconnected?.();
+        break;
+      }
       case 'end':
         events.serverDisconnected?.();
         break;
