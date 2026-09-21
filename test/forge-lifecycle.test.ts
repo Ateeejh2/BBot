@@ -17,6 +17,7 @@ class ForgeLifecycleTransport implements BotTransport {
   disconnectCalls = 0;
   closeCalls = 0;
   failNextConnect = false;
+  omitTransferNotice = false;
   lastServer?: { host: string; port: number };
 
   constructor(private events: TransportEvents) {}
@@ -43,8 +44,12 @@ class ForgeLifecycleTransport implements BotTransport {
   }
 
   chat(command: string): void {
+    if(command==='/locraw'){
+      this.events.message('{"server":"mega-regression","gametype":"PIT","mode":"PIT","map":"The Pit"}');
+      return;
+    }
     if (command !== '/play pit') return;
-    this.events.message('SERVER FOUND! Sending to mega-regression!');
+    if(!this.omitTransferNotice)this.events.message('SERVER FOUND! Sending to mega-regression!');
     this.events.worldReset();
     this.events.spawn();
   }
@@ -169,6 +174,26 @@ test('Forge connection timeout pauses instead of silently reconnecting forever',
     assert.equal(manager.views()[0]?.state, 'CONNECTING');
     assert.equal(fixture.factoryCalls, 2);
   } finally {
+    manager.stop();
+  }
+});
+
+test('Forge Pit join falls back to locraw when transfer notice is missed', () => {
+  const fixture=createForgeManager();
+  const {manager}=fixture;
+  try{
+    manager.startServer('bot-1','play.example.test',25565);
+    const transport=fixture.transport;
+    assert.ok(transport);
+    transport.omitTransferNotice=true;
+    transport.spawnNow();
+    assert.equal(manager.views()[0]?.state,'LOBBY');
+
+    fixture.setNow(6_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state,'IN_PIT_IDLE');
+    assert.equal(manager.views()[0]?.instanceId,'mega-regression');
+  }finally{
     manager.stop();
   }
 });
