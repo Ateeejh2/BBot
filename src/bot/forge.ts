@@ -964,6 +964,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     prewarmInstanceId=instanceId;
     let shouldRetry=false;
     const task=(async()=>{
+      const prewarmStartedAt=Date.now();
       const start=await waitForCurrentPosition(controller.signal);
       if(!start)throw new Error('Pit prewarm position unavailable');
       events.diagnostic?.('pit navigation prewarm started',{instanceId});
@@ -986,7 +987,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           fingerprint:result.fingerprint,
           cacheStatus:result.cacheStatus,
           scannedChunks:result.scannedChunks,
-          dynamicBlocks:result.dynamicBlocks
+          dynamicBlocks:result.dynamicBlocks,
+          prewarmMs:Date.now()-prewarmStartedAt
         });
       }finally{
         if(scanReported)events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
@@ -997,7 +999,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       events.diagnostic?.('pit navigation prewarm failed',{
         instanceId,
         attempt,
-        reason:error instanceof Error?error.message.slice(0,200):'unknown'
+        reason:error instanceof Error?error.message.slice(0,200):'unknown',
+        prewarmMs:Date.now()-prewarmStartedAt
       });
     }).finally(()=>{
       if(prewarmAbort===controller){
