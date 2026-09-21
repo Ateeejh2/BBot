@@ -20,6 +20,12 @@ export class DistributionManager {
       occupied.set(bot.instanceId, list);
     }
 
+    // Reaching a unique instance completes that bot's current distribution
+    // episode, so future topology changes get a fresh bounded budget.
+    for (const group of occupied.values()) {
+      if (group.length === 1) this.attempts.delete(group[0]!.id);
+    }
+
     const duplicated = [...occupied.values()]
       .filter(group => group.length > 1)
       .sort((a, b) => b.length - a.length || (a[0]?.instanceId ?? '').localeCompare(b[0]?.instanceId ?? ''));
@@ -55,6 +61,6 @@ export class DistributionManager {
     });
   }
 
-  // Attempts are intentionally bounded per process lifetime. This prevents a
-  // small set of available Pit instances from causing endless lobby hopping.
+  // Attempts are bounded while a bot remains duplicated. Reaching a unique
+  // instance resets its budget for a later distribution episode.
 }
