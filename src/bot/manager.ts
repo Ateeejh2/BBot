@@ -18,7 +18,7 @@ interface EventPreparation {
   predictionAbort?:AbortController; predictionTarget?:Position;
 }
 interface DebugWalk { generation:number; abort:AbortController }
-interface LimboRecovery { playAt:number; phase:'WAIT_LOBBY'|'JOINING_PIT' }
+interface LimboRecovery { playAt:number; phase:'WAIT_LOBBY'|'JOINING_PIT'; source:'LIMBO'|'LOW_POPULATION'|'DISTRIBUTION' }
 interface CarePackageRun { timestamp:number; instanceId:string; target:Position; expiresAt:number; chestEvent?:GameEvent }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
@@ -332,13 +332,13 @@ export class BotManager {
       const limboRecovery=b.limboRecovery;
       if(limboRecovery?.phase==='WAIT_LOBBY'&&b.machine.state==='RECOVERING'){
         if(b.ready&&now>=limboRecovery.playAt){
-          this.log(b,'limbo recovery sending Pit command',{waitedMs:Math.max(0,now-(limboRecovery.playAt-2000))});
+          this.log(b,'lobby requeue sending Pit command',{source:limboRecovery.source,waitedMs:Math.max(0,now-limboRecovery.playAt)});
           this.join(b);
           if(b.limboRecovery===limboRecovery)limboRecovery.phase='JOINING_PIT';
           continue;
         }
         if(!b.ready&&now>=b.deadline){
-          this.log(b,'limbo recovery lobby wait timed out');
+          this.log(b,'lobby requeue wait timed out',{source:limboRecovery.source});
           b.limboRecovery=undefined;
           this.disconnected(b);
           continue;
@@ -375,8 +375,10 @@ export class BotManager {
           sourceInstance:sourceInstance??null,
           sourceOccupancy:sourceOccupancy??null
         });
-        this.recover(b, 'PLANNED'); b.ready = false; b.deadline = now + this.config.joinTimeoutMs;
-        try { b.transport?.chat(this.config.lobbyCommand ?? '/mock-lobby'); } catch { this.disconnected(b); }
+        this.startLobbyRequeue(b,'DISTRIBUTION',0,{
+          sourceInstance:sourceInstance??null,
+          sourceOccupancy:sourceOccupancy??null
+        });
       }
     }
   }
@@ -549,10 +551,11 @@ export class BotManager {
     b.transport?.setInstance?.(b.instanceId);
     b.machine.transition('IN_PIT_IDLE'); b.stableSince = this.now();
     if(b.limboRecovery?.phase==='JOINING_PIT'){
-      this.log(b,'limbo recovery completed',{instanceId:b.instanceId});
+      this.log(b,'lobby requeue completed',{source:b.limboRecovery.source,instanceId:b.instanceId});
       b.limboRecovery=undefined;
     }
     this.log(b, 'instance confirmed after transfer signals');
+    this.checkPitPopulation(b);
   }
   private spawn(b: ManagedBot): void {
     b.ready = true;
@@ -691,6 +694,50 @@ export class BotManager {
     b.generation.invalidate();
     this.log(b,'care package execution stopped',{scheduledAt:run.timestamp,reason});
   }
+  private checkPitPopulation(b:ManagedBot):void {
+    const minimum=this.config.pitEventMinPlayers;
+    const transport=b.transport;
+    const instanceId=b.instanceId;
+    const connection=b.connection;
+    if(minimum<=0||!instanceId||!transport?.playerCount)return;
+
+    void transport.playerCount().then(count=>{
+      if(this.stopped||b.connection!==connection||b.machine.state!=='IN_PIT_IDLE'||b.instanceId!==instanceId)return;
+      if(count===undefined){
+        this.log(b,'Pit lobby population unavailable',{instanceId,minimum});
+        return;
+      }
+      this.log(b,'Pit lobby population observed',{instanceId,players:count,minimum});
+      if(count>=minimum)return;
+      this.startLobbyRequeue(b,'LOW_POPULATION',0,{players:count,minimum,instanceId});
+    },()=>{
+      if(!this.stopped&&b.connection===connection&&b.instanceId===instanceId)
+        this.log(b,'Pit lobby population query failed',{instanceId,minimum});
+    });
+  }
+
+  private startLobbyRequeue(
+    b:ManagedBot,
+    source:'LOW_POPULATION'|'DISTRIBUTION',
+    delayMs=0,
+    extra:Record<string,unknown>={}
+  ):void {
+    if(b.limboRecovery||['DISCONNECTED','CONNECTING'].includes(b.machine.state))return;
+    const now=this.now();
+    b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
+    b.transport?.setInstance?.(undefined);
+    this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
+    this.registry.leave(b.id,now,'PLANNED');
+    b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.stableSince=undefined;b.ready=false;
+    b.machine.transition('RECOVERING');
+    b.limboRecovery={playAt:now+delayMs,phase:'WAIT_LOBBY',source};
+    b.deadline=now+delayMs+this.config.joinTimeoutMs;
+    b.dueAt=Number.POSITIVE_INFINITY;
+    this.log(b,'lobby requeue started',{source,delayMs,...extra});
+    try{b.transport?.chat(this.config.lobbyCommand??'/l');}
+    catch{b.limboRecovery=undefined;this.disconnected(b);}
+  }
+
   private recoverFromLimbo(b:ManagedBot):void {
     if(b.limboRecovery)return;
     const now=this.now();
@@ -700,7 +747,7 @@ export class BotManager {
     this.registry.leave(b.id,now,'LIMBO');
     b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.stableSince=undefined;b.ready=false;
     b.machine.transition('RECOVERING');
-    b.limboRecovery={playAt:now+2000,phase:'WAIT_LOBBY'};
+    b.limboRecovery={playAt:now+2000,phase:'WAIT_LOBBY',source:'LIMBO'};
     b.deadline=now+2000+this.config.joinTimeoutMs;
     b.dueAt=Number.POSITIVE_INFINITY;
     this.log(b,'limbo detected; starting special recovery',{
