@@ -20,8 +20,10 @@ class ControlledTransport implements BotTransport {
   navigations: Position[] = [];
   serverConnections: Array<{host:string;port:number}> = [];
   serverDisconnects = 0;
+  playerCountValue: number | undefined;
   constructor(readonly events: TransportEvents) {}
   position() { return { x: 0, y: 64, z: 0 }; }
+  async playerCount() { return this.playerCountValue; }
   chat(command: string) { this.commands.push(command); }
   async connectServer(host: string, port: number) { this.serverConnections.push({host,port}); }
   async disconnectServer() { this.serverDisconnects++; }
@@ -96,6 +98,46 @@ test('Forge API mode can attach a stopped bot without an account assignment', ()
   assert.equal(f.connections.length, 1);
   assert.equal(f.manager.views()[0]?.state, 'CONNECTING');
   f.manager.stop();
+});
+
+test('Pit lobbies below 20 players immediately requeue while 20 players are kept', async () => {
+  const low = fixture(1, new MockTaskHandler(), true);
+  low.config.mode = 'live';
+  low.config.transport = 'forge';
+  low.manager.startServer('bot-1', 'mc.example.test', 25565);
+  const lowTransport = low.connections[0]!;
+  lowTransport.playerCountValue = 19;
+  lowTransport.events.spawn();
+  low.tick(5000);
+  assert.deepEqual(lowTransport.commands, ['/play pit']);
+  low.join(lowTransport, 'low-pop');
+  await delay(0);
+  assert.equal(low.manager.views()[0]?.state, 'RECOVERING');
+  assert.equal(low.manager.views()[0]?.instanceId, undefined);
+  assert.deepEqual(lowTransport.commands, ['/play pit', '/l']);
+
+  // World transfer into the lobby must not turn this into generic recovery.
+  lowTransport.events.worldReset();
+  lowTransport.events.spawn();
+  low.tick(5001);
+  assert.equal(low.manager.views()[0]?.state, 'JOINING_PIT');
+  assert.deepEqual(lowTransport.commands, ['/play pit', '/l', '/play pit']);
+  low.manager.stop();
+
+  const enough = fixture(1, new MockTaskHandler(), true);
+  enough.config.mode = 'live';
+  enough.config.transport = 'forge';
+  enough.manager.startServer('bot-1', 'mc.example.test', 25565);
+  const enoughTransport = enough.connections[0]!;
+  enoughTransport.playerCountValue = 20;
+  enoughTransport.events.spawn();
+  enough.tick(5000);
+  enough.join(enoughTransport, 'event-ok');
+  await delay(0);
+  assert.equal(enough.manager.views()[0]?.state, 'IN_PIT_IDLE');
+  assert.equal(enough.manager.views()[0]?.instanceId, 'event-ok');
+  assert.deepEqual(enoughTransport.commands, ['/play pit']);
+  enough.manager.stop();
 });
 
 test('Forge Start connects selected server, waits five seconds after spawn, then confirms Pit instance', async () => {
