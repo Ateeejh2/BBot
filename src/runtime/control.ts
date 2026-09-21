@@ -85,6 +85,11 @@ export class ControlStore {
     if (challenge.expiresAt <= Date.now()) { this.challenges.delete(id); return undefined; }
     return { ...challenge };
   }
+  private async cleanupDeletedMicrosoftCache(id:string,folder:string):Promise<void> {
+    if(this.entries.some(account=>account.id===id))return;
+    await rm(join(this.config.authDir,folder),{recursive:true,force:true}).catch(()=>{});
+  }
+
   private reportAuthChallenge(id: string, input: AuthChallengeInput): void {
     try {
       const url = new URL(input.verificationUri);
@@ -293,7 +298,8 @@ export class ControlStore {
       await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
       this.entries.push(entry);
       void this.startAuth(entry, this.config, challenge => this.reportAuthChallenge(entry.id, challenge))
-        .then(result => this.authResult(entry.id, 'READY', result?.minecraftName), () => this.authResult(entry.id, 'ERROR'));
+        .then(result => this.authResult(entry.id, 'READY', result?.minecraftName), () => this.authResult(entry.id, 'ERROR'))
+        .finally(() => this.cleanupDeletedMicrosoftCache(entry.id, entry.folder));
       return this.listAccounts().find(a => a.id === entry.id)!;
     });
   }
@@ -369,7 +375,8 @@ export class ControlStore {
       this.entries = updated;
       this.challenges.delete(id);
       void this.startAuth(account, this.config, challenge => this.reportAuthChallenge(id, challenge))
-        .then(result => this.authResult(id, 'READY', result?.minecraftName), () => this.authResult(id, 'ERROR'));
+        .then(result => this.authResult(id, 'READY', result?.minecraftName), () => this.authResult(id, 'ERROR'))
+        .finally(() => this.cleanupDeletedMicrosoftCache(id, account.folder));
       return this.listAccounts().find(a => a.id === id)!;
     });
   }
