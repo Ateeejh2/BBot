@@ -206,7 +206,9 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
         if (forgeAction) {
           const [, id, action] = forgeAction;
           if (action === 'launch') {
-            const operation = forgeWorkers!.launch(id!);
+            if(!controls)throw Error('ACCOUNT_REQUIRED');
+            const credential=await controls.getLaunchCredential(id!);
+            const operation = forgeWorkers!.launch(id!,credential);
             broadcast();
             await operation;
           } else if (action === 'quit') {
@@ -239,7 +241,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       } catch (error) {
         const code = error instanceof Error ? error.message : '';
         const status = code === 'INVALID_INPUT' ? 400 :
-          ['UNSUPPORTED_AUTH','UNSUPPORTED_ACTION','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED','WORKER_NOT_BOOTSTRAPPED'].includes(code) ? 422 :
+          ['UNSUPPORTED_AUTH','UNSUPPORTED_ACTION','INVALID_SESSION_TOKEN','SESSION_AUTH_REQUIRED','ACCOUNT_NOT_READY','AUTH_FAILED','WORKER_NOT_BOOTSTRAPPED'].includes(code) ? 422 :
           ['UNKNOWN_BOT', 'UNKNOWN_ACCOUNT'].includes(code) ? 404 :
           ['INVALID_STATE', 'ACCOUNT_REQUIRED', 'CONFLICT', 'PROFILE_MISMATCH', 'JOB_REJECTED',
            'WORKER_NOT_LAUNCHED', 'WORKER_RUNTIME_BUSY', 'ALREADY_CONNECTED', 'NOT_CONNECTED'].includes(code) ? 409 :
