@@ -2,7 +2,7 @@ import net from 'node:net';
 import { createRequire } from 'node:module';
 import type { Config } from '../config/index.js';
 import type { Position } from '../core/types.js';
-import { parseInstance } from '../instances/parser.js';
+import { parseInstance, parseLocrawPitInstance } from '../instances/parser.js';
 import { parseCarePackageAnnouncement } from '../events/care-package.js';
 import { sharedPitNavigation, type PitChunkData, type PitNavigationPlan } from '../pathfinding/pit-navigation.js';
 import { pathCorridorAffected } from '../pathfinding/path-corridor.js';
@@ -554,13 +554,15 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         });
 
         const candidate = parseInstance(raw);
+        const locrawInstance = parseLocrawPitInstance(raw);
         const eligible = eligibleTransferChannel(channel, null, config.transferMessageChannel, candidate !== undefined);
+        const locrawEligible = eligibleServerAnnouncementChannel(channel, null, locrawInstance !== undefined);
         const careAnnouncement = parseCarePackageAnnouncement(raw);
         const careEligible = eligibleServerAnnouncementChannel(channel, null, careAnnouncement !== undefined);
         const limboEligible = eligibleServerAnnouncementChannel(channel, null, isLimboNotice(raw));
         const deathEligible = eligibleServerAnnouncementChannel(channel, null, isDeathNotice(raw));
 
-        if (!eligible && !careEligible && !limboEligible && !deathEligible) break;
+        if (!eligible && !locrawEligible && !careEligible && !limboEligible && !deathEligible) break;
         events.message(raw);
         break;
       }
