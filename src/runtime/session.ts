@@ -13,23 +13,36 @@ const opaque = (value: unknown, max: number): value is string => typeof value ==
 const profileName = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(value);
 const profileId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value);
 
+function normalizeAccessToken(value:string):string {
+  if(value.startsWith('token:')){
+    const last=value.lastIndexOf(':');
+    if(last<=6)throw Error('INVALID_SESSION_TOKEN');
+    const token=value.slice(6,last);
+    const id=value.slice(last+1).replace(/-/g,'');
+    if(!opaque(token,2048)||!profileId(id))throw Error('INVALID_SESSION_TOKEN');
+    return token;
+  }
+  return value;
+}
+
 export function validateSessionInput(body: unknown): { label: string; accessToken: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
   const b = body as Record<string, unknown>;
   if (Object.keys(b).sort().join(',') !== 'accessToken,kind,label' ||
       b.kind !== 'SESSION' || typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label) ||
       !opaque(b.accessToken, 2048)) throw Error('INVALID_INPUT');
-  return { label: b.label, accessToken: b.accessToken };
+  return { label: b.label, accessToken: normalizeAccessToken(b.accessToken) };
 }
 
 export function validateSessionTokenInput(body: unknown): string {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
   const b = body as Record<string, unknown>;
   if (Object.keys(b).join(',') !== 'accessToken' || !opaque(b.accessToken, 2048)) throw Error('INVALID_INPUT');
-  return b.accessToken;
+  return normalizeAccessToken(b.accessToken);
 }
 
 export async function resolveSessionCredential(accessToken: string, fetchImpl: typeof fetch = fetch): Promise<SessionCredential> {
+  accessToken=normalizeAccessToken(accessToken);
   if (!opaque(accessToken, 2048)) throw Error('INVALID_SESSION_TOKEN');
   try {
     const response = await fetchImpl('https://api.minecraftservices.com/minecraft/profile', {
