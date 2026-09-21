@@ -429,6 +429,25 @@ test('performance snapshot tracks completed pathfinding attempts', async () => {
   assert.equal(typeof perf.bots[0]?.lastPathQueueMs, 'number');
   f.manager.stop();
 });
+test('verified Pit locraw confirms membership when spawn signal is missed', () => {
+  const f = fixture();
+  f.tick(0);
+  const t = f.connections[0]!;
+  t.events.spawn();
+  f.tick(1000);
+  assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.deepEqual(t.commands,['/play pit']);
+
+  t.events.message('SERVER FOUND! Sending to mega-fallback!');
+  assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.deepEqual(t.commands,['/play pit','/locraw']);
+
+  t.events.message('{"server":"mega-fallback","gametype":"PIT","mode":"PIT","map":"The Pit"}');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(f.manager.views()[0]?.instanceId,'mega-fallback');
+  f.manager.stop();
+});
+
 test('spawn before transfer notification still confirms the same join attempt', () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!; t.events.spawn(); f.tick(1000);
   t.events.worldReset(); t.events.spawn();
