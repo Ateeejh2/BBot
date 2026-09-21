@@ -21,9 +21,11 @@ class ControlledTransport implements BotTransport {
   serverConnections: Array<{host:string;port:number}> = [];
   serverDisconnects = 0;
   playerCountValue: number | undefined;
+  scanEnabled: boolean[] = [];
   constructor(readonly events: TransportEvents) {}
   position() { return { x: 0, y: 64, z: 0 }; }
   async playerCount() { return this.playerCountValue; }
+  setPitScanEnabled(enabled: boolean) { this.scanEnabled.push(enabled); }
   chat(command: string) { this.commands.push(command); }
   async connectServer(host: string, port: number) { this.serverConnections.push({host,port}); }
   async disconnectServer() { this.serverDisconnects++; }
@@ -100,13 +102,13 @@ test('Forge API mode can attach a stopped bot without an account assignment', ()
   f.manager.stop();
 });
 
-test('Pit lobbies below 20 players immediately requeue while 20 players are kept', async () => {
+test('Pit lobbies at 20 or fewer players never scan and immediately requeue', async () => {
   const low = fixture(1, new MockTaskHandler(), true);
   low.config.mode = 'live';
   low.config.transport = 'forge';
   low.manager.startServer('bot-1', 'mc.example.test', 25565);
   const lowTransport = low.connections[0]!;
-  lowTransport.playerCountValue = 19;
+  lowTransport.playerCountValue = 20;
   lowTransport.events.spawn();
   low.tick(5000);
   assert.deepEqual(lowTransport.commands, ['/play pit']);
@@ -115,8 +117,9 @@ test('Pit lobbies below 20 players immediately requeue while 20 players are kept
   assert.equal(low.manager.views()[0]?.state, 'RECOVERING');
   assert.equal(low.manager.views()[0]?.instanceId, undefined);
   assert.deepEqual(lowTransport.commands, ['/play pit', '/l']);
+  assert.equal(lowTransport.scanEnabled.includes(true), false,
+    '20-player lobby must not enable Pit scanning');
 
-  // World transfer into the lobby must not turn this into generic recovery.
   lowTransport.events.worldReset();
   lowTransport.events.spawn();
   low.tick(5001);
@@ -129,7 +132,7 @@ test('Pit lobbies below 20 players immediately requeue while 20 players are kept
   enough.config.transport = 'forge';
   enough.manager.startServer('bot-1', 'mc.example.test', 25565);
   const enoughTransport = enough.connections[0]!;
-  enoughTransport.playerCountValue = 20;
+  enoughTransport.playerCountValue = 21;
   enoughTransport.events.spawn();
   enough.tick(5000);
   enough.join(enoughTransport, 'event-ok');
@@ -137,7 +140,37 @@ test('Pit lobbies below 20 players immediately requeue while 20 players are kept
   assert.equal(enough.manager.views()[0]?.state, 'IN_PIT_IDLE');
   assert.equal(enough.manager.views()[0]?.instanceId, 'event-ok');
   assert.deepEqual(enoughTransport.commands, ['/play pit']);
+  assert.equal(enoughTransport.scanEnabled.at(-1), true,
+    '21-player lobby should enable Pit scanning');
   enough.manager.stop();
+});
+
+test('Pit population is polled periodically and a later drop triggers requeue', async () => {
+  const f = fixture(1, new MockTaskHandler(), true);
+  f.config.mode = 'live';
+  f.config.transport = 'forge';
+  f.config.pitPopulationCheckMs = 1000;
+  f.manager.startServer('bot-1', 'mc.example.test', 25565);
+  const t = f.connections[0]!;
+  t.playerCountValue = 25;
+  t.events.spawn();
+  f.tick(5000);
+  f.join(t, 'population-watch');
+  await delay(0);
+  assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE');
+  assert.equal(t.scanEnabled.at(-1), true);
+
+  t.playerCountValue = 20;
+  f.tick(5999);
+  await delay(0);
+  assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE');
+
+  f.tick(6000);
+  await delay(0);
+  assert.equal(f.manager.views()[0]?.state, 'RECOVERING');
+  assert.deepEqual(t.commands, ['/play pit', '/l']);
+  assert.equal(t.scanEnabled.at(-1), false);
+  f.manager.stop();
 });
 
 test('Forge Start connects selected server, waits five seconds after spawn, then confirms Pit instance', async () => {
