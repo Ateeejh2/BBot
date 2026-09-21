@@ -423,7 +423,7 @@ export class ControlStore {
       const account = this.entries.find(a => a.id === accountId);
       if (!account) throw Error('UNKNOWN_ACCOUNT');
       if (account.status !== 'READY' || this.entries.some(a => a.id === accountId && a.assignedBot && a.assignedBot !== botId)) throw Error('CONFLICT');
-      return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId), async () => {
+      return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId) && this.botConfigurationAvailable(botId), async () => {
         const updated = this.entries.map(a => a.id === accountId ? { ...a, assignedBot: botId } :
           a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
