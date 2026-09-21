@@ -16,6 +16,7 @@ import { ControlStore } from '../src/runtime/control.js';
 import { createManagementApi } from '../src/api/server.js';
 import { createBotOptions } from '../src/bot/mineflayer.js';
 import { resolveSessionCredential } from '../src/runtime/session.js';
+import { ForgeWorkerSupervisor } from '../src/forge/worker-supervisor.js';
 
 test('runtime settings and accounts stay scoped, persisted and secret-free', async () => {
   const dir = await mkdtemp(join(process.cwd(), '.test-control-'));
@@ -246,6 +247,34 @@ test('one READY Session account auto assigns and stays credential-free on restar
   } finally {manager.stop();await rm(dir,{recursive:true,force:true});}
 });
 
+
+test('Forge supervisor exposes ten independent worker slots and clears stale launch credentials', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-forge-workers-'));
+  const config=loadConfig({
+    MODE:'live',BBOT_TRANSPORT:'forge',BOT_COUNT:'10',
+    DATA_DIR:dir,FORGE_BRIDGE_BASE_PORT:'3010'
+  });
+  config.authDir=join(dir,'.auth');
+  const stale=join(config.authDir,'forge-workers','bot-1','session.json');
+  await mkdir(join(stale,'..'),{recursive:true});
+  await writeFile(stale,'STALE_SECRET');
+
+  const supervisor=new ForgeWorkerSupervisor(config,new Logger('error'));
+  try{
+    const workers=supervisor.snapshot();
+    assert.equal(workers.length,10);
+    assert.deepEqual(workers.map(worker=>worker.botId),
+      Array.from({length:10},(_,index)=>`bot-${index+1}`));
+    assert.deepEqual(workers.map(worker=>worker.bridgePort),
+      Array.from({length:10},(_,index)=>3010+index));
+    assert.ok(workers.every(worker=>worker.phase==='STOPPED'));
+    assert.ok(workers.every(worker=>supervisor.isStopped(worker.botId)));
+    await assert.rejects(stat(stale),{code:'ENOENT'});
+  }finally{
+    await supervisor.close();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
 
 test('Minecraft Session ID wrapper resolves using only its access token', async () => {
   let authorization='';
