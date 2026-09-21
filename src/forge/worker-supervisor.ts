@@ -220,46 +220,57 @@ export class ForgeWorkerSupervisor {
         credential.accessToken.length > 2048 || !/^[A-Za-z0-9_]{1,16}$/.test(credential.selectedProfile?.name ?? '') ||
         !/^[0-9a-f]{32}$/i.test(credential.selectedProfile?.id ?? '')) throw Error('AUTH_FAILED');
 
-    const runtimeDir=join(this.config.dataDir,'forge-workers',botId);
-    const sessionDir=join(this.config.authDir,'forge-workers',botId);
-    await mkdir(runtimeDir,{recursive:true,mode:0o700});
-    await mkdir(sessionDir,{recursive:true,mode:0o700});
-    const sessionFile=join(sessionDir,'session.json');
-    const temp=`${sessionFile}.${randomUUID()}.tmp`;
-    try{
-      await writeFile(temp,JSON.stringify({
-        accessToken:credential.accessToken,
-        selectedProfile:{name:credential.selectedProfile.name,id:credential.selectedProfile.id.toLowerCase()}
-      }),{encoding:'utf8',mode:0o600,flag:'wx'});
-      await rename(temp,sessionFile);
-    }catch(error){
-      await rm(temp,{force:true});
-      throw error;
-    }
-
+    // Claim this slot before any filesystem await so two Launch requests for
+    // the same bot cannot race into two Minecraft processes.
     worker.phase = 'LAUNCHING';
     worker.lastError = undefined;
     worker.resourceSample = undefined;
     worker.launchProgress = 5;
 
+    const runtimeDir=join(this.config.dataDir,'forge-workers',botId);
+    const sessionDir=join(this.config.authDir,'forge-workers',botId);
+    const sessionFile=join(sessionDir,'session.json');
+    const temp=`${sessionFile}.${randomUUID()}.tmp`;
     worker.sessionFile=sessionFile;
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      BBOT_POC_BRIDGE_PORT: String(worker.bridgePort),
-      BBOT_POC_AUTOTEST: 'false',
-      BBOT_HMC_RUNTIME: runtimeDir,
-      BBOT_SESSION_FILE: sessionFile
-    };
-    const resolvedJava8 = java8Home(this.config);
-    if (resolvedJava8) env.JAVA8_HOME = resolvedJava8;
 
-    const child = spawn(script, [], {
-      cwd: this.config.forge.pocDir,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32'
-    });
-    worker.child = child;
+    let child:ChildProcessWithoutNullStreams;
+    try{
+      await mkdir(runtimeDir,{recursive:true,mode:0o700});
+      await mkdir(sessionDir,{recursive:true,mode:0o700});
+      await rm(sessionFile,{force:true});
+      await writeFile(temp,JSON.stringify({
+        accessToken:credential.accessToken,
+        selectedProfile:{name:credential.selectedProfile.name,id:credential.selectedProfile.id.toLowerCase()}
+      }),{encoding:'utf8',mode:0o600,flag:'wx'});
+      await rename(temp,sessionFile);
+
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        BBOT_POC_BRIDGE_PORT: String(worker.bridgePort),
+        BBOT_POC_AUTOTEST: 'false',
+        BBOT_HMC_RUNTIME: runtimeDir,
+        BBOT_SESSION_FILE: sessionFile
+      };
+      const resolvedJava8 = java8Home(this.config);
+      if (resolvedJava8) env.JAVA8_HOME = resolvedJava8;
+
+      child = spawn(script, [], {
+        cwd: this.config.forge.pocDir,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32'
+      });
+      worker.child = child;
+    }catch{
+      await rm(temp,{force:true}).catch(()=>{});
+      worker.child=undefined;
+      worker.resourceSample=undefined;
+      worker.launchProgress=undefined;
+      worker.phase='STOPPED';
+      worker.lastError='WORKER_LAUNCH_FAILED';
+      await this.clearSessionFile(worker);
+      throw Error('WORKER_LAUNCH_FAILED');
+    }
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -326,6 +337,7 @@ export class ForgeWorkerSupervisor {
       setTimeout(() => {
         if (child.stdin.destroyed || !child.stdin.writable) {
           fail('WORKER_LAUNCH_FAILED');
+          void this.forceStop(worker);
           return;
         }
         child.stdin.write(LAUNCH_COMMAND);
