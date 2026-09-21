@@ -15,6 +15,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.Set;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiDisconnected;
 import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraft.client.gui.GuiMultiplayer;
 import net.minecraft.client.multiplayer.GuiConnecting;
@@ -29,6 +30,7 @@ import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.network.play.server.S22PacketMultiBlockChange;
 import net.minecraft.network.play.server.S23PacketBlockChange;
 import net.minecraft.util.BlockPos;
+import net.minecraft.util.IChatComponent;
 import net.minecraft.util.Session;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
@@ -84,6 +86,7 @@ public final class BBotHeadlessPoc {
     private boolean bridgeControlActive;
     private boolean bridgeWasConnected;
     private Object lastWorld;
+    private Object lastDisconnectScreen;
     private LocalBridgeServer bridge;
     private final Set<BlockPos> observedChests = new HashSet<BlockPos>();
 
@@ -261,6 +264,7 @@ public final class BBotHeadlessPoc {
 
         updateBridgeConnectionState();
         processBridgeCommands();
+        detectDisconnectedScreen();
 
         if (mc.thePlayer == null || mc.theWorld == null) {
             mc.skipRenderWorld = false;
@@ -482,6 +486,44 @@ public final class BBotHeadlessPoc {
                 emitVolatileBlocksResponse(command);
             }
         }
+    }
+
+    private void detectDisconnectedScreen() {
+        Object screen = mc.currentScreen;
+        if (!(screen instanceof GuiDisconnected)) {
+            lastDisconnectScreen = null;
+            return;
+        }
+        if (screen == lastDisconnectScreen) {
+            return;
+        }
+        lastDisconnectScreen = screen;
+
+        String reason = null;
+        try {
+            for (Field field : GuiDisconnected.class.getDeclaredFields()) {
+                if (IChatComponent.class.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    Object value = field.get(screen);
+                    if (value instanceof IChatComponent) {
+                        reason = ((IChatComponent)value).getUnformattedText();
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // Best-effort diagnostic only.
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "serverDisconnected");
+        if (reason != null && !reason.trim().isEmpty()) {
+            String clean = reason.replace('\r', ' ').replace('\n', ' ').trim();
+            if (clean.length() > 500) clean = clean.substring(0, 500);
+            message.addProperty("text", clean);
+        }
+        if (bridge != null) bridge.emit(message);
     }
 
     private void connectServer(JsonObject command) {
