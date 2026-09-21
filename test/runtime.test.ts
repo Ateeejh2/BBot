@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
@@ -247,6 +247,56 @@ test('one READY Session account auto assigns and stays credential-free on restar
   } finally {manager.stop();await rm(dir,{recursive:true,force:true});}
 });
 
+
+test('Forge supervisor launches different bot runtimes concurrently and rejects a duplicate slot launch', async (t) => {
+  if(process.platform==='win32'){t.skip('fake worker script test requires bash');return;}
+  const dir=await mkdtemp(join(process.cwd(),'.test-forge-concurrent-'));
+  const pocDir=join(dir,'poc');
+  const script=join(pocDir,'scripts','run-hmc.sh');
+  await mkdir(join(pocDir,'scripts'),{recursive:true});
+  await writeFile(script,`#!/usr/bin/env bash
+set -euo pipefail
+while IFS= read -r line; do
+  if [[ "$line" == launch* ]]; then
+    echo "bridge listening on 127.0.0.1:${BBOT_POC_BRIDGE_PORT}"
+  elif [[ "$line" == "quit" ]]; then
+    exit 0
+  fi
+done
+`);
+  await chmod(script,0o755);
+
+  const config=loadConfig({
+    MODE:'live',BBOT_TRANSPORT:'forge',BOT_COUNT:'2',
+    DATA_DIR:dir,FORGE_POC_DIR:pocDir,FORGE_BRIDGE_BASE_PORT:'4010'
+  });
+  config.authDir=join(dir,'.auth');
+  const supervisor=new ForgeWorkerSupervisor(config,new Logger('error'));
+  const credential={
+    accessToken:'TEST_ACCESS_TOKEN',
+    selectedProfile:{name:'WorkerUser',id:'abcdefabcdefabcdefabcdefabcdefab'}
+  };
+  try{
+    const first=supervisor.launch('bot-1',credential);
+    await assert.rejects(supervisor.launch('bot-1',credential),/INVALID_STATE/);
+    const second=supervisor.launch('bot-2',credential);
+    await Promise.all([first,second]);
+
+    const workers=supervisor.snapshot();
+    assert.equal(workers.find(worker=>worker.botId==='bot-1')?.phase,'LAUNCHED');
+    assert.equal(workers.find(worker=>worker.botId==='bot-2')?.phase,'LAUNCHED');
+    assert.equal(workers.find(worker=>worker.botId==='bot-1')?.bridgePort,4010);
+    assert.equal(workers.find(worker=>worker.botId==='bot-2')?.bridgePort,4011);
+    await assert.rejects(stat(join(config.authDir,'forge-workers','bot-1','session.json')),{code:'ENOENT'});
+    await assert.rejects(stat(join(config.authDir,'forge-workers','bot-2','session.json')),{code:'ENOENT'});
+
+    await Promise.all([supervisor.quit('bot-1'),supervisor.quit('bot-2')]);
+    assert.ok(supervisor.snapshot().every(worker=>worker.phase==='STOPPED'));
+  }finally{
+    await supervisor.close();
+    await rm(dir,{recursive:true,force:true});
+  }
+});
 
 test('Forge supervisor exposes ten independent worker slots and clears stale launch credentials', async () => {
   const dir=await mkdtemp(join(process.cwd(),'.test-forge-workers-'));
