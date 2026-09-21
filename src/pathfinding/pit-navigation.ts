@@ -60,6 +60,7 @@ export class PitNavigationService {
   private readonly overlayLoads = new Map<string,Promise<void>>();
   private readonly overlayEpoch = new Map<string,number>();
   private readonly overlayChanges = new Map<string,Array<{revision:number;x:number;y:number;z:number}>>();
+  private readonly graphBuilds = new Map<string,Promise<TerrainGraph>>();
 
   constructor(refreshAfterMs = 7 * 24 * 60 * 60 * 1000, maxGenerations = 6) {
     this.cache = new PitMapCache<TerrainGraph>(refreshAfterMs, maxGenerations);
@@ -126,6 +127,27 @@ export class PitNavigationService {
     const journal=this.overlayChanges.get(normalizeInstance(instanceId));
     if(!journal)return [];
     return journal.filter(change=>change.revision>revision);
+  }
+
+  async prewarm(
+    instanceId:string,
+    start:Position,
+    loader:PitChunkLoader,
+    signal:AbortSignal,
+    listLoadedChunks?:PitLoadedChunkLister,
+    onScanProgress?:PitScanProgress,
+    loadDynamicChunk?:PitDynamicChunkLoader
+  ):Promise<{fingerprint:string;cacheStatus:PitNavigationPlan['cacheStatus'];scannedChunks:number;dynamicBlocks:number}>{
+    signal.throwIfAborted();
+    const prepared=await this.ensureGraph(instanceId,start,loader,signal,listLoadedChunks,onScanProgress);
+    await this.ensureOverlay(instanceId,signal,listLoadedChunks,loadDynamicChunk,onScanProgress);
+    const overlay=this.overlay(normalizeInstance(instanceId));
+    return {
+      fingerprint:prepared.graph.fingerprint,
+      cacheStatus:prepared.cacheStatus,
+      scannedChunks:prepared.graph.chunks.size,
+      dynamicBlocks:overlay.blocks.size
+    };
   }
 
   async plan(
@@ -263,40 +285,51 @@ export class PitNavigationService {
     this.cache.bind(instanceId, fingerprint, now);
     let graph = this.cache.graphForInstance(instanceId);
     if (!graph) {
-      graph = { fingerprint, chunks:new Map(), nodes:new Map(), columns:new Map() };
-      const loadedCoords = listLoadedChunks ? await listLoadedChunks(signal) : [];
-      const unique = new Map<string,{x:number;z:number}>();
-      for (const value of loadedCoords) unique.set(chunkKey(value.x,value.z),value);
-      for (const sample of samples) unique.set(chunkKey(sample.chunk.chunkX,sample.chunk.chunkZ),{
-        x:sample.chunk.chunkX,z:sample.chunk.chunkZ
-      });
-
-      const queue=[...unique.values()];
-      const overlay=this.overlay(instanceKey);
-      overlay.blocks.clear();overlay.columns.clear();overlay.revision++;
-      this.overlayChanges.delete(instanceKey);
-      let done=0;
-      onScanProgress?.(0,queue.length);
-      for(let i=0;i<queue.length;i+=2){
-        signal.throwIfAborted();
-        const batch=queue.slice(i,i+2);
-        const loaded=await Promise.all(batch.map(async ({x,z})=>{
-          const sample=samples.find(value=>value.chunk.chunkX===x&&value.chunk.chunkZ===z)?.chunk;
-          if(sample)return sample;
-          try{return await loader(x,z,signal);}
-          catch(error){if(signal.aborted)throw error;return undefined;}
-        }));
-        for(const chunk of loaded)if(chunk){
-          collectDynamicBlocks(overlay,chunk);
-          addChunk(graph,chunk);
-        }
-        done+=batch.length;
-        onScanProgress?.(done,queue.length);
+      const existingBuild=this.graphBuilds.get(fingerprint);
+      if(existingBuild){
+        graph=await existingBuild;
+        return {graph,cacheStatus:'SHARED_HIT',previousFingerprint:existingFingerprint};
       }
-      if(queue.length===0)onScanProgress?.(0,0);
-      overlay.revision++;
-      this.overlayReady.add(instanceKey);
-      this.cache.setGraph(fingerprint, graph, now);
+
+      const build=(async()=>{
+        const built:TerrainGraph={fingerprint,chunks:new Map(),nodes:new Map(),columns:new Map()};
+        const loadedCoords = listLoadedChunks ? await listLoadedChunks(signal) : [];
+        const unique = new Map<string,{x:number;z:number}>();
+        for (const value of loadedCoords) unique.set(chunkKey(value.x,value.z),value);
+        for (const sample of samples) unique.set(chunkKey(sample.chunk.chunkX,sample.chunk.chunkZ),{
+          x:sample.chunk.chunkX,z:sample.chunk.chunkZ
+        });
+
+        const queue=[...unique.values()];
+        const overlay=this.overlay(instanceKey);
+        overlay.blocks.clear();overlay.columns.clear();overlay.revision++;
+        this.overlayChanges.delete(instanceKey);
+        let done=0;
+        onScanProgress?.(0,queue.length);
+        for(let i=0;i<queue.length;i+=2){
+          signal.throwIfAborted();
+          const batch=queue.slice(i,i+2);
+          const loaded=await Promise.all(batch.map(async ({x,z})=>{
+            const sample=samples.find(value=>value.chunk.chunkX===x&&value.chunk.chunkZ===z)?.chunk;
+            if(sample)return sample;
+            try{return await loader(x,z,signal);}
+            catch(error){if(signal.aborted)throw error;return undefined;}
+          }));
+          for(const chunk of loaded)if(chunk){
+            collectDynamicBlocks(overlay,chunk);
+            addChunk(built,chunk);
+          }
+          done+=batch.length;
+          onScanProgress?.(done,queue.length);
+        }
+        if(queue.length===0)onScanProgress?.(0,0);
+        overlay.revision++;
+        this.overlayReady.add(instanceKey);
+        this.cache.setGraph(fingerprint,built,Date.now());
+        return built;
+      })().finally(()=>this.graphBuilds.delete(fingerprint));
+      this.graphBuilds.set(fingerprint,build);
+      graph=await build;
       return {graph,cacheStatus:'FULL_SCAN',previousFingerprint:existingFingerprint};
     }
     if (this.cache.refreshDue(instanceId, now)) {
