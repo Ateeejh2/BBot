@@ -476,6 +476,8 @@ public final class BBotHeadlessPoc {
                 connectServer(command);
             } else if ("disconnectServer".equals(type) && command.has("requestId")) {
                 disconnectServer(command);
+            } else if ("getPlayerCount".equals(type) && command.has("requestId")) {
+                emitPlayerCountResponse(command);
             } else if ("findSlimePads".equals(type) && command.has("requestId")) {
                 emitSlimePadResponse(command);
             } else if ("getChunk".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
@@ -588,6 +590,28 @@ public final class BBotHeadlessPoc {
         if (error != null) {
             response.addProperty("error", error);
         }
+        bridge.emit(response);
+    }
+
+    private void emitPlayerCountResponse(JsonObject command) {
+        if (bridge == null) {
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", command.get("requestId").getAsString());
+        response.addProperty("kind", "playerCount");
+
+        if (mc.getNetHandler() == null) {
+            response.addProperty("ok", false);
+            response.addProperty("error", "WORLD_UNAVAILABLE");
+            bridge.emit(response);
+            return;
+        }
+
+        response.addProperty("ok", true);
+        response.addProperty("playerCount", mc.getNetHandler().getPlayerInfoMap().size());
         bridge.emit(response);
     }
 
