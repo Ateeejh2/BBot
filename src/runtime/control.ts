@@ -412,7 +412,7 @@ export class ControlStore {
       if (!bot) throw Error('UNKNOWN_BOT');
       if (!this.manager!.isBotStopped(botId) || !this.botConfigurationAvailable(botId)) throw Error('INVALID_STATE');
       if (accountId === null) {
-        return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId), async () => {
+        return this.manager!.withConfigurationLock(() => this.manager!.isBotStopped(botId) && this.botConfigurationAvailable(botId), async () => {
           const updated = this.entries.map(a => a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
           this.entries = updated;
@@ -441,10 +441,10 @@ export class ControlStore {
       if (botId) {
         const bot = this.manager?.views().find(b => b.id === botId);
         if (!bot) throw Error('UNKNOWN_BOT');
-        if (!this.manager!.isBotStopped(botId)) throw Error('INVALID_STATE');
+        if (!this.manager!.isBotStopped(botId) || !this.botConfigurationAvailable(botId)) throw Error('INVALID_STATE');
       }
       return this.manager!.withConfigurationLock(
-        () => !botId || this.manager!.isBotStopped(botId),
+        () => !botId || (this.manager!.isBotStopped(botId) && this.botConfigurationAvailable(botId)),
         async () => {
           const updated = this.entries.filter(a => a.id !== id);
           if (account.kind === 'SESSION') await deleteSessionCredential(this.config.authDir, id);
