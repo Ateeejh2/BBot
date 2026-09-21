@@ -2,8 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME="$ROOT/runtime"
-HMC_JAR="$RUNTIME/headlessmc-launcher-2.10.0.jar"
+BASE_RUNTIME="$ROOT/runtime"
+RUNTIME="${BBOT_HMC_RUNTIME:-$BASE_RUNTIME}"
+GAME_DIR="$RUNTIME/game"
+HMC_DIR="$RUNTIME/HeadlessMC"
+HMC_JAR="$BASE_RUNTIME/headlessmc-launcher-2.10.0.jar"
+POC_JAR="$ROOT/build/libs/bbot-headless-poc-0.1.0.jar"
 
 if [[ -n "${JAVA8_HOME:-}" ]]; then
   JAVA_BIN="$JAVA8_HOME/bin/java"
@@ -22,10 +26,40 @@ if [[ ! -f "$HMC_JAR" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$POC_JAR" ]]; then
+  echo "Forge bridge mod is not built." >&2
+  echo "Run ./scripts/build.sh first." >&2
+  exit 1
+fi
+
 export BBOT_POC_WARMUP_TICKS="${BBOT_POC_WARMUP_TICKS:-300}"
 export BBOT_POC_WALK_TICKS="${BBOT_POC_WALK_TICKS:-200}"
 export BBOT_POC_SPRINT_TICKS="${BBOT_POC_SPRINT_TICKS:-200}"
 export BBOT_POC_TRACE_EVERY_TICKS="${BBOT_POC_TRACE_EVERY_TICKS:-20}"
+
+if [[ "$RUNTIME" != "$BASE_RUNTIME" ]]; then
+  mkdir -p "$GAME_DIR/mods" "$HMC_DIR"
+
+  # Large immutable Minecraft assets are shared. Each worker keeps its own
+  # game root, mods, HeadlessMC config and logs so 10 workers can coexist.
+  for name in assets libraries versions; do
+    source="$BASE_RUNTIME/game/$name"
+    target="$GAME_DIR/$name"
+    if [[ -e "$source" && ! -e "$target" && ! -L "$target" ]]; then
+      ln -s "$source" "$target"
+    fi
+  done
+
+  cp -f "$POC_JAR" "$GAME_DIR/mods/"
+
+  cat > "$HMC_DIR/config.properties" <<EOF
+hmc.gamedir=$GAME_DIR
+hmc.assets.dummy=true
+hmc.rethrow.launch.exceptions=true
+hmc.java.versions=$JAVA_BIN
+hmc.jline.enabled=false
+EOF
+fi
 
 cd "$RUNTIME"
 exec "$JAVA_BIN" -jar "$HMC_JAR"
