@@ -118,6 +118,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let prewarmAbort: AbortController | undefined;
   let prewarmPromise: Promise<void> | undefined;
   let prewarmInstanceId: string | undefined;
+  let pitScanEnabled = false;
   let viewerClose: (() => void) | undefined;
   let viewerState: ((state: BridgeState) => void) | undefined;
   let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
@@ -722,6 +723,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       await navigateTo(target,range,signal);
       return;
     }
+    if(!pitScanEnabled)throw new Error('Pit scan disabled');
 
     if(prewarmPromise&&prewarmInstanceId===instanceId){
       await waitForPrewarm(prewarmPromise,signal);
@@ -1030,9 +1032,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         prewarmAbort=undefined;
         prewarmPromise=undefined;
         prewarmInstanceId=undefined;
-        if(shouldRetry&&boundInstanceId===instanceId&&attempt<1){
+        if(shouldRetry&&pitScanEnabled&&boundInstanceId===instanceId&&attempt<1){
           setTimeout(()=>{
-            if(!closed&&boundInstanceId===instanceId&&!prewarmPromise&&!sharedPitNavigation.isPrepared(instanceId)){
+            if(!closed&&pitScanEnabled&&boundInstanceId===instanceId&&!prewarmPromise&&!sharedPitNavigation.isPrepared(instanceId)){
               startPitPrewarm(instanceId,attempt+1);
             }
           },150).unref();
@@ -1052,6 +1054,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       prewarmAbort=undefined;
       prewarmPromise=undefined;
       prewarmInstanceId=undefined;
+      pitScanEnabled=false;
       if(boundInstanceId)sharedPitNavigation.releaseInstance(boundInstanceId);
       boundInstanceId=instanceId;
       if(instanceId){
@@ -1060,7 +1063,22 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           instanceId,
           state?{x:state.x,y:state.y,z:state.z}:undefined
         );
-        startPitPrewarm(instanceId);
+      }
+    },
+    setPitScanEnabled: enabled => {
+      if(!boundInstanceId)return;
+      if(pitScanEnabled===enabled)return;
+      pitScanEnabled=enabled;
+      if(!enabled){
+        prewarmAbort?.abort(new Error('Pit scan disabled'));
+        prewarmAbort=undefined;
+        prewarmPromise=undefined;
+        prewarmInstanceId=undefined;
+        events.diagnostic?.('pit chunk scan progress',{progress:100,active:false});
+        return;
+      }
+      if(!sharedPitNavigation.isPrepared(boundInstanceId)&&!prewarmPromise){
+        startPitPrewarm(boundInstanceId);
       }
     },
     chat: command => {
@@ -1078,6 +1096,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       prewarmAbort=undefined;
       prewarmPromise=undefined;
       prewarmInstanceId=undefined;
+      pitScanEnabled=false;
       if(boundInstanceId){
         sharedPitNavigation.releaseInstance(boundInstanceId);
         boundInstanceId=undefined;
