@@ -5,6 +5,7 @@ import { Logger } from './logging/logger.js';
 import { InstanceRegistry } from './instances/registry.js';
 import { Scheduler } from './scheduler/scheduler.js';
 import { PathfindingController } from './pathfinding/controller.js';
+import { sharedPitNavigation } from './pathfinding/pit-navigation.js';
 import { BotManager } from './bot/manager.js';
 import { MockTransport } from './bot/mock.js';
 import { HttpEventProvider, MockEventProvider, parseEventFeedV1 } from './events/provider.js';
@@ -23,6 +24,9 @@ import type { ForgeWorkerSupervisor } from './forge/worker-supervisor.js';
 async function main(): Promise<void> {
   const config = loadConfig({ ...process.env, ...(process.argv.includes('--mock') ? { MODE: 'mock' } : {}) });
   if (config.inactiveMs <= config.suspectMs) throw new Error('INSTANCE_INACTIVE_MS must exceed INSTANCE_SUSPECT_MS');
+  if(config.mode==='live'&&config.transport==='forge'){
+    sharedPitNavigation.configurePersistence(join(config.dataDir,'pit-map-cache'));
+  }
   const controls = new ControlStore(config, async (account, settings, reportChallenge) => {
     const auth = new Authflow(account.cacheKey, join(settings.authDir, account.folder),
       { flow: 'live', authTitle: Titles.MinecraftNintendoSwitch, deviceType: 'Nintendo' },
