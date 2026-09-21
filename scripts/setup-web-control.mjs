@@ -21,7 +21,7 @@ const inferredOrigin = codespaceName
   : '';
 
 env = setEnvLine(env, 'MODE', 'live');
-env = setEnvLine(env, 'BOT_COUNT', '20');
+env = setEnvLine(env, 'BOT_COUNT', '10');
 env = setEnvLine(env, 'TRANSFER_MESSAGE_CHANNEL', 'chat');
 env = setEnvLine(env, 'API_ENABLED', 'true');
 env = setEnvLine(env, 'API_HOST', '127.0.0.1');
@@ -31,7 +31,7 @@ if (inferredOrigin) env = setEnvLine(env, 'API_ORIGIN', inferredOrigin);
 await writeFile('.env', env, { encoding: 'utf8', mode: 0o600 });
 
 process.stdout.write('BBot Web control settings applied to local .env.\n');
-process.stdout.write('MODE=live, BOT_COUNT=20, TRANSFER_MESSAGE_CHANNEL=chat, API_ENABLED=true, API_HOST=127.0.0.1, API_PORT=3008\n');
+process.stdout.write('MODE=live, BOT_COUNT=10, TRANSFER_MESSAGE_CHANNEL=chat, API_ENABLED=true, API_HOST=127.0.0.1, API_PORT=3008\n');
 if (inferredOrigin) {
   process.stdout.write(`API_ORIGIN=${inferredOrigin}\n`);
 } else {
