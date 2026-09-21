@@ -10,6 +10,7 @@ const COBBLESTONE=4;
 const OAK_PLANK=5;
 const BEDROCK=7;
 const OBSIDIAN=49;
+const BARRIER=166;
 
 function chunkWithWall(includeWall=true):PitChunkData {
   const sections=new Map<number,Uint16Array>();
@@ -413,14 +414,14 @@ test('Pit terrain fingerprint is stable across small spawn jitter around chunk b
   );
 
   assert.equal(left.fingerprint,right.fingerprint);
-  assert.match(left.fingerprint,/^terrain2:/);
+  assert.match(left.fingerprint,/^terrain3:/);
 });
 
 test('volatile Pit blocks do not change the shared terrain fingerprint', async () => {
   const service=new PitNavigationService();
   const signal=new AbortController().signal;
   const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
-  const states=[OBSIDIAN,COBBLESTONE,BEDROCK,OAK_PLANK];
+  const states=[OBSIDIAN,COBBLESTONE,BEDROCK,OAK_PLANK,BARRIER];
   const fingerprints:string[]=[];
   const clearPlan=await service.plan(
     'volatile-clear',
@@ -442,6 +443,46 @@ test('volatile Pit blocks do not change the shared terrain fingerprint', async (
     fingerprints.push(plan.fingerprint);
   }
   assert.equal(new Set(fingerprints).size,1);
+});
+
+test('server barrier blocks stay out of the Base Graph and remain instance-local obstacles', async () => {
+  const service=new PitNavigationService();
+  const clear=flatChunk(0);
+  const blocked=volatileBarrierChunk(BARRIER);
+  const signal=new AbortController().signal;
+  const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
+  const lister=async()=>[{x:0,z:0}];
+
+  const clearPlan=await service.plan(
+    'barrier-clear',
+    start,
+    target,
+    async (x,z)=>x===0&&z===0?clear:undefined,
+    signal,
+    [],
+    lister,
+    undefined,
+    async()=>[]
+  );
+  const blockedPlan=await service.plan(
+    'barrier-blocked',
+    start,
+    target,
+    async (x,z)=>x===0&&z===0?blocked:undefined,
+    signal,
+    [],
+    lister,
+    undefined,
+    async()=>[
+      {x:5,y:64,z:2,stateId:BARRIER},
+      {x:5,y:65,z:2,stateId:BARRIER}
+    ]
+  );
+
+  assert.equal(clearPlan.fingerprint,blockedPlan.fingerprint);
+  assert.equal(blockedPlan.dynamicBlocks,2);
+  assert.ok(clearPlan.waypoints.every(point=>point.z===2.5));
+  assert.ok(blockedPlan.waypoints.some(point=>point.z!==2.5));
 });
 
 test('shared base graph keeps volatile obstacles instance-local', async () => {
