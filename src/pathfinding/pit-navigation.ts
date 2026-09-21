@@ -96,7 +96,7 @@ export class PitNavigationService {
     this.overlays.delete(key);
     this.overlayReady.delete(key);
     this.overlayLoads.delete(key);
-    this.overlayEpoch.delete(key);
+    this.overlayEpoch.set(key,(this.overlayEpoch.get(key)??0)+1);
     this.overlayChanges.delete(key);
   }
 
@@ -108,12 +108,18 @@ export class PitNavigationService {
     const key=normalizeInstance(instanceId);
     this.overlayReady.delete(key);
     this.overlays.delete(key);
+    this.overlayLoads.delete(key);
     this.overlayChanges.delete(key);
     this.overlayEpoch.set(key,(this.overlayEpoch.get(key)??0)+1);
   }
 
   overlayRevision(instanceId:string):number {
     return this.overlays.get(normalizeInstance(instanceId))?.revision??0;
+  }
+
+  isPrepared(instanceId:string):boolean {
+    const key=normalizeInstance(instanceId);
+    return Boolean(this.cache.graphForInstance(instanceId))&&this.overlayReady.has(key);
   }
 
   updateDynamicBlock(instanceId:string, position:Position, stateId:number):number|undefined {
@@ -218,16 +224,22 @@ export class PitNavigationService {
     onScanProgress?:PitScanProgress
   ):Promise<void>{
     const key=normalizeInstance(instanceId);
-    if(this.overlayReady.has(key))return;
-    const pending=this.overlayLoads.get(key);
-    if(pending){await pending;return;}
-    if(!listLoadedChunks||!loadDynamicChunk){
-      this.overlayReady.add(key);
-      return;
-    }
+    while(true){
+      if(this.overlayReady.has(key))return;
+      const pending=this.overlayLoads.get(key);
+      if(pending){
+        await pending;
+        if(this.overlayReady.has(key))return;
+        continue;
+      }
+      if(!listLoadedChunks||!loadDynamicChunk){
+        this.overlayReady.add(key);
+        return;
+      }
 
-    const epoch=this.overlayEpoch.get(key)??0;
-    const task=(async()=>{
+      const epoch=this.overlayEpoch.get(key)??0;
+      let task!:Promise<void>;
+      task=(async()=>{
       const coords=await listLoadedChunks(signal);
       const unique=new Map<string,{x:number;z:number}>();
       for(const value of coords)unique.set(chunkKey(value.x,value.z),value);
@@ -251,11 +263,15 @@ export class PitNavigationService {
         onScanProgress?.(done,queue.length);
       }
       if(queue.length===0)onScanProgress?.(0,0);
-      overlay.revision++;
-      if((this.overlayEpoch.get(key)??0)===epoch)this.overlayReady.add(key);
-    })().finally(()=>this.overlayLoads.delete(key));
-    this.overlayLoads.set(key,task);
-    await task;
+        overlay.revision++;
+        if((this.overlayEpoch.get(key)??0)===epoch)this.overlayReady.add(key);
+      })().finally(()=>{
+        if(this.overlayLoads.get(key)===task)this.overlayLoads.delete(key);
+      });
+      this.overlayLoads.set(key,task);
+      await task;
+      if(this.overlayReady.has(key))return;
+    }
   }
 
   private async ensureGraph(
@@ -308,6 +324,7 @@ export class PitNavigationService {
       }
 
       const build=(async()=>{
+        const overlayEpoch=this.overlayEpoch.get(instanceKey)??0;
         const built:TerrainGraph={fingerprint,chunks:new Map(),nodes:new Map(),columns:new Map()};
         const loadedCoords = listLoadedChunks ? await listLoadedChunks(signal) : [];
         const unique = new Map<string,{x:number;z:number}>();
@@ -340,7 +357,7 @@ export class PitNavigationService {
         }
         if(queue.length===0)onScanProgress?.(0,0);
         overlay.revision++;
-        this.overlayReady.add(instanceKey);
+        if((this.overlayEpoch.get(instanceKey)??0)===overlayEpoch)this.overlayReady.add(instanceKey);
         this.cache.setGraph(fingerprint,built,Date.now());
         await this.saveDiskGraph(built);
         return built;
