@@ -2,10 +2,15 @@ package com.bbot.poc;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.Set;
@@ -24,6 +29,7 @@ import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.network.play.server.S22PacketMultiBlockChange;
 import net.minecraft.network.play.server.S23PacketBlockChange;
 import net.minecraft.util.BlockPos;
+import net.minecraft.util.Session;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
@@ -99,6 +105,7 @@ public final class BBotHeadlessPoc {
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
+        installConfiguredSession();
         MinecraftForge.EVENT_BUS.register(this);
         FMLCommonHandler.instance().bus().register(this);
 
@@ -119,6 +126,76 @@ public final class BBotHeadlessPoc {
             bridgeEnabled,
             bridgePort
         );
+    }
+
+    private void installConfiguredSession() {
+        String configured = System.getenv("BBOT_SESSION_FILE");
+        if (configured == null || configured.trim().isEmpty()) {
+            return;
+        }
+
+        Path file = Paths.get(configured);
+        try {
+            byte[] raw = Files.readAllBytes(file);
+            if (raw.length == 0 || raw.length > 8192) {
+                throw new IllegalStateException("Invalid session credential");
+            }
+
+            JsonObject credential = new JsonParser()
+                .parse(new String(raw, StandardCharsets.UTF_8))
+                .getAsJsonObject();
+            JsonObject profile = credential.has("selectedProfile") && credential.get("selectedProfile").isJsonObject()
+                ? credential.getAsJsonObject("selectedProfile")
+                : null;
+            String accessToken = credential.has("accessToken") ? credential.get("accessToken").getAsString() : "";
+            String username = profile != null && profile.has("name") ? profile.get("name").getAsString() : "";
+            String profileId = profile != null && profile.has("id") ? profile.get("id").getAsString() : "";
+
+            if (!username.matches("^[A-Za-z0-9_]{1,16}$")
+                || !profileId.matches("(?i)^[0-9a-f]{32}$")
+                || !validAccessToken(accessToken)) {
+                throw new IllegalStateException("Invalid session credential");
+            }
+
+            Field sessionField = null;
+            for (Field field : Minecraft.class.getDeclaredFields()) {
+                if (field.getType() == Session.class) {
+                    sessionField = field;
+                    break;
+                }
+            }
+            if (sessionField == null) {
+                throw new IllegalStateException("Minecraft session field unavailable");
+            }
+
+            sessionField.setAccessible(true);
+            sessionField.set(mc, new Session(username, profileId.toLowerCase(), accessToken, "mojang"));
+            if (mc.getSession() == null || !username.equals(mc.getSession().getUsername())) {
+                throw new IllegalStateException("Minecraft session was not applied");
+            }
+            LOG.info("[BBotPoC] authenticated session configured for {}", username);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to configure authenticated Minecraft session", t);
+        } finally {
+            try {
+                Files.deleteIfExists(file);
+            } catch (Throwable ignored) {
+                // The backend also removes this short-lived file after launch.
+            }
+        }
+    }
+
+    private boolean validAccessToken(String token) {
+        if (token == null || token.length() < 1 || token.length() > 2048) {
+            return false;
+        }
+        for (int i = 0; i < token.length(); i++) {
+            char value = token.charAt(i);
+            if (value < 0x21 || value > 0x7e) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @SubscribeEvent
