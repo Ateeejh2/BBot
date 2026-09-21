@@ -605,7 +605,7 @@ public final class BBotHeadlessPoc {
     private boolean isVolatileStateId(int stateId) {
         int blockId = stateId & 0x0fff;
         int metadata = (stateId >>> 12) & 0x0f;
-        return blockId == 49 || blockId == 4 || blockId == 7 || (blockId == 5 && metadata == 0);
+        return blockId == 166 || blockId == 49 || blockId == 4 || blockId == 7 || (blockId == 5 && metadata == 0);
     }
 
     private void emitChunkResponse(JsonObject command) {
