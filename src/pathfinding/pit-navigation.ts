@@ -474,7 +474,7 @@ function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkDat
       hash.update(normalized);
     }
   }
-  return `terrain2:${hash.digest('hex').slice(0,24)}`;
+  return `terrain3:${hash.digest('hex').slice(0,24)}`;
 }
 
 function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
@@ -552,7 +552,7 @@ function baseState(state:number):number {
 
 function isVolatileState(state:number):boolean {
   const id=blockId(state),metadata=state>>>12&0x0f;
-  return id===49||id===4||id===7||(id===5&&metadata===0);
+  return id===166||id===49||id===4||id===7||(id===5&&metadata===0);
 }
 
 function blockId(state:number):number {
