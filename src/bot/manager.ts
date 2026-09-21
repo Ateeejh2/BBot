@@ -368,7 +368,13 @@ export class BotManager {
       const choice = this.distribution.choose(this.views(), this.registry, now);
       if (choice) {
         const b = this.bots.find(b => b.id === choice.id)!;
+        const sourceInstance=b.instanceId;
+        const sourceOccupancy=sourceInstance?this.registry.records.get(sourceInstance)?.bots.size:undefined;
         this.distribution.recordAttempt(b.id, now); this.nextRerollAt = now + this.config.rerollCooldownMs;
+        this.log(b,'instance distribution reroll',{
+          sourceInstance:sourceInstance??null,
+          sourceOccupancy:sourceOccupancy??null
+        });
         this.recover(b, 'PLANNED'); b.ready = false; b.deadline = now + this.config.joinTimeoutMs;
         try { b.transport?.chat(this.config.lobbyCommand ?? '/mock-lobby'); } catch { this.disconnected(b); }
       }
