@@ -957,7 +957,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     }
   };
 
-  const startPitPrewarm = (instanceId:string) => {
+  const startPitPrewarm = (instanceId:string, attempt=0) => {
     prewarmAbort?.abort(new Error('Pit prewarm replaced'));
     const controller=new AbortController();
     prewarmAbort=controller;
@@ -994,6 +994,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       if(controller.signal.aborted)return;
       events.diagnostic?.('pit navigation prewarm failed',{
         instanceId,
+        attempt,
         reason:error instanceof Error?error.message.slice(0,200):'unknown'
       });
     }).finally(()=>{
@@ -1001,6 +1002,11 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         prewarmAbort=undefined;
         prewarmPromise=undefined;
         prewarmInstanceId=undefined;
+        if(boundInstanceId===instanceId&&attempt<1){
+          setTimeout(()=>{
+            if(!closed&&boundInstanceId===instanceId&&!prewarmPromise)startPitPrewarm(instanceId,attempt+1);
+          },150).unref();
+        }
       }
     });
     prewarmPromise=task;
