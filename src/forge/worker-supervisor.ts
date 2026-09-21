@@ -304,8 +304,13 @@ export class ForgeWorkerSupervisor {
         worker.phase = 'LAUNCHED';
         worker.lastError = undefined;
         this.logger.log('info', 'forge worker launched', { botId, bridgePort: worker.bridgePort });
-        void this.clearSessionFile(worker);
-        finish();
+        // Do not resolve Launch until the short-lived credential copy is gone.
+        // This keeps the API contract deterministic and avoids a small window
+        // where a successful Launch still leaves session.json on disk.
+        void this.clearSessionFile(worker).then(
+          () => finish(),
+          () => finish()
+        );
       };
 
       const timer = setTimeout(() => {
