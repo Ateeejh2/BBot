@@ -198,6 +198,28 @@ test('Forge Pit join falls back to locraw when transfer notice is missed', () =>
   }
 });
 
+test('late transfer notice after locraw confirmation does not restart Pit joining', () => {
+  const fixture=createForgeManager();
+  const {manager}=fixture;
+  try{
+    manager.startServer('bot-1','play.example.test',25565);
+    const transport=fixture.transport;
+    assert.ok(transport);
+    transport.omitTransferNotice=true;
+    transport.spawnNow();
+    fixture.setNow(6_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state,'IN_PIT_IDLE');
+    assert.equal(manager.views()[0]?.instanceId,'mega-regression');
+
+    transport['events'].message('SERVER FOUND! Sending to mega-regression!');
+    assert.equal(manager.views()[0]?.state,'IN_PIT_IDLE');
+    assert.equal(manager.views()[0]?.instanceId,'mega-regression');
+  }finally{
+    manager.stop();
+  }
+});
+
 test('Forge reconnect failure returns to DISCONNECTED without destroying the retained transport', async () => {
   const fixture = createForgeManager();
   const { manager } = fixture;
