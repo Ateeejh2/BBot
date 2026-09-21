@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PitNavigationService, type PitChunkData } from '../src/pathfinding/pit-navigation.js';
 
 const STONE=1;
@@ -222,6 +225,99 @@ test('concurrent same-map prewarms share one Base Graph full scan', async () => 
   assert.equal(service.cache.snapshot(Date.now()).length,1);
   assert.ok([a.cacheStatus,b.cacheStatus].includes('FULL_SCAN'));
   assert.ok([a.cacheStatus,b.cacheStatus].includes('SHARED_HIT'));
+});
+
+test('Pit base graph survives a backend restart and returns DISK_HIT without a full scan', async () => {
+  const directory=await mkdtemp(join(tmpdir(),'bbot-pit-cache-'));
+  try{
+    const chunks=new Map<number,PitChunkData>([
+      [0,flatChunk(0)],[1,flatChunk(1)]
+    ]);
+    const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+      z===0?chunks.get(x):undefined;
+    const signal=new AbortController().signal;
+
+    const first=new PitNavigationService();
+    first.configurePersistence(directory);
+    let firstListCalls=0;
+    const firstWarm=await first.prewarm(
+      'disk-first',
+      {x:2.5,y:64,z:2.5},
+      loader,
+      signal,
+      async()=>{firstListCalls++;return [{x:0,z:0},{x:1,z:0}];}
+    );
+    assert.equal(firstWarm.cacheStatus,'FULL_SCAN');
+    assert.equal(firstListCalls,1);
+    const files=await readdir(directory);
+    assert.equal(files.filter(name=>name.endsWith('.json')).length,1);
+
+    const restarted=new PitNavigationService();
+    restarted.configurePersistence(directory);
+    let restartedListCalls=0;
+    const warm=await restarted.prewarm(
+      'disk-second',
+      {x:2.5,y:64,z:2.5},
+      loader,
+      signal,
+      async()=>{restartedListCalls++;return [{x:0,z:0},{x:1,z:0}];}
+    );
+    assert.equal(warm.cacheStatus,'DISK_HIT');
+    assert.equal(restartedListCalls,0,'disk hit must not run the Base Graph full scan');
+
+    const plan=await restarted.plan(
+      'disk-second',
+      {x:2.5,y:64,z:2.5},
+      {x:24.5,y:64,z:2.5},
+      loader,
+      signal
+    );
+    assert.equal(plan.complete,true);
+    assert.equal(plan.cacheStatus,'HIT');
+  }finally{
+    await rm(directory,{recursive:true,force:true});
+  }
+});
+
+test('invalid persisted Pit map format is ignored and rebuilt safely', async () => {
+  const directory=await mkdtemp(join(tmpdir(),'bbot-pit-cache-invalid-'));
+  try{
+    const terrain=flatChunk(0);
+    const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+      x===0&&z===0?terrain:undefined;
+    const signal=new AbortController().signal;
+
+    const first=new PitNavigationService();
+    first.configurePersistence(directory);
+    await first.prewarm(
+      'disk-invalid-first',
+      {x:2.5,y:64,z:2.5},
+      loader,
+      signal,
+      async()=>[{x:0,z:0}]
+    );
+    const [file]=await readdir(directory);
+    assert.ok(file);
+    const path=join(directory,file!);
+    const saved=JSON.parse(await readFile(path,'utf8')) as Record<string,unknown>;
+    saved.formatVersion=999;
+    await writeFile(path,JSON.stringify(saved),'utf8');
+
+    const restarted=new PitNavigationService();
+    restarted.configurePersistence(directory);
+    let listCalls=0;
+    const warm=await restarted.prewarm(
+      'disk-invalid-second',
+      {x:2.5,y:64,z:2.5},
+      loader,
+      signal,
+      async()=>{listCalls++;return [{x:0,z:0}];}
+    );
+    assert.equal(warm.cacheStatus,'FULL_SCAN');
+    assert.equal(listCalls,1);
+  }finally{
+    await rm(directory,{recursive:true,force:true});
+  }
 });
 
 test('A-star allows arbitrarily deep Pit drops when a lower floor exists', async () => {
