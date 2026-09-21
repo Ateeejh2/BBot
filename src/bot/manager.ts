@@ -413,12 +413,14 @@ export class BotManager {
         },
         message: text => { if (!this.stopped && b.connection === connection) this.message(b, text); },
         chickenSpawn: position => {
-          if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages) return;
+          if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages ||
+              !this.pitPopulationAllowsEvents(b)) return;
           const detection=this.carePackages.observeChicken(b.instanceId,position,this.now());
           if(detection)this.prepareCarePackage(b,detection.timestamp,detection.target);
         },
         chestAppeared: position => {
-          if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages) return;
+          if (this.stopped || this.movementDebug || b.connection !== connection || !b.instanceId || !this.carePackages ||
+              !this.pitPopulationAllowsEvents(b)) return;
           const event=this.carePackages.observeChest(b.instanceId,position,this.now());
           if(!event)return;
           const scheduledAt=typeof event.metadata?.scheduledAt==='number'?event.metadata.scheduledAt:undefined;
@@ -617,7 +619,7 @@ export class BotManager {
       return;
     }
     if (this.movementDebug) return;
-    if(b.instanceId&&this.carePackages){
+    if(b.instanceId&&this.carePackages&&this.pitPopulationAllowsEvents(b)){
       const started=this.carePackages.observeAnnouncement(b.instanceId,text,this.now());
       if(started){
         this.log(b,'care package event started',{scheduledAt:started.timestamp,startedAt:started.startedAt,area:started.area});
@@ -698,12 +700,21 @@ export class BotManager {
     b.generation.invalidate();
     this.log(b,'care package execution stopped',{scheduledAt:run.timestamp,reason});
   }
+  private pitPopulationAllowsEvents(b:ManagedBot):boolean {
+    return this.config.transport!=='forge'||this.config.pitEventMinPlayers<=0||
+      (b.pitPopulation!==undefined&&b.pitPopulation>=this.config.pitEventMinPlayers);
+  }
+
   private checkPitPopulation(b:ManagedBot):void {
     const minimum=this.config.pitEventMinPlayers;
     const transport=b.transport;
     const instanceId=b.instanceId;
     const connection=b.connection;
     if(!instanceId)return;
+    if(this.config.transport!=='forge'){
+      transport?.setPitScanEnabled?.(true);
+      return;
+    }
     if(minimum<=0){
       transport?.setPitScanEnabled?.(true);
       return;
