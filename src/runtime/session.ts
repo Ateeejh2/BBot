@@ -26,13 +26,18 @@ function normalizeAccessToken(value:string):string {
   return value;
 }
 
-export function validateSessionInput(body: unknown): { label: string; accessToken: string } {
+export function validateSessionInput(body: unknown): { label?: string; accessToken: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('INVALID_INPUT');
   const b = body as Record<string, unknown>;
-  if (Object.keys(b).sort().join(',') !== 'accessToken,kind,label' ||
-      b.kind !== 'SESSION' || typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label) ||
+  const keys=Object.keys(b).sort().join(',');
+  if (!['accessToken,kind','accessToken,kind,label'].includes(keys) ||
+      b.kind !== 'SESSION' ||
+      (b.label !== undefined && (typeof b.label !== 'string' || !/^[\w-]{1,40}$/.test(b.label))) ||
       !sessionInput(b.accessToken)) throw Error('INVALID_INPUT');
-  return { label: b.label, accessToken: normalizeAccessToken(b.accessToken) };
+  return {
+    ...(typeof b.label === 'string' ? { label:b.label } : {}),
+    accessToken: normalizeAccessToken(b.accessToken)
+  };
 }
 
 export function validateSessionTokenInput(body: unknown): string {
