@@ -322,7 +322,13 @@ export class BotManager {
       if (!this.configurationLocked && b.machine.state === 'DISCONNECTED' && now >= b.dueAt && now >= this.nextConnectAt) {
         this.nextConnectAt = now + this.config.connectionSpacingMs; this.connect(b, index); continue;
       }
-      if (b.machine.state === 'CONNECTING' && now >= b.deadline) { this.disconnected(b); continue; }
+      if (b.machine.state === 'CONNECTING' && now >= b.deadline) {
+        this.log(b,'server connection timed out',{timeoutMs:this.config.connectTimeoutMs});
+        this.checkSessionAfterConnectFailure(b);
+        if(this.config.transport==='forge')b.paused=true;
+        this.disconnected(b);
+        continue;
+      }
       const limboRecovery=b.limboRecovery;
       if(limboRecovery?.phase==='WAIT_LOBBY'&&b.machine.state==='RECOVERING'){
         if(b.ready&&now>=limboRecovery.playAt){
