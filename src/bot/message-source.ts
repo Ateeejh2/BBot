@@ -7,6 +7,10 @@ export function eligibleTransferChannel(
   selected: 'system' | 'chat',
   exactTransfer = false
 ): boolean {
+  // An exact whole-line transfer notification with no sender is authoritative
+  // on legacy 1.8.9 whether Forge/Mineflayer classifies it as chat or system.
+  // Ordinary messages still obey the configured channel.
+  if (exactTransfer && !sender && (position === 'system' || position === 'chat')) return true;
   if (position !== selected) return false;
   if (!sender) return true;
   return selected === 'chat' && exactTransfer;
