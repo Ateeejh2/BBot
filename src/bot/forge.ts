@@ -963,8 +963,8 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     prewarmAbort=controller;
     prewarmInstanceId=instanceId;
     let shouldRetry=false;
+    const prewarmStartedAt=Date.now();
     const task=(async()=>{
-      const prewarmStartedAt=Date.now();
       const start=await waitForCurrentPosition(controller.signal);
       if(!start)throw new Error('Pit prewarm position unavailable');
       events.diagnostic?.('pit navigation prewarm started',{instanceId});
