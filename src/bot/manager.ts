@@ -29,6 +29,7 @@ interface ManagedBot {
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
   preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; carePackage?:CarePackageRun; careRetryAt?:number;
   activity?: { kind:'SCANNING_CHUNKS'; progress:number };
+  pitPopulation?: number; pitPopulationCheckInstance?: string; nextPitPopulationCheckAt: number;
   debugWalkDone: boolean; debugSpawnAt?: number; lastPositionCorrectionAt?: number; lastHorizontalCollisionAt?: number;
 }
 export class BotManager {
@@ -54,7 +55,7 @@ export class BotManager {
         machine: new StateMachine((_from, to) => this.log(bot, 'state changed', { state: to })),
         generation: new Generation(), connection: 0, ready: false, dueAt: 0, deadline: 0,
         reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, paused: config.api.enabled,
-        pathAttempts: 0, pathCompleted: 0, pathFailed: 0, debugWalkDone: false };
+        pathAttempts: 0, pathCompleted: 0, pathFailed: 0, nextPitPopulationCheckAt: 0, debugWalkDone: false };
       return bot;
     });
   }
@@ -355,6 +356,7 @@ export class BotManager {
         if (now - quietSince >= 1500) this.startDebugWalk(b);
       }
       if (!this.movementDebug && !b.limboRecovery && ['LOBBY', 'RECOVERING'].includes(b.machine.state) && b.ready && now >= b.dueAt) this.join(b);
+      if (b.instanceId && b.machine.state === 'IN_PIT_IDLE' && now >= b.nextPitPopulationCheckAt) this.checkPitPopulation(b);
       if (b.instanceId) this.registry.heartbeat(b.instanceId, now);
       if (b.stableSince !== undefined && now - b.stableSince >= 60000) { b.reconnectAttempts = 0; b.joinAttempts = 0; }
     }
@@ -548,7 +550,9 @@ export class BotManager {
     try { this.registry.join(b.pendingInstance, b.id, this.now()); }
     catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
     b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false;
+    b.pitPopulation=undefined;b.nextPitPopulationCheckAt=0;
     b.transport?.setInstance?.(b.instanceId);
+    b.transport?.setPitScanEnabled?.(false);
     b.machine.transition('IN_PIT_IDLE'); b.stableSince = this.now();
     if(b.limboRecovery?.phase==='JOINING_PIT'){
       this.log(b,'lobby requeue completed',{source:b.limboRecovery.source,instanceId:b.instanceId});
@@ -699,20 +703,48 @@ export class BotManager {
     const transport=b.transport;
     const instanceId=b.instanceId;
     const connection=b.connection;
-    if(minimum<=0||!instanceId||!transport?.playerCount)return;
+    if(!instanceId)return;
+    if(minimum<=0){
+      transport?.setPitScanEnabled?.(true);
+      return;
+    }
+    if(!transport?.playerCount){
+      // Legacy transports cannot verify population. Do not block their existing behavior.
+      transport?.setPitScanEnabled?.(true);
+      return;
+    }
+    if(b.pitPopulationCheckInstance===instanceId)return;
 
+    b.pitPopulationCheckInstance=instanceId;
+    b.nextPitPopulationCheckAt=this.now()+this.config.pitPopulationCheckMs;
     void transport.playerCount().then(count=>{
-      if(this.stopped||b.connection!==connection||b.machine.state!=='IN_PIT_IDLE'||b.instanceId!==instanceId)return;
+      if(this.stopped||b.connection!==connection||b.instanceId!==instanceId)return;
       if(count===undefined){
+        b.pitPopulation=undefined;
+        transport.setPitScanEnabled?.(false);
         this.log(b,'Pit lobby population unavailable',{instanceId,minimum});
         return;
       }
+
+      b.pitPopulation=count;
       this.log(b,'Pit lobby population observed',{instanceId,players:count,minimum});
-      if(count>=minimum)return;
-      this.startLobbyRequeue(b,'LOW_POPULATION',0,{players:count,minimum,instanceId});
+      if(count>=minimum){
+        transport.setPitScanEnabled?.(true);
+        return;
+      }
+
+      transport.setPitScanEnabled?.(false);
+      if(b.machine.state==='IN_PIT_IDLE'){
+        this.startLobbyRequeue(b,'LOW_POPULATION',0,{players:count,minimum,instanceId});
+      }
     },()=>{
-      if(!this.stopped&&b.connection===connection&&b.instanceId===instanceId)
+      if(!this.stopped&&b.connection===connection&&b.instanceId===instanceId){
+        b.pitPopulation=undefined;
+        transport.setPitScanEnabled?.(false);
         this.log(b,'Pit lobby population query failed',{instanceId,minimum});
+      }
+    }).finally(()=>{
+      if(b.pitPopulationCheckInstance===instanceId)b.pitPopulationCheckInstance=undefined;
     });
   }
 
@@ -729,6 +761,7 @@ export class BotManager {
     this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
     this.registry.leave(b.id,now,'PLANNED');
     b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.stableSince=undefined;b.ready=false;
+    b.pitPopulation=undefined;b.pitPopulationCheckInstance=undefined;b.nextPitPopulationCheckAt=0;
     b.machine.transition('RECOVERING');
     b.limboRecovery={playAt:now+delayMs,phase:'WAIT_LOBBY',source};
     b.deadline=now+delayMs+this.config.joinTimeoutMs;
