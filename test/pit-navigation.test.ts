@@ -279,6 +279,58 @@ test('Pit base graph survives a backend restart and returns DISK_HIT without a f
   }
 });
 
+test('persisted Base Graph never carries instance-local volatile blocks across restarts', async () => {
+  const directory=await mkdtemp(join(tmpdir(),'bbot-pit-cache-overlay-'));
+  try{
+    const blocked=volatileBarrierChunk();
+    const signal=new AbortController().signal;
+    const start={x:2.5,y:64,z:2.5},target={x:9.5,y:64,z:2.5};
+
+    const first=new PitNavigationService();
+    first.configurePersistence(directory);
+    const firstWarm=await first.prewarm(
+      'disk-overlay-first',
+      start,
+      async (x,z)=>x===0&&z===0?blocked:undefined,
+      signal,
+      async()=>[{x:0,z:0}],
+      undefined,
+      async()=>[
+        {x:5,y:64,z:2,stateId:OBSIDIAN},
+        {x:5,y:65,z:2,stateId:OBSIDIAN}
+      ]
+    );
+    assert.equal(firstWarm.cacheStatus,'FULL_SCAN');
+    assert.equal(firstWarm.dynamicBlocks,2);
+
+    const restarted=new PitNavigationService();
+    restarted.configurePersistence(directory);
+    const warm=await restarted.prewarm(
+      'disk-overlay-second',
+      start,
+      async (x,z)=>x===0&&z===0?flatChunk(0):undefined,
+      signal,
+      async()=>[{x:0,z:0}],
+      undefined,
+      async()=>[]
+    );
+    assert.equal(warm.cacheStatus,'DISK_HIT');
+    assert.equal(warm.dynamicBlocks,0);
+
+    const plan=await restarted.plan(
+      'disk-overlay-second',
+      start,
+      target,
+      async (x,z)=>x===0&&z===0?flatChunk(0):undefined,
+      signal
+    );
+    assert.equal(plan.complete,true);
+    assert.ok(plan.waypoints.every(point=>point.z===2.5),'stale volatile blocks must not survive in the disk Base Graph');
+  }finally{
+    await rm(directory,{recursive:true,force:true});
+  }
+});
+
 test('invalid persisted Pit map format is ignored and rebuilt safely', async () => {
   const directory=await mkdtemp(join(tmpdir(),'bbot-pit-cache-invalid-'));
   try{
