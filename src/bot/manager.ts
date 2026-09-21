@@ -2,7 +2,7 @@ import { StateMachine, Generation } from '../core/state.js';
 import { UnknownReturnClassifier, type BotView, type GameEvent, type JobFailureReason, type Position, type ReturnClassifier, type ReturnReason } from '../core/types.js';
 import type { Config } from '../config/index.js';
 import { Logger, safeKickReason } from '../logging/logger.js';
-import { parseInstance } from '../instances/parser.js';
+import { parseInstance, parseLocrawPitInstance } from '../instances/parser.js';
 import { InstanceRegistry } from '../instances/registry.js';
 import { DistributionManager } from '../instances/distribution.js';
 import { Scheduler } from '../scheduler/scheduler.js';
@@ -566,10 +566,19 @@ export class BotManager {
     if (b.machine.state === 'CONNECTING') {
       b.machine.transition('LOBBY'); b.dueAt = this.now() + (this.config.transport === 'forge' ? 5000 : this.config.playCooldownMs);
     } else if (b.machine.state === 'JOINING_PIT') {
-      // 1.8.9/Bungee event order is not assumed: require both an exact transfer notice and a spawn
-      // from the same join attempt, but accept either observation order.
+      // 1.8.9/Bungee event order is not assumed: accept either transfer-notice
+      // ordering. If the notice was missed, ask Hypixel for the current raw
+      // location after spawn and confirm from that exact JSON response.
       b.joinSpawnObserved = true;
       this.confirmJoinedInstance(b);
+      if(!b.pendingInstance){
+        try{
+          b.transport?.chat('/locraw');
+          this.log(b,'Pit instance fallback requested',{source:'locraw'});
+        }catch{
+          this.log(b,'Pit instance fallback request failed');
+        }
+      }
     } else if (b.machine.state !== 'RECOVERING' && b.machine.state !== 'LOBBY' && b.machine.state !== 'PREPARING_EVENT') {
       this.recover(b, 'UNKNOWN_RETURN');
     }
@@ -602,7 +611,9 @@ export class BotManager {
         if(started.target)this.prepareCarePackage(b,started.timestamp,started.target);
       }
     }
-    const instance = parseInstance(text);
+    const transferInstance = parseInstance(text);
+    const locrawInstance = parseLocrawPitInstance(text);
+    const instance = transferInstance ?? locrawInstance;
     if (instance && !['DISCONNECTED', 'CONNECTING'].includes(b.machine.state)) {
       if (b.machine.state !== 'JOINING_PIT') {
         this.recover(b, 'UNKNOWN_RETURN');
@@ -611,7 +622,8 @@ export class BotManager {
       }
       b.pendingInstance = instance;
       try { this.registry.observe(instance, this.now()); } catch { this.log(b, 'registry capacity reached'); }
-      this.log(b, 'transfer destination observed', { destination: instance });
+      this.log(b, transferInstance?'transfer destination observed':'Pit instance observed from locraw',
+        { destination: instance });
       this.confirmJoinedInstance(b);
     }
     const reason = this.classifier.classify(text);
