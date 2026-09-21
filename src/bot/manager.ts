@@ -478,7 +478,9 @@ export class BotManager {
           }
           const level = name.startsWith('viewer ') || name === 'server position correction' || name === 'movement packet after correction' ||
             name === 'control path planning failed' || name === 'control walk collision' || name === 'launch pad selected' ||
-            name === 'pit path planned' || name === 'pit path replan requested' ? 'info' : 'debug';
+            name === 'pit path planned' || name === 'pit path replan requested' ||
+            name === 'pit navigation prewarm started' || name === 'pit navigation prewarm completed' ||
+            name === 'pit navigation prewarm failed' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
             instance: b.instanceId, state: b.machine.state, ...correlated });
         },
