@@ -22,10 +22,12 @@ test('offline dependency smoke: pinned 1.8.9 resolves protocol 47 and plugin exp
   assert.equal(typeof pathfinder.goals.GoalNear, 'function');
 });
 import { eligibleServerAnnouncementChannel, eligibleTransferChannel, isDeathNotice, isLimboNotice } from '../src/bot/message-source.js';
-test('legacy chat is opt-in; sender metadata is accepted only for an exact transfer match', () => {
+test('legacy chat is opt-in; exact sender-less transfer notices accept chat or system', () => {
   assert.equal(eligibleTransferChannel('system', null, 'system'), true);
   assert.equal(eligibleTransferChannel('chat', null, 'system'), false);
   assert.equal(eligibleTransferChannel('chat', null, 'chat'), true);
+  assert.equal(eligibleTransferChannel('chat', null, 'system', true), true);
+  assert.equal(eligibleTransferChannel('system', null, 'chat', true), true);
   assert.equal(eligibleTransferChannel('chat', 'player-uuid', 'chat'), false);
   assert.equal(eligibleTransferChannel('chat', 'player-uuid', 'chat', true), true);
   assert.equal(eligibleTransferChannel('system', 'sender', 'system', true), false);
