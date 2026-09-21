@@ -80,7 +80,7 @@ export class PitNavigationService {
     const key=normalizeInstance(instanceId);
     this.instanceUsers.set(key,(this.instanceUsers.get(key)??0)+1);
     if(position&&!this.anchors.has(key)){
-      this.anchors.set(key,{x:Math.floor(position.x/16),z:Math.floor(position.z/16)});
+      this.anchors.set(key,fingerprintAnchor(position));
     }
   }
 
@@ -276,7 +276,7 @@ export class PitNavigationService {
 
     let anchor=this.anchors.get(instanceKey);
     if(!anchor){
-      anchor={x:Math.floor(start.x/16),z:Math.floor(start.z/16)};
+      anchor=fingerprintAnchor(start);
       this.anchors.set(instanceKey,anchor);
     }
     const samples: Array<{dx:number;dz:number;chunk:PitChunkData}> = [];
@@ -457,7 +457,7 @@ function terrainFingerprint(samples:Array<{dx:number;dz:number;chunk:PitChunkDat
       hash.update(normalized);
     }
   }
-  return `terrain:${hash.digest('hex').slice(0,24)}`;
+  return `terrain2:${hash.digest('hex').slice(0,24)}`;
 }
 
 function addChunk(graph:TerrainGraph,chunk:PitChunkData):void {
@@ -678,6 +678,17 @@ function compressPath(path:NavNode[]):Position[]{
 
 function heuristic(node:NavNode,target:Position):number {
   return Math.abs(node.x+0.5-target.x)+Math.abs(node.z+0.5-target.z)+Math.abs(node.y-target.y)*0.25;
+}
+
+function fingerprintAnchor(position:Position):{x:number;z:number}{
+  // Pit spawn has small random jitter and can straddle a chunk boundary around
+  // world-grid lines (notably around zero). Snap the sampling anchor to an
+  // 8-chunk / 128-block grid so tiny spawn differences observe the same map
+  // samples while keeping the anchor at most four chunks from the player.
+  return {
+    x:Math.round(position.x/128)*8,
+    z:Math.round(position.z/128)*8
+  };
 }
 
 function normalizeInstance(value:string):string{return value.toLowerCase();}
