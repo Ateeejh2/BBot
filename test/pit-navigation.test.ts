@@ -153,6 +153,77 @@ test('first fingerprint scans every loaded chunk once and later paths reuse the 
   assert.equal(progress.length,3);
 });
 
+test('Pit prewarm scans once and the later path reuses the prepared graph and overlay', async () => {
+  const service=new PitNavigationService();
+  const chunks=new Map<number,PitChunkData>([
+    [0,flatChunk(0)],[1,flatChunk(1)]
+  ]);
+  let listCalls=0,chunkCalls=0,dynamicCalls=0;
+  const loader=async (x:number,z:number):Promise<PitChunkData|undefined>=>{
+    chunkCalls++;
+    return z===0?chunks.get(x):undefined;
+  };
+  const lister=async()=>{listCalls++;return [{x:0,z:0},{x:1,z:0}];};
+  const dynamicLoader=async()=>{dynamicCalls++;return [];};
+  const signal=new AbortController().signal;
+
+  const warm=await service.prewarm(
+    'prewarm-instance',
+    {x:2.5,y:64,z:2.5},
+    loader,
+    signal,
+    lister,
+    undefined,
+    dynamicLoader
+  );
+  assert.equal(warm.cacheStatus,'FULL_SCAN');
+  assert.equal(warm.scannedChunks,2);
+  const afterWarm={listCalls,chunkCalls,dynamicCalls};
+
+  const plan=await service.plan(
+    'prewarm-instance',
+    {x:2.5,y:64,z:2.5},
+    {x:24.5,y:64,z:2.5},
+    loader,
+    signal,
+    [],
+    lister,
+    undefined,
+    dynamicLoader
+  );
+  assert.equal(plan.complete,true);
+  assert.equal(listCalls,afterWarm.listCalls);
+  assert.equal(chunkCalls,afterWarm.chunkCalls);
+  assert.equal(dynamicCalls,afterWarm.dynamicCalls);
+});
+
+test('concurrent same-map prewarms share one Base Graph full scan', async () => {
+  const service=new PitNavigationService();
+  const terrain=flatChunk(0);
+  let listCalls=0;
+  const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+    x===0&&z===0?terrain:undefined;
+  const lister=async()=>{
+    listCalls++;
+    await new Promise(resolve=>setTimeout(resolve,5));
+    return [{x:0,z:0}];
+  };
+  const dynamicLoader=async()=>[];
+  const signal=new AbortController().signal;
+  const start={x:2.5,y:64,z:2.5};
+
+  const [a,b]=await Promise.all([
+    service.prewarm('prewarm-a',start,loader,signal,lister,undefined,dynamicLoader),
+    service.prewarm('prewarm-b',start,loader,signal,lister,undefined,dynamicLoader)
+  ]);
+
+  assert.equal(a.fingerprint,b.fingerprint);
+  assert.equal(listCalls,2,'one call builds the Base Graph and the other prepares its instance overlay');
+  assert.equal(service.cache.snapshot(Date.now()).length,1);
+  assert.ok([a.cacheStatus,b.cacheStatus].includes('FULL_SCAN'));
+  assert.ok([a.cacheStatus,b.cacheStatus].includes('SHARED_HIT'));
+});
+
 test('A-star allows arbitrarily deep Pit drops when a lower floor exists', async () => {
   const service=new PitNavigationService();
   const terrain=dropChunk();
