@@ -50,6 +50,7 @@ interface BridgeResponse {
   chunkX?: number;
   chunkZ?: number;
   sections?: Array<{ y?: unknown; states?: unknown }>;
+  playerCount?: number;
 }
 
 type BridgeMessage =
@@ -211,6 +212,14 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     if (!response.ok || response.kind !== 'serverControl') {
       throw new Error(response.error === 'NOT_CONNECTED' ? 'NOT_CONNECTED' : 'SERVER_DISCONNECT_FAILED');
     }
+  };
+
+  const playerCount = async (): Promise<number | undefined> => {
+    await waitForBridge();
+    const response = await request({ type: 'getPlayerCount' }, undefined, 3000);
+    if (!response.ok || response.kind !== 'playerCount' || !Number.isSafeInteger(response.playerCount) ||
+        response.playerCount! < 0 || response.playerCount! > 1000) return undefined;
+    return response.playerCount;
   };
 
   const listLoadedPitChunks = async (signal:AbortSignal):Promise<Array<{x:number;z:number}>> => {
@@ -1036,6 +1045,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   return {
     position: () => current ? { x: current.x, y: current.y, z: current.z } : undefined,
     ping: () => current?.pingMs,
+    playerCount,
     setInstance: instanceId => {
       if(boundInstanceId===instanceId)return;
       prewarmAbort?.abort(new Error('Pit instance changed'));
