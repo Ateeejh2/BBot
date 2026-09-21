@@ -390,6 +390,32 @@ test('A-star allows arbitrarily deep Pit drops when a lower floor exists', async
   assert.ok(plan.waypoints.some(point=>point.y===64));
 });
 
+test('Pit terrain fingerprint is stable across small spawn jitter around chunk boundaries', async () => {
+  const signal=new AbortController().signal;
+  const terrain=flatChunk(0);
+  const loader=async (x:number,z:number):Promise<PitChunkData|undefined> =>
+    x===0&&z===0?terrain:undefined;
+
+  const a=new PitNavigationService();
+  const left=await a.prewarm(
+    'spawn-left',
+    {x:-0.5,y:64,z:-0.5},
+    loader,
+    signal
+  );
+
+  const b=new PitNavigationService();
+  const right=await b.prewarm(
+    'spawn-right',
+    {x:0.5,y:64,z:0.5},
+    loader,
+    signal
+  );
+
+  assert.equal(left.fingerprint,right.fingerprint);
+  assert.match(left.fingerprint,/^terrain2:/);
+});
+
 test('volatile Pit blocks do not change the shared terrain fingerprint', async () => {
   const service=new PitNavigationService();
   const signal=new AbortController().signal;
