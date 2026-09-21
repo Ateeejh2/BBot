@@ -205,7 +205,24 @@ public final class BBotHeadlessPoc {
 
     @SubscribeEvent
     public void onClientDisconnected(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
-        emitBridgeEvent("serverDisconnected");
+        String reason = null;
+        try {
+            if (event.manager != null && event.manager.getExitMessage() != null) {
+                reason = event.manager.getExitMessage().getUnformattedText();
+            }
+        } catch (Throwable ignored) {
+            // Best-effort operator diagnostic only.
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "serverDisconnected");
+        if (reason != null && !reason.trim().isEmpty()) {
+            String clean = reason.replace('\r', ' ').replace('\n', ' ').trim();
+            if (clean.length() > 500) clean = clean.substring(0, 500);
+            message.addProperty("text", clean);
+        }
+        if (bridge != null) bridge.emit(message);
     }
 
     @SubscribeEvent
