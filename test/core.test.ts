@@ -78,6 +78,21 @@ test('distribution spreads duplicate bots toward one bot per Pit instance', () =
   assert.equal(d.choose(bots, r, 100000)?.id, 'b2');
 });
 
+test('distribution reroll budget resets after a bot reaches a unique instance', () => {
+  const r = new InstanceRegistry();
+  const d = new DistributionManager(1,10);
+  const duplicated = [{...bot('b1'),instanceId:'a'},{...bot('b2'),instanceId:'a'}];
+  assert.equal(d.choose(duplicated,r,0)?.id,'b2');
+  d.recordAttempt('b2',0);
+  assert.equal(d.choose(duplicated,r,1000)?.id,'b1');
+
+  const unique = [{...bot('b1'),instanceId:'a'},{...bot('b2'),instanceId:'b'}];
+  assert.equal(d.choose(unique,r,1000),undefined);
+
+  const collidedAgain = [{...bot('b1'),instanceId:'a'},{...bot('b2'),instanceId:'a'}];
+  assert.equal(d.choose(collidedAgain,r,1000)?.id,'b2');
+});
+
 test('distribution does not stop at an even split while duplicate coverage remains', () => {
   const r = new InstanceRegistry();
   const bots = [
