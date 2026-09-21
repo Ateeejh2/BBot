@@ -128,7 +128,7 @@ function validateGraph(raw:unknown,expectedFingerprint:string):PitDiskGraph{
 
   return {
     formatVersion:PIT_MAP_DISK_FORMAT_VERSION,
-    fingerprint:value.fingerprint,
+    fingerprint:value.fingerprint as string,
     savedAt:value.savedAt as number,
     chunks,
     nodes
