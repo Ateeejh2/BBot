@@ -145,6 +145,34 @@ test('Forge server Disconnect keeps the client transport alive and Start reuses 
   assert.equal(fixture.transport?.closeCalls, 1, 'manager stop/Quit path may close the retained bridge transport');
 });
 
+test('Forge connection timeout pauses instead of silently reconnecting forever', () => {
+  const fixture = createForgeManager();
+  const { manager } = fixture;
+  try {
+    manager.startServer('bot-1', 'play.example.test', 25565);
+    const first = fixture.transport;
+    assert.ok(first);
+    assert.equal(manager.views()[0]?.state, 'CONNECTING');
+    assert.equal(fixture.factoryCalls, 1);
+
+    fixture.setNow(11_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state, 'DISCONNECTED');
+    assert.equal(first.closeCalls, 1);
+
+    fixture.setNow(60_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state, 'DISCONNECTED');
+    assert.equal(fixture.factoryCalls, 1, 'timed-out Forge Start must wait for an explicit retry');
+
+    manager.startServer('bot-1', 'play.example.test', 25565);
+    assert.equal(manager.views()[0]?.state, 'CONNECTING');
+    assert.equal(fixture.factoryCalls, 2);
+  } finally {
+    manager.stop();
+  }
+});
+
 test('Forge reconnect failure returns to DISCONNECTED without destroying the retained transport', async () => {
   const fixture = createForgeManager();
   const { manager } = fixture;
