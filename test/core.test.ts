@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseInstance } from '../src/instances/parser.js';
+import { parseInstance, parseLocrawPitInstance } from '../src/instances/parser.js';
 import { StateMachine, Generation } from '../src/core/state.js';
 import { InstanceRegistry } from '../src/instances/registry.js';
 import { DistributionManager } from '../src/instances/distribution.js';
@@ -20,6 +20,14 @@ test('transfer parser accepts case/format variations and arbitrary instance pref
     ['SERVER  FOUND!\tSending to NewInstance99!', 'newinstance99']
   ]) assert.equal(parseInstance(text!), expected);
 });
+test('locraw parser accepts only exact Pit location JSON', () => {
+  assert.equal(parseLocrawPitInstance('{"server":"mega2C","gametype":"PIT","mode":"PIT","map":"The Pit Genesis"}'),'mega2c');
+  assert.equal(parseLocrawPitInstance('§a{"server":"mini12A","gametype":"PIT","mode":"PIT"}§r'),'mini12a');
+  assert.equal(parseLocrawPitInstance('{"server":"mini1","gametype":"BEDWARS","mode":"BEDWARS_EIGHT_TWO"}'),undefined);
+  assert.equal(parseLocrawPitInstance('<Player> {"server":"mega2C","gametype":"PIT"}'),undefined);
+  assert.equal(parseLocrawPitInstance('{"server":"../bad","gametype":"PIT"}'),undefined);
+});
+
 test('transfer parser rejects chat spoofing, partial/malformed messages', () => {
   for (const value of ['<player> SERVER FOUND! Sending to mega10c!', 'Sending to mega10c!', 'SERVER FOUND! Sending to !', 'SERVER FOUND! Sending to mega10c', 'SERVER FOUND! Sending to a! extra', `SERVER FOUND! Sending to ${'a'.repeat(129)}!`]) assert.equal(parseInstance(value), undefined);
 });
