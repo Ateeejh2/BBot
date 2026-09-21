@@ -614,7 +614,13 @@ export class BotManager {
     const transferInstance = parseInstance(text);
     const locrawInstance = parseLocrawPitInstance(text);
     const instance = transferInstance ?? locrawInstance;
-    if (instance && !['DISCONNECTED', 'CONNECTING'].includes(b.machine.state)) {
+    if(instance && b.instanceId===instance && b.machine.state==='IN_PIT_IDLE'){
+      try{this.registry.heartbeat(instance,this.now());}catch{}
+      this.log(b,'Pit instance confirmation repeated',{
+        destination:instance,
+        source:transferInstance?'transfer':'locraw'
+      });
+    } else if (instance && !['DISCONNECTED', 'CONNECTING'].includes(b.machine.state)) {
       if (b.machine.state !== 'JOINING_PIT') {
         this.recover(b, 'UNKNOWN_RETURN');
         b.machine.transition('JOINING_PIT');
