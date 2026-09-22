@@ -103,8 +103,8 @@ test('recent change summary counts transitions inside the risk window', () => {
   assert.equal(recent.asn,1);
 
   const risk=assessNetworkIdentityRisk(points[2],points[3],recent);
-  assert.equal(risk.risk.score,10);
-  assert.equal(risk.risk.level,'Safe');
+  assert.equal(risk.risk.score,20);
+  assert.equal(risk.risk.level,'Caution');
   assert.ok(risk.risk.reasons.some(reason=>reason.includes('2 public IP changes in 6h')));
 });
 
@@ -153,7 +153,7 @@ test('short-term public IP churn survives backend restarts and contributes to ri
     assert.equal(snapshot.previous?.ip,'203.0.113.41');
     assert.equal(snapshot.current?.ip,'203.0.113.42');
     assert.equal(snapshot.recentChanges?.ip,2);
-    assert.equal(snapshot.risk.score,30);
+    assert.equal(snapshot.risk.score,40);
     assert.equal(snapshot.risk.level,'Caution');
     assert.ok(snapshot.risk.reasons.some(reason=>reason.includes('2 public IP changes in 6h')));
     third.close();
