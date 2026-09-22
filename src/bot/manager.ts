@@ -1,7 +1,8 @@
 import { StateMachine, Generation } from '../core/state.js';
-import { UnknownReturnClassifier, type BotView, type GameEvent, type JobFailureReason, type Position, type ReturnClassifier, type ReturnReason } from '../core/types.js';
+import { UnknownReturnClassifier, type BotView, type GameEvent, type JobFailureReason, type ModerationIncident, type Position, type ReturnClassifier, type ReturnReason } from '../core/types.js';
 import type { Config } from '../config/index.js';
 import { Logger, safeKickReason } from '../logging/logger.js';
+import { classifyDisconnectReason } from '../runtime/kick-ban.js';
 import { parseInstance, parseLocrawPitInstance } from '../instances/parser.js';
 import { InstanceRegistry } from '../instances/registry.js';
 import { DistributionManager } from '../instances/distribution.js';
@@ -25,7 +26,7 @@ interface ManagedBot {
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   pendingServer?: { host: string; port: number };
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
-  stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number;
+  stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number; moderation?: ModerationIncident;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
   preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; carePackage?:CarePackageRun; careRetryAt?:number;
   activity?: { kind:'SCANNING_CHUNKS'; progress:number };
@@ -42,6 +43,7 @@ export class BotManager {
   private chatDebugSequence = 0;
   private chatDebugEntries: Array<{ id:number; at:number; botId:string; instanceId?:string; channel:string; text:string }> = [];
   private sessionFailureHandler?: (botId: string, accountId: string) => Promise<boolean>;
+  private banDetectedHandler?: (botId: string, accountId: string, reason: string, detectedAt: number) => Promise<void> | void;
   readonly distribution: DistributionManager;
   constructor(readonly config: Config, private factory: TransportFactory,
     readonly registry: InstanceRegistry, readonly scheduler: Scheduler,
@@ -90,6 +92,9 @@ export class BotManager {
   }
   setSessionFailureHandler(handler: (botId: string, accountId: string) => Promise<boolean>): void {
     this.sessionFailureHandler = handler;
+  }
+  setBanDetectedHandler(handler: (botId: string, accountId: string, reason: string, detectedAt: number) => Promise<void> | void): void {
+    this.banDetectedHandler = handler;
   }
   pauseForAccountError(botId: string): void {
     const b = this.controlled(botId);
@@ -261,16 +266,20 @@ export class BotManager {
     }
     b.paused = true; this.disconnected(b);
   }
-  assignAccount(botId: string, accountId: string, account: Config['accounts'][number], minecraftName?: string): void {
+  assignAccount(botId: string, accountId: string, account: Config['accounts'][number], minecraftName?: string,
+    ban?: { reason: string; detectedAt: number }): void {
     const b = this.controlled(botId);
     if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending) throw new Error('INVALID_STATE');
     this.config.accounts[this.bots.indexOf(b)] = account;
     b.accountId = accountId; b.accountLabel = account.label; b.minecraftName = minecraftName; b.authCheckPending = false;
+    b.moderation = ban ? { kind:'BAN', reason:ban.reason, detectedAt:ban.detectedAt, persistent:true } : undefined;
+    b.lastKickReason = ban?.reason; b.lastKickedAt = ban?.detectedAt;
   }
   unassignAccount(botId: string): void {
     const b = this.controlled(botId);
     if (b.machine.state !== 'DISCONNECTED' || !b.paused || b.authCheckPending) throw new Error('INVALID_STATE');
     b.accountId = undefined; b.accountLabel = b.id; b.minecraftName = undefined; b.authCheckPending = false;
+    b.moderation = undefined; b.lastKickReason = undefined; b.lastKickedAt = undefined;
   }
   allDisconnected(): boolean { return this.bots.every(b => b.machine.state === 'DISCONNECTED'); }
   isBotStopped(id: string): boolean {
@@ -283,7 +292,7 @@ export class BotManager {
     this.configurationLocked = true;
     try { return await operation(); } finally { this.configurationLocked = false; }
   }
-  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, jobId: b.execution?.id, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt, activity: b.activity }; }
+  private view(b: ManagedBot): BotView { return { id: b.id, accountId: b.accountId, accountLabel: b.accountLabel, minecraftName: b.minecraftName, state: b.machine.state, instanceId: b.instanceId, generation: b.generation.current, position: b.transport?.position(), startQueued: b.machine.state === 'DISCONNECTED' && !b.paused, jobId: b.execution?.id, kickReason: b.lastKickReason, kickedAt: b.lastKickedAt, moderation: b.moderation, activity: b.activity }; }
   private log(b: ManagedBot, message: string, extra: Record<string, unknown> = {}): void {
     this.logger.log('info', message, { botId: b.id, accountLabel: b.accountLabel, instance: b.instanceId, state: b.machine.state, jobId: b.execution?.id, ...extra });
   }
@@ -400,6 +409,9 @@ export class BotManager {
     });
   }
   private connect(b: ManagedBot, index: number): void {
+    if (b.moderation?.kind !== 'BAN') {
+      b.moderation = undefined; b.lastKickReason = undefined; b.lastKickedAt = undefined;
+    }
     b.machine.transition('CONNECTING'); b.ready = false;
     b.deadline = this.now() + this.config.connectTimeoutMs;
     const connection = ++b.connection;
@@ -505,9 +517,21 @@ export class BotManager {
         kicked: (reason, loggedIn) => {
           if (this.stopped || b.connection !== connection) return;
           const kickReason = safeKickReason(reason) ?? 'Unknown kick reason';
-          b.lastKickReason = kickReason; b.lastKickedAt = this.now();
+          const detectedAt = this.now();
+          const kind = classifyDisconnectReason(kickReason);
+          b.lastKickReason = kickReason; b.lastKickedAt = detectedAt;
+          b.moderation = { kind, reason:kickReason, detectedAt, persistent:kind === 'BAN' };
           this.logger.log('warn', 'bot kicked', { botId: b.id, accountLabel: b.accountLabel,
-            instance: b.instanceId, state: b.machine.state, kickReason, loggedIn: loggedIn ?? null });
+            instance: b.instanceId, state: b.machine.state, kickReason, moderationKind:kind, loggedIn: loggedIn ?? null });
+          if (kind === 'BAN' && b.accountId && this.banDetectedHandler) {
+            const accountId = b.accountId;
+            try {
+              void Promise.resolve(this.banDetectedHandler(b.id, accountId, kickReason, detectedAt))
+                .catch(() => this.log(b, 'ban persistence failed'));
+            } catch {
+              this.log(b, 'ban persistence failed');
+            }
+          }
           this.checkSessionAfterConnectFailure(b);
           if (this.config.transport === 'forge') b.paused = true;
           this.disconnected(b);
