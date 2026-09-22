@@ -82,13 +82,19 @@ test('movement debug waits for a quiet position window then continuously pathfin
   assert.equal(f.manager.movementDebugEnabled(),true);
   f.manager.stop();
 });
-test('kick reason is retained on the individual bot view', () => {
+test('kick reason is retained until the next connection attempt', () => {
   const f = fixture(); f.tick(0); const t = f.connections[0]!;
   t.events.kicked?.('Disconnected: duplicate login', true);
   const view = f.manager.views()[0]!;
   assert.equal(view.state, 'DISCONNECTED');
   assert.equal(view.kickReason, 'Disconnected: duplicate login');
   assert.equal(view.kickedAt, 0);
+  assert.equal(view.moderation?.kind, 'KICK');
+  assert.equal(view.moderation?.persistent, false);
+  f.tick(100);
+  assert.equal(f.manager.views()[0]?.state, 'CONNECTING');
+  assert.equal(f.manager.views()[0]?.moderation, undefined);
+  assert.equal(f.manager.views()[0]?.kickReason, undefined);
   f.manager.stop();
 });
 test('Forge API mode can attach a stopped bot without an account assignment', () => {
