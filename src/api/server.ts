@@ -9,6 +9,7 @@ import type { Config } from '../config/index.js';
 import { safeKickReason, type Logger } from '../logging/logger.js';
 import type { ControlStore } from '../runtime/control.js';
 import { RuntimePerformanceMonitor } from '../runtime/performance.js';
+import { NetworkIdentityMonitor } from '../runtime/network-identity.js';
 import type { CarePackageSchedule } from '../events/brooke.js';
 import type { ForgeWorkerSupervisor } from '../forge/worker-supervisor.js';
 
@@ -55,6 +56,9 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   carePackages?: CarePackageSchedule, forgeWorkers?: ForgeWorkerSupervisor) {
   const origin = config.api.origin!;
   const performance = new RuntimePerformanceMonitor();
+  const networkIdentity = config.mode === 'live'
+    ? new NetworkIdentityMonitor(config.dataDir, () => broadcast())
+    : undefined;
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
@@ -103,6 +107,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
       performance: { runtime: performance.snapshot(), pathfinding: manager.performanceSnapshot() },
+      networkIdentity: networkIdentity?.snapshot(),
       carePackages: carePackages?.snapshot(),
       carePackageTracking: manager.carePackageTrackingSnapshot(), movementDebug: manager.movementDebugEnabled(),
       logs: [...logs], chatLogs: manager.chatDebugSnapshot(), serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
@@ -257,8 +262,14 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   });
   wss.on('connection', ws => { ws.send(JSON.stringify({ type: 'snapshot', data: snapshot() })); });
   return {
-    listen: () => new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(config.api.port, config.api.host, resolve); }),
-    close: () => new Promise<void>(resolve => { clearInterval(timer); unsubscribe(); performance.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve()); }),
+    listen: () => new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(config.api.port, config.api.host, () => { networkIdentity?.start(); resolve(); });
+    }),
+    close: () => new Promise<void>(resolve => {
+      clearInterval(timer); unsubscribe(); performance.close(); networkIdentity?.close();
+      for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(() => resolve());
+    }),
     address: () => server.address()
   };
 }
