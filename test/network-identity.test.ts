@@ -78,6 +78,34 @@ test('network identity risk levels are transparent and bounded', () => {
   assert.equal(unknown.risk.level,'Unknown');
 });
 
+test('monitor compares each successful lookup with the immediately previous check', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'bbot-network-sequence-'));
+  try{
+    let value={ip:'203.0.113.30',asn:64500,countryCode:'JP',region:'Tokyo',city:'Tokyo',organization:'Example Network'};
+    const monitor=new NetworkIdentityMonitor(dir,()=>{},60_000,async()=>value);
+    await monitor.refresh();
+    assert.equal(monitor.snapshot().risk.level,'Unknown');
+
+    value={...value,ip:'203.0.113.31'};
+    await monitor.refresh();
+    const changed=monitor.snapshot();
+    assert.equal(changed.previous?.ip,'203.0.113.30');
+    assert.equal(changed.current?.ip,'203.0.113.31');
+    assert.equal(changed.changed,true);
+    assert.equal(changed.risk.level,'Caution');
+
+    await monitor.refresh();
+    const stable=monitor.snapshot();
+    assert.equal(stable.previous?.ip,'203.0.113.31');
+    assert.equal(stable.current?.ip,'203.0.113.31');
+    assert.equal(stable.changed,false);
+    assert.equal(stable.risk.level,'Safe');
+    monitor.close();
+  }finally{
+    await rm(dir,{recursive:true,force:true});
+  }
+});
+
 test('monitor snapshot includes scored change details', async () => {
   const dir=await mkdtemp(join(tmpdir(),'bbot-network-risk-'));
   try{
