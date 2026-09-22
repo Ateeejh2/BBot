@@ -119,6 +119,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   let prewarmPromise: Promise<void> | undefined;
   let prewarmInstanceId: string | undefined;
   let pitScanEnabled = false;
+  let plannedServerDisconnectUntil = 0;
   let viewerClose: (() => void) | undefined;
   let viewerState: ((state: BridgeState) => void) | undefined;
   let viewerBlockUpdate: ((x: number, y: number, z: number, stateId: number) => void) | undefined;
@@ -200,6 +201,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
   };
 
   const connectServer = async (host: string, serverPort: number): Promise<void> => {
+    plannedServerDisconnectUntil = 0;
     await waitForBridge();
     const response = await request({ type: 'connectServer', host, port: serverPort }, undefined, 5000);
     if (!response.ok || response.kind !== 'serverControl') {
@@ -209,9 +211,15 @@ export function createForgeTransport(config: Config, index: number, events: Tran
 
   const disconnectServer = async (): Promise<void> => {
     await waitForBridge();
-    const response = await request({ type: 'disconnectServer' }, undefined, 5000);
-    if (!response.ok || response.kind !== 'serverControl') {
-      throw new Error(response.error === 'NOT_CONNECTED' ? 'NOT_CONNECTED' : 'SERVER_DISCONNECT_FAILED');
+    plannedServerDisconnectUntil = Date.now() + 5000;
+    try {
+      const response = await request({ type: 'disconnectServer' }, undefined, 5000);
+      if (!response.ok || response.kind !== 'serverControl') {
+        throw new Error(response.error === 'NOT_CONNECTED' ? 'NOT_CONNECTED' : 'SERVER_DISCONNECT_FAILED');
+      }
+    } catch (error) {
+      plannedServerDisconnectUntil = 0;
+      throw error;
     }
   };
 
@@ -600,8 +608,9 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         break;
       }
       case 'serverDisconnected': {
+        let reason = '';
         if (typeof message.text === 'string') {
-          const reason=message.text
+          reason=message.text
             .replace(/§[0-9a-fk-or]/gi,'')
             .replace(/[\r\n]+/g,' ')
             .replace(/[\u0000-\u001f\u007f]/g,' ')
@@ -609,7 +618,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             .slice(0,500);
           if(reason)events.diagnostic?.('server disconnect reason',{reason});
         }
-        events.serverDisconnected?.();
+        const planned = plannedServerDisconnectUntil >= Date.now();
+        plannedServerDisconnectUntil = 0;
+        if (reason && !planned) events.kicked?.(reason);
+        else events.serverDisconnected?.();
         break;
       }
       case 'end':
