@@ -14,9 +14,13 @@ export interface Job {
   botId?: string; updatedAt: number; availableAt: number;
   lastFailure?: JobFailureReason; lastFailureAt?: number; retryAt?: number;
 }
+export interface ModerationIncident {
+  kind: 'KICK' | 'BAN'; reason: string; detectedAt: number; persistent: boolean;
+}
 export interface BotView {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; state: BotState; instanceId?: string;
   generation: number; position?: Position; startQueued?: boolean; jobId?: string; kickReason?: string; kickedAt?: number;
+  moderation?: ModerationIncident;
   activity?: { kind:'SCANNING_CHUNKS'; progress:number };
 }
 export type ReturnReason = 'UNKNOWN_RETURN' | 'AFK' | 'PLANNED' | 'LIMBO';
