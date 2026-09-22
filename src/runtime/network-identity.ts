@@ -12,7 +12,7 @@ export interface NetworkIdentityPoint {
   observedAt: number;
 }
 
-export type NetworkIdentityRiskLevel = 'Safe' | 'Cauction' | 'Warning' | 'Dangerous' | 'Unknown';
+export type NetworkIdentityRiskLevel = 'Safe' | 'Caution' | 'Warning' | 'Dangerous' | 'Unknown';
 
 export interface NetworkIdentityChanges {
   ip: boolean;
@@ -67,7 +67,7 @@ export function assessNetworkIdentityRisk(
   const level: NetworkIdentityRiskLevel =
     score >= 70 ? 'Dangerous' :
     score >= 45 ? 'Warning' :
-    score >= 20 ? 'Cauction' :
+    score >= 20 ? 'Caution' :
     'Safe';
 
   if (!reasons.length) reasons.push('No monitored network identity changes');
