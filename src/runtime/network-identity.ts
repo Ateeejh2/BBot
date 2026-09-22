@@ -137,8 +137,8 @@ export class NetworkIdentityMonitor {
           (previous.countryCode !== undefined && current.countryCode !== undefined && previous.countryCode !== current.countryCode)
         ));
         this.value = { status: 'OK', current, previous, changed, checkedAt: now };
-        await this.persist(current);
         this.onChange();
+        try { await this.persist(current); } catch { /* Display remains valid even if persistence fails. */ }
       } finally {
         clearTimeout(timeout);
         if (this.controller === controller) this.controller = undefined;
