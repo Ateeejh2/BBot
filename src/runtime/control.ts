@@ -5,11 +5,12 @@ import type { Config } from '../config/index.js';
 import type { BotManager } from '../bot/manager.js';
 import type { Account } from '../config/index.js';
 import { validateSessionInput, validateSessionTokenInput, resolveSessionCredential, saveSessionCredential, readSessionCredential, deleteSessionCredential, type SessionCredential } from './session.js';
+import { validPersistedBan, type PersistedBan } from './kick-ban.js';
 
 export interface ServerConnection { host: string; port: number; version: '1.8.9'; revision: number }
 export interface PublicAccount {
   id: string; label: string; kind: 'MICROSOFT' | 'SESSION'; status: 'WAITING_FOR_LOGIN' | 'READY' | 'ERROR';
-  minecraftName?: string; assignedBot?: string; createdAt: number; authError?: 'SESSION_TOKEN_INVALID';
+  minecraftName?: string; assignedBot?: string; createdAt: number; authError?: 'SESSION_TOKEN_INVALID'; ban?: PersistedBan;
 }
 type StoredAccount = (PublicAccount & { kind: 'MICROSOFT'; cacheKey: string; folder: string }) |
   (PublicAccount & { kind: 'SESSION'; minecraftName: string });
@@ -87,8 +88,8 @@ export class ControlStore {
   }
   getServer(): ServerConnection { return { ...this.server }; }
   listAccounts(): PublicAccount[] {
-    return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError }) =>
-      ({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError }));
+    return this.entries.map(({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError, ban }) =>
+      ({ id, label, kind, status, minecraftName, assignedBot, createdAt, authError, ban }));
   }
   getAuthChallenge(id: string): PublicAuthChallenge | undefined {
     const challenge = this.challenges.get(id);
@@ -133,6 +134,7 @@ export class ControlStore {
         /^[0-9a-f-]{36}$/.test(a.id) && /^[\w-]{1,40}$/.test(a.label) && ['MICROSOFT', 'SESSION'].includes(a.kind) &&
         ['WAITING_FOR_LOGIN', 'READY', 'ERROR'].includes(a.status) &&
         (a.authError === undefined || a.authError === 'SESSION_TOKEN_INVALID') &&
+        (a.ban === undefined || validPersistedBan(a.ban)) &&
         (a.minecraftName === undefined || (typeof a.minecraftName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(a.minecraftName))) &&
         (a.kind === 'MICROSOFT' ? typeof a.cacheKey === 'string' && a.cacheKey.length <= 256 && /^[\w-]{1,40}$/.test(a.folder) :
           ['READY', 'ERROR'].includes(a.status) && typeof a.minecraftName === 'string' && a.cacheKey === undefined && a.folder === undefined) &&
@@ -152,8 +154,10 @@ export class ControlStore {
   async bind(manager: BotManager): Promise<void> {
     this.manager = manager;
     manager.setSessionFailureHandler((botId, accountId) => this.revalidateSessionAfterConnectFailure(botId, accountId));
+    manager.setBanDetectedHandler((botId, accountId, reason, detectedAt) =>
+      this.persistBan(botId, accountId, reason, detectedAt));
     for (const a of this.entries) if (a.assignedBot) manager.assignAccount(a.assignedBot, a.id,
-      transportAccount(a), a.minecraftName);
+      transportAccount(a), a.minecraftName, a.ban);
     if (this.config.count === 1 && !this.entries.some(a => a.assignedBot)) {
       const ready = this.entries.filter(a => a.status === 'READY');
       if (ready.length === 1) {
@@ -162,7 +166,7 @@ export class ControlStore {
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
         this.entries = updated;
         manager.assignAccount('bot-1', account.id,
-          transportAccount(account), account.minecraftName);
+          transportAccount(account), account.minecraftName, account.ban);
       }
     }
   }
@@ -171,6 +175,18 @@ export class ControlStore {
     const result = this.queue.then(task);
     this.queue = result.catch(() => {}).finally(() => { this.pending--; });
     return result;
+  }
+  private async persistBan(botId: string, accountId: string, reason: string, detectedAt: number): Promise<void> {
+    return this.exclusive(async () => {
+      const account = this.entries.find(a => a.id === accountId);
+      const bot = this.manager?.views().find(value => value.id === botId);
+      if (!account || account.assignedBot !== botId || bot?.accountId !== accountId || account.ban) return;
+      const ban: PersistedBan = { kind:'BAN', reason, detectedAt };
+      if (!validPersistedBan(ban)) return;
+      const updated = this.entries.map(a => a.id === accountId ? { ...a, ban } : a);
+      await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
+      this.entries = updated;
+    });
   }
   private async markSessionTokenInvalid(accountId: string): Promise<void> {
     const account = this.entries.find(a => a.id === accountId);
@@ -334,7 +350,7 @@ export class ControlStore {
           if (shouldAssign) entry.assignedBot = 'bot-1';
           await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), [...this.entries, entry]);
           this.entries.push(entry);
-          if (shouldAssign) this.manager!.assignAccount('bot-1', entry.id, transportAccount(entry), entry.minecraftName);
+          if (shouldAssign) this.manager!.assignAccount('bot-1', entry.id, transportAccount(entry), entry.minecraftName, entry.ban);
         });
       } catch {
         await deleteSessionCredential(this.config.authDir, entry.id);
@@ -371,7 +387,7 @@ export class ControlStore {
             await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
             this.entries = updated;
             const current = this.entries.find(a => a.id === id)!;
-            if (botId) this.manager!.assignAccount(botId, id, transportAccount(current), current.minecraftName);
+            if (botId) this.manager!.assignAccount(botId, id, transportAccount(current), current.minecraftName, current.ban);
             return this.listAccounts().find(a => a.id === id)!;
           } catch (error) {
             await saveSessionCredential(this.config.authDir, id, previous).catch(() => {});
@@ -415,7 +431,7 @@ export class ControlStore {
             await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
             this.entries = updated;
             this.manager!.assignAccount('bot-1', id,
-              transportAccount(account), cleanName);
+              transportAccount(account), cleanName, account.ban);
           }
         );
         return;
@@ -451,7 +467,7 @@ export class ControlStore {
           a.assignedBot === botId ? { ...a, assignedBot: undefined } : a);
         await atomicJson(join(this.config.dataDir, 'accounts-runtime.json'), updated);
         this.entries = updated;
-        this.manager!.assignAccount(botId, accountId, transportAccount(account), account.minecraftName);
+        this.manager!.assignAccount(botId, accountId, transportAccount(account), account.minecraftName, account.ban);
         return this.listAccounts().find(a => a.id === accountId)!;
       });
     });
