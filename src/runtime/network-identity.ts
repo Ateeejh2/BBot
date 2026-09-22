@@ -195,6 +195,9 @@ export class NetworkIdentityMonitor {
         };
         this.onChange();
         try { await this.persist(current); } catch { /* Display remains valid even if persistence fails. */ }
+        // Compare the next successful lookup with this one, while the persisted
+        // value keeps the same behavior across backend restarts.
+        this.baseline = current;
       } finally {
         clearTimeout(timeout);
         if (this.controller === controller) this.controller = undefined;
