@@ -123,20 +123,28 @@ export function assessNetworkIdentityRisk(
   if (changes.region) { score += 15; reasons.push('Region changed (+15)'); }
   if (changes.city) { score += 5; reasons.push('City changed (+5)'); }
 
+  // BBot heuristic only: this is intentionally not a Hypixel Security Block classifier.
+  // Repeated changes remain risky for a while even after the latest point is stable.
   if (recentChanges) {
     if (recentChanges.ip >= 2) {
-      const bonus = Math.min(30, (recentChanges.ip - 1) * 10);
+      const bonus = Math.min(40, (recentChanges.ip - 1) * 20);
       score += bonus;
       reasons.push(String(recentChanges.ip) + ' public IP changes in 6h (+' + bonus + ')');
     }
     if (recentChanges.asn >= 2) {
-      const bonus = Math.min(20, (recentChanges.asn - 1) * 10);
+      const bonus = Math.min(30, (recentChanges.asn - 1) * 15);
       score += bonus;
       reasons.push(String(recentChanges.asn) + ' ASN changes in 6h (+' + bonus + ')');
     }
     if (recentChanges.country >= 2) {
-      score += 20;
-      reasons.push(String(recentChanges.country) + ' country changes in 6h (+20)');
+      const bonus = Math.min(30, (recentChanges.country - 1) * 20);
+      score += bonus;
+      reasons.push(String(recentChanges.country) + ' country changes in 6h (+' + bonus + ')');
+    }
+    if (recentChanges.region >= 2) {
+      const bonus = Math.min(20, (recentChanges.region - 1) * 10);
+      score += bonus;
+      reasons.push(String(recentChanges.region) + ' region changes in 6h (+' + bonus + ')');
     }
   }
 
