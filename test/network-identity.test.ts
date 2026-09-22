@@ -60,7 +60,7 @@ test('network identity risk levels are transparent and bounded', () => {
 
   const ipOnly=assessNetworkIdentityRisk(point(),point({ip:'203.0.113.11'}));
   assert.equal(ipOnly.risk.score,25);
-  assert.equal(ipOnly.risk.level,'Cauction');
+  assert.equal(ipOnly.risk.level,'Caution');
   assert.deepEqual(ipOnly.risk.reasons,['Public IP changed (+25)']);
 
   const ipAndAsn=assessNetworkIdentityRisk(point(),point({ip:'203.0.113.11',asn:64501}));
