@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 export interface NetworkIdentityPoint {
   ip: string;
+  country?: string;
   countryCode?: string;
   region?: string;
   city?: string;
@@ -22,6 +23,15 @@ export interface NetworkIdentityChanges {
   city: boolean;
 }
 
+export interface NetworkIdentityRecentChanges {
+  windowMs: number;
+  since: number;
+  ip: number;
+  asn: number;
+  country: number;
+  region: number;
+}
+
 export interface NetworkIdentityRisk {
   score?: number;
   level: NetworkIdentityRiskLevel;
@@ -33,7 +43,9 @@ export interface NetworkIdentitySnapshot {
   current?: NetworkIdentityPoint;
   previous?: NetworkIdentityPoint;
   changed: boolean;
+  ipChanged?: boolean;
   changes?: NetworkIdentityChanges;
+  recentChanges?: NetworkIdentityRecentChanges;
   risk: NetworkIdentityRisk;
   checkedAt?: number;
 }
@@ -41,29 +53,94 @@ export interface NetworkIdentitySnapshot {
 type LookupResult = Omit<NetworkIdentityPoint, 'observedAt'>;
 export type NetworkIdentityLookup = (signal: AbortSignal) => Promise<LookupResult>;
 
-export function assessNetworkIdentityRisk(
-  previous: NetworkIdentityPoint | undefined,
-  current: NetworkIdentityPoint | undefined
-): { changes?: NetworkIdentityChanges; risk: NetworkIdentityRisk } {
-  if (!previous || !current) return { risk: { level: 'Unknown', reasons: ['No comparable previous network identity'] } };
+interface StoredNetworkIdentityState {
+  version: 1;
+  latest: NetworkIdentityPoint;
+  history: NetworkIdentityPoint[];
+}
 
-  const changes: NetworkIdentityChanges = {
+const RECENT_CHANGE_WINDOW_MS = 6 * 60 * 60 * 1000;
+const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
+const HISTORY_LIMIT = 512;
+
+function pointChanges(previous: NetworkIdentityPoint, current: NetworkIdentityPoint): NetworkIdentityChanges {
+  return {
     ip: previous.ip !== current.ip,
     asn: previous.asn !== undefined && current.asn !== undefined && previous.asn !== current.asn,
     country: previous.countryCode !== undefined && current.countryCode !== undefined && previous.countryCode !== current.countryCode,
     region: previous.region !== undefined && current.region !== undefined && previous.region !== current.region,
     city: previous.city !== undefined && current.city !== undefined && previous.city !== current.city
   };
+}
 
+export function summarizeRecentNetworkChanges(
+  points: NetworkIdentityPoint[],
+  now = Date.now(),
+  windowMs = RECENT_CHANGE_WINDOW_MS
+): NetworkIdentityRecentChanges {
+  const since = now - windowMs;
+  const ordered = points
+    .filter(point => Number.isFinite(point.observedAt) && point.observedAt <= now)
+    .slice()
+    .sort((a, b) => a.observedAt - b.observedAt);
+  let first = ordered.findIndex(point => point.observedAt >= since);
+  if (first < 0) first = ordered.length;
+  first = Math.max(0, first - 1);
+  const recent = ordered.slice(first);
+  let ip = 0;
+  let asn = 0;
+  let country = 0;
+  let region = 0;
+  for (let index = 1; index < recent.length; index++) {
+    const previous = recent[index - 1]!;
+    const current = recent[index]!;
+    if (current.observedAt < since) continue;
+    const changes = pointChanges(previous, current);
+    if (changes.ip) ip++;
+    if (changes.asn) asn++;
+    if (changes.country) country++;
+    if (changes.region) region++;
+  }
+  return { windowMs, since, ip, asn, country, region };
+}
+
+export function assessNetworkIdentityRisk(
+  previous: NetworkIdentityPoint | undefined,
+  current: NetworkIdentityPoint | undefined,
+  recentChanges?: NetworkIdentityRecentChanges
+): { changes?: NetworkIdentityChanges; risk: NetworkIdentityRisk } {
+  if (!previous || !current) {
+    return { risk: { level: 'Unknown', reasons: ['No comparable previous network identity'] } };
+  }
+
+  const changes = pointChanges(previous, current);
   let score = 0;
   const reasons: string[] = [];
-  if (changes.ip) { score += 25; reasons.push('Public IP changed (+25)'); }
-  if (changes.asn) { score += 30; reasons.push('ASN changed (+30)'); }
-  if (changes.country) { score += 55; reasons.push('Country changed (+55)'); }
+
+  if (changes.ip) { score += 20; reasons.push('Public IP changed (+20)'); }
+  if (changes.asn) { score += 25; reasons.push('ASN changed (+25)'); }
+  if (changes.country) { score += 40; reasons.push('Country changed (+40)'); }
   if (changes.region) { score += 15; reasons.push('Region changed (+15)'); }
   if (changes.city) { score += 5; reasons.push('City changed (+5)'); }
-  score = Math.min(100, score);
 
+  if (recentChanges) {
+    if (recentChanges.ip >= 2) {
+      const bonus = Math.min(30, (recentChanges.ip - 1) * 10);
+      score += bonus;
+      reasons.push(String(recentChanges.ip) + ' public IP changes in 6h (+' + bonus + ')');
+    }
+    if (recentChanges.asn >= 2) {
+      const bonus = Math.min(20, (recentChanges.asn - 1) * 10);
+      score += bonus;
+      reasons.push(String(recentChanges.asn) + ' ASN changes in 6h (+' + bonus + ')');
+    }
+    if (recentChanges.country >= 2) {
+      score += 20;
+      reasons.push(String(recentChanges.country) + ' country changes in 6h (+20)');
+    }
+  }
+
+  score = Math.min(100, score);
   const level: NetworkIdentityRiskLevel =
     score >= 70 ? 'Dangerous' :
     score >= 45 ? 'Warning' :
@@ -76,6 +153,15 @@ export function assessNetworkIdentityRisk(
 
 const textField = (value: unknown, max = 160): string | undefined =>
   typeof value === 'string' && value.trim() && value.length <= max ? value.trim() : undefined;
+
+function asnField(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value !== 'string') return undefined;
+  const match = /^(?:AS)?([1-9]\d*)$/i.exec(value.trim());
+  if (!match) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
 
 export async function lookupPublicNetworkIdentity(signal: AbortSignal): Promise<LookupResult> {
   const response = await fetch('https://ipwho.is/', {
@@ -93,16 +179,14 @@ export async function lookupPublicNetworkIdentity(signal: AbortSignal): Promise<
   const connection = value.connection && typeof value.connection === 'object' && !Array.isArray(value.connection)
     ? value.connection as Record<string, unknown>
     : undefined;
-  const asn = typeof connection?.asn === 'number' && Number.isSafeInteger(connection.asn) && connection.asn > 0
-    ? connection.asn
-    : undefined;
 
   return {
     ip,
+    country: textField(value.country, 100),
     countryCode: textField(value.country_code, 8),
     region: textField(value.region, 100),
     city: textField(value.city, 100),
-    asn,
+    asn: asnField(connection?.asn),
     organization: textField(connection?.org, 160)
   };
 }
@@ -111,21 +195,40 @@ function validStoredPoint(value: unknown): NetworkIdentityPoint | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const raw = value as Record<string, unknown>;
   if (typeof raw.ip !== 'string' || !isIP(raw.ip) || typeof raw.observedAt !== 'number' || !Number.isFinite(raw.observedAt)) return;
-  const asn = typeof raw.asn === 'number' && Number.isSafeInteger(raw.asn) && raw.asn > 0 ? raw.asn : undefined;
   return {
     ip: raw.ip,
     observedAt: raw.observedAt,
+    country: textField(raw.country, 100),
     countryCode: textField(raw.countryCode, 8),
     region: textField(raw.region, 100),
     city: textField(raw.city, 100),
-    asn,
+    asn: asnField(raw.asn),
     organization: textField(raw.organization, 160)
   };
 }
 
+function validStoredState(value: unknown): { latest?: NetworkIdentityPoint; history: NetworkIdentityPoint[] } {
+  const legacy = validStoredPoint(value);
+  if (legacy) return { latest: legacy, history: [legacy] };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { history: [] };
+  const raw = value as Record<string, unknown>;
+  const latest = validStoredPoint(raw.latest);
+  const history = Array.isArray(raw.history)
+    ? raw.history.map(validStoredPoint).filter((point): point is NetworkIdentityPoint => Boolean(point))
+    : [];
+  if (latest && !history.some(point => point.observedAt === latest.observedAt && point.ip === latest.ip)) history.push(latest);
+  history.sort((a, b) => a.observedAt - b.observedAt);
+  return { latest, history };
+}
+
 export class NetworkIdentityMonitor {
-  private value: NetworkIdentitySnapshot = { status: 'CHECKING', changed: false, risk: { level: 'Unknown', reasons: ['Checking network identity'] } };
+  private value: NetworkIdentitySnapshot = {
+    status: 'CHECKING',
+    changed: false,
+    risk: { level: 'Unknown', reasons: ['Checking network identity'] }
+  };
   private baseline?: NetworkIdentityPoint;
+  private history: NetworkIdentityPoint[] = [];
   private baselineLoaded = false;
   private timer?: ReturnType<typeof setInterval>;
   private controller?: AbortController;
@@ -143,7 +246,10 @@ export class NetworkIdentityMonitor {
     return {
       ...this.value,
       current: this.value.current ? { ...this.value.current } : undefined,
-      previous: this.value.previous ? { ...this.value.previous } : undefined
+      previous: this.value.previous ? { ...this.value.previous } : undefined,
+      changes: this.value.changes ? { ...this.value.changes } : undefined,
+      recentChanges: this.value.recentChanges ? { ...this.value.recentChanges } : undefined,
+      risk: { ...this.value.risk, reasons: [...this.value.risk.reasons] }
     };
   }
 
@@ -167,7 +273,9 @@ export class NetworkIdentityMonitor {
     this.running = true;
     try {
       if (!this.baselineLoaded) {
-        this.baseline = await this.readPrevious();
+        const stored = await this.readPrevious();
+        this.baseline = stored.latest;
+        this.history = stored.history;
         this.baselineLoaded = true;
       }
 
@@ -182,22 +290,25 @@ export class NetworkIdentityMonitor {
         const now = Date.now();
         const current: NetworkIdentityPoint = { ...found, observedAt: now };
         const previous = this.baseline;
-        const assessed = assessNetworkIdentityRisk(previous, current);
+        const history = this.retainedHistory([...this.history, current], now);
+        const recentChanges = summarizeRecentNetworkChanges(history, now);
+        const assessed = assessNetworkIdentityRisk(previous, current, recentChanges);
         const changed = Boolean(assessed.changes && Object.values(assessed.changes).some(Boolean));
         this.value = {
           status: 'OK',
           current,
           previous,
           changed,
+          ipChanged: assessed.changes?.ip,
           changes: assessed.changes,
+          recentChanges,
           risk: assessed.risk,
           checkedAt: now
         };
         this.onChange();
-        try { await this.persist(current); } catch { /* Display remains valid even if persistence fails. */ }
-        // Compare the next successful lookup with this one, while the persisted
-        // value keeps the same behavior across backend restarts.
         this.baseline = current;
+        this.history = history;
+        try { await this.persist(current, history); } catch { /* Display remains valid even if persistence fails. */ }
       } finally {
         clearTimeout(timeout);
         if (this.controller === controller) this.controller = undefined;
@@ -208,6 +319,7 @@ export class NetworkIdentityMonitor {
           status: 'UNAVAILABLE',
           previous: this.baseline,
           changed: false,
+          recentChanges: summarizeRecentNetworkChanges(this.history),
           risk: { level: 'Unknown', reasons: ['Current network identity lookup failed'] },
           checkedAt: Date.now()
         };
@@ -218,20 +330,29 @@ export class NetworkIdentityMonitor {
     }
   }
 
-  private async readPrevious(): Promise<NetworkIdentityPoint | undefined> {
+  private retainedHistory(points: NetworkIdentityPoint[], now: number): NetworkIdentityPoint[] {
+    const cutoff = now - HISTORY_RETENTION_MS;
+    return points
+      .filter(point => point.observedAt >= cutoff && point.observedAt <= now)
+      .sort((a, b) => a.observedAt - b.observedAt)
+      .slice(-HISTORY_LIMIT);
+  }
+
+  private async readPrevious(): Promise<{ latest?: NetworkIdentityPoint; history: NetworkIdentityPoint[] }> {
     try {
       const raw = JSON.parse(await readFile(join(this.dataDir, 'network-identity.json'), 'utf8')) as unknown;
-      return validStoredPoint(raw);
+      return validStoredState(raw);
     } catch {
-      return undefined;
+      return { history: [] };
     }
   }
 
-  private async persist(point: NetworkIdentityPoint): Promise<void> {
+  private async persist(latest: NetworkIdentityPoint, history: NetworkIdentityPoint[]): Promise<void> {
     await mkdir(this.dataDir, { recursive: true });
     const path = join(this.dataDir, 'network-identity.json');
     const temp = path + '.tmp';
-    await writeFile(temp, JSON.stringify(point) + '\n', { encoding: 'utf8', mode: 0o600 });
+    const stored: StoredNetworkIdentityState = { version: 1, latest, history };
+    await writeFile(temp, JSON.stringify(stored) + '\n', { encoding: 'utf8', mode: 0o600 });
     await rename(temp, path);
   }
 }
