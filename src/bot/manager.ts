@@ -1102,15 +1102,23 @@ export class BotManager {
         if (event.expiresAt <= this.now()) throw new Error('JOB_EXPIRED');
         stage = 'TASK';
         this.scheduler.running(id, b.id, lease, this.now()); b.machine.transition('WORKING');
-        const timer = setTimeout(() => { taskTimedOut = true; execution.abort.abort(); }, this.config.taskTimeoutMs);
+        const taskTimeoutMs = event.type === 'care-package'
+          ? Math.max(this.config.taskTimeoutMs, 25_000)
+          : this.config.taskTimeoutMs;
+        const timer = setTimeout(() => { taskTimedOut = true; execution.abort.abort(); }, taskTimeoutMs);
         let taskAbort: (() => void) | undefined;
         try {
           await new Promise<void>((resolve, reject) => {
             const abort = () => reject(new Error('Task aborted'));
             taskAbort = abort;
             execution.abort.signal.addEventListener('abort', abort, { once: true });
-            Promise.resolve().then(() => { execution.abort.signal.throwIfAborted(); return this.task.onArrive(this.view(b), event, execution.abort.signal); })
-              .then(resolve, reject).finally(() => execution.abort.signal.removeEventListener('abort', abort));
+            Promise.resolve().then(() => {
+              execution.abort.signal.throwIfAborted();
+              if (event.type === 'care-package' && transport.interactCarePackage) {
+                return transport.interactCarePackage(event.target, execution.abort.signal);
+              }
+              return this.task.onArrive(this.view(b), event, execution.abort.signal);
+            }).then(resolve, reject).finally(() => execution.abort.signal.removeEventListener('abort', abort));
           });
         } finally { clearTimeout(timer); if (taskAbort) execution.abort.signal.removeEventListener('abort', taskAbort); }
         if (current()) { this.scheduler.complete(id, b.id, lease, this.now()); this.log(b, 'job completed', { eventId: event.id }); }
