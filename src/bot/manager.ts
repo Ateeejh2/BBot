@@ -301,7 +301,7 @@ export class BotManager {
     const message=error instanceof Error?error.message:'';
     const allowed=new Set(['No path to the goal!','Path planning timeout','Control walk timeout','Position unavailable','Control walk stuck',
       'Control walk ended before arrival','Control turn timeout','Launch pad not found','Launch pad unavailable','Launch cancelled',
-      'Launch landing timeout','Launch pad did not trigger','Landing wait timeout','Control walk collision','JOB_REJECTED','RESERVATION_FAILED']);
+      'Launch pad approach timeout','Launch landing timeout','Launch pad did not trigger','Landing wait timeout','Control walk collision','JOB_REJECTED','RESERVATION_FAILED']);
     return allowed.has(message)?message:'Movement failed';
   }
   tick(): void {
@@ -919,10 +919,13 @@ export class BotManager {
         return;
       }
       this.startCarePackagePrediction(bot,preparation,{x:target.x,y:position.y,z:target.z});
-    },()=>{
+    },error=>{
       if(bot.preparation!==preparation||!bot.generation.isCurrent(preparation.generation)||!bot.instanceId)return;
       this.carePackages?.markLaunch(bot.instanceId,timestamp,'LAUNCH_FAILED');
-      this.log(bot,'care package launch failed',{scheduledAt:timestamp});
+      this.log(bot,'care package launch failed',{
+        scheduledAt:timestamp,
+        reason:error instanceof PathfindingError?error.code:this.movementFailure(error)
+      });
       const fallback=preparation.chestEvent;
       bot.preparation=undefined;
       if(bot.machine.state==='PREPARING_EVENT')bot.machine.transition('IN_PIT_IDLE');
