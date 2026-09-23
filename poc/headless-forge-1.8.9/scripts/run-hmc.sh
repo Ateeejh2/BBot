@@ -7,6 +7,7 @@ RUNTIME="${BBOT_HMC_RUNTIME:-$BASE_RUNTIME}"
 GAME_DIR="$RUNTIME/game"
 HMC_DIR="$RUNTIME/HeadlessMC"
 HMC_JAR="$BASE_RUNTIME/headlessmc-launcher-2.10.0.jar"
+HMC_SPECIFICS_JAR="$BASE_RUNTIME/hmc-specifics-1.8.9-2.4.0-lexforge-release.jar"
 POC_JAR="$ROOT/build/libs/bbot-headless-poc-0.1.0.jar"
 
 if [[ -n "${JAVA8_HOME:-}" ]]; then
@@ -32,6 +33,12 @@ if [[ ! -f "$POC_JAR" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$HMC_SPECIFICS_JAR" ]]; then
+  echo "Pinned HMC-Specifics is not bootstrapped." >&2
+  echo "Run ./scripts/bootstrap-headless.sh first." >&2
+  exit 1
+fi
+
 export BBOT_POC_WARMUP_TICKS="${BBOT_POC_WARMUP_TICKS:-300}"
 export BBOT_POC_WALK_TICKS="${BBOT_POC_WALK_TICKS:-200}"
 export BBOT_POC_SPRINT_TICKS="${BBOT_POC_SPRINT_TICKS:-200}"
@@ -50,6 +57,8 @@ if [[ "$RUNTIME" != "$BASE_RUNTIME" ]]; then
     fi
   done
 
+  rm -f "$GAME_DIR/mods"/hmc-specifics-*.jar
+  cp -f "$HMC_SPECIFICS_JAR" "$GAME_DIR/mods/"
   cp -f "$POC_JAR" "$GAME_DIR/mods/"
 
   cat > "$HMC_DIR/config.properties" <<EOF
