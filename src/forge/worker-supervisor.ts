@@ -38,7 +38,7 @@ interface WorkerRecord extends ForgeWorkerView {
   sessionFile?: string;
 }
 
-const LAUNCH_COMMAND = 'launch forge:1.8.9 -offline -specifics -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
+const LAUNCH_COMMAND = 'launch forge:1.8.9 -offline -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
 
 function processTreeSample(rootPid: number): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
   if (process.platform !== 'linux') return undefined;
