@@ -88,7 +88,7 @@ function yawToward(from: Position, target: Position): number {
 }
 
 export function shouldJumpTowardWaypoint(
-  state: Pick<BridgeState, 'onGround' | 'collidedH' | 'y'>,
+  state: { onGround: boolean; collidedH: boolean; y: number },
   targetY: number,
   horizontal: number
 ): boolean {
