@@ -29,6 +29,8 @@ export interface BotTransport {
   navigate(target: Position, signal: AbortSignal): Promise<void>;
   /** Use a spawn launch pad aligned with the target X/Z. Default waits for landing; event mode can return once launch is confirmed. */
   launchToward?(target: Pick<Position, 'x' | 'z'>, signal: AbortSignal, completion?: 'LAUNCH' | 'LANDING'): Promise<void>;
+  /** At an arrived real Care Package, click at client-tick speed until the hologram reports OPEN and the container opens. */
+  interactCarePackage?(target: Position, signal: AbortSignal): Promise<void>;
   stopPath(): void;
   close(): void;
 }
