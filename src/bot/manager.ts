@@ -607,10 +607,11 @@ export class BotManager {
     } else if (b.machine.state === 'JOINING_PIT') {
       // 1.8.9/Bungee event order is not assumed: accept either transfer-notice
       // ordering. If the notice was missed, ask Hypixel for the current raw
-      // location after spawn and confirm from that exact JSON response.
+      // location only after spawn. A pending transfer notice is enough to
+      // confirm here and must not trigger an extra /locraw request.
       b.joinSpawnObserved = true;
       this.confirmJoinedInstance(b);
-      if(!b.pendingInstance){
+      if(b.machine.state==='JOINING_PIT'&&!b.pendingInstance){
         try{
           b.transport?.chat('/locraw');
           this.log(b,'Pit instance fallback requested',{source:'locraw'});
@@ -675,15 +676,11 @@ export class BotManager {
         // was missed during the Bungee transfer.
         this.confirmJoinedInstance(b,true);
       }else{
+        // A transfer notice can arrive before the Bungee world reset/spawn.
+        // Keep it pending and let spawn confirm membership. Sending /locraw
+        // here can confirm the destination too early, then the expected world
+        // reset incorrectly looks like an abnormal return.
         this.confirmJoinedInstance(b);
-        if(b.machine.state==='JOINING_PIT'&&!b.joinSpawnObserved){
-          try{
-            b.transport?.chat('/locraw');
-            this.log(b,'Pit instance fallback requested',{source:'transfer-no-spawn'});
-          }catch{
-            this.log(b,'Pit instance fallback request failed');
-          }
-        }
       }
     }
     const reason = this.classifier.classify(text);
