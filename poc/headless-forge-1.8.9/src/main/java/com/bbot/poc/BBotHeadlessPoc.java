@@ -13,15 +13,20 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiDisconnected;
+import net.minecraft.client.gui.inventory.GuiContainer;
 import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraft.client.gui.GuiMultiplayer;
 import net.minecraft.client.multiplayer.GuiConnecting;
 import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.entity.passive.EntityChicken;
 import net.minecraft.init.Blocks;
@@ -30,6 +35,8 @@ import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.network.play.server.S22PacketMultiBlockChange;
 import net.minecraft.network.play.server.S23PacketBlockChange;
 import net.minecraft.util.BlockPos;
+import net.minecraft.util.EnumChatFormatting;
+import net.minecraft.util.EnumFacing;
 import net.minecraft.util.IChatComponent;
 import net.minecraft.util.Session;
 import net.minecraft.world.chunk.Chunk;
@@ -78,6 +85,18 @@ public final class BBotHeadlessPoc {
         DONE
     }
 
+    private static final Pattern CARE_PACKAGE_COUNT = Pattern.compile("^\\s*(\\d{1,3})\\s*$");
+
+    private static final class CarePackageHologramStatus {
+        final String state;
+        final Integer clicksRemaining;
+
+        CarePackageHologramStatus(String state, Integer clicksRemaining) {
+            this.state = state;
+            this.clicksRemaining = clicksRemaining;
+        }
+    }
+
     private final Minecraft mc = Minecraft.getMinecraft();
     private Phase phase = Phase.WAITING_FOR_WORLD;
     private int phaseTicks;
@@ -89,6 +108,11 @@ public final class BBotHeadlessPoc {
     private Object lastDisconnectScreen;
     private LocalBridgeServer bridge;
     private final Set<BlockPos> observedChests = new HashSet<BlockPos>();
+    private String carePackageRequestId;
+    private BlockPos carePackageTarget;
+    private int carePackageInteractionTicks;
+    private String carePackageLastStatus;
+    private int carePackageLastBucket = Integer.MIN_VALUE;
 
     private boolean havePreviousPosition;
     private double previousX;
@@ -294,6 +318,7 @@ public final class BBotHeadlessPoc {
         mc.skipRenderWorld = skipRender;
         totalTicks++;
 
+        tickCarePackageInteraction();
         traceLargeClientStep();
 
         if (!bridgeControlActive) {
@@ -486,8 +511,182 @@ public final class BBotHeadlessPoc {
                 emitLoadedChunksResponse(command);
             } else if ("getVolatileBlocks".equals(type) && command.has("requestId") && command.has("chunkX") && command.has("chunkZ")) {
                 emitVolatileBlocksResponse(command);
+            } else if ("interactCarePackage".equals(type) && command.has("requestId") &&
+                    command.has("x") && command.has("y") && command.has("z")) {
+                startCarePackageInteraction(command);
+            } else if ("cancelCarePackageInteraction".equals(type)) {
+                cancelCarePackageInteraction();
             }
         }
+    }
+
+    private void startCarePackageInteraction(JsonObject command) {
+        String requestId = command.get("requestId").getAsString();
+        if (carePackageRequestId != null) {
+            emitCarePackageInteractionResponse(requestId, false, "BUSY");
+            return;
+        }
+        if (mc.thePlayer == null || mc.theWorld == null || mc.playerController == null) {
+            emitCarePackageInteractionResponse(requestId, false, "WORLD_UNAVAILABLE");
+            return;
+        }
+
+        BlockPos target = new BlockPos(command.get("x").getAsInt(), command.get("y").getAsInt(), command.get("z").getAsInt());
+        if (mc.theWorld.getBlockState(target).getBlock() != Blocks.chest) {
+            emitCarePackageInteractionResponse(requestId, false, "CHEST_UNAVAILABLE");
+            return;
+        }
+        if (mc.thePlayer.getDistanceSq(target.getX() + 0.5D, target.getY() + 0.5D, target.getZ() + 0.5D) > 49.0D) {
+            emitCarePackageInteractionResponse(requestId, false, "OUT_OF_RANGE");
+            return;
+        }
+
+        carePackageRequestId = requestId;
+        carePackageTarget = target;
+        carePackageInteractionTicks = 0;
+        carePackageLastStatus = null;
+        carePackageLastBucket = Integer.MIN_VALUE;
+        releaseMovementKeys();
+        bridgeControlActive = true;
+    }
+
+    private void cancelCarePackageInteraction() {
+        carePackageRequestId = null;
+        carePackageTarget = null;
+        carePackageInteractionTicks = 0;
+        carePackageLastStatus = null;
+        carePackageLastBucket = Integer.MIN_VALUE;
+    }
+
+    private void tickCarePackageInteraction() {
+        if (carePackageRequestId == null || carePackageTarget == null) {
+            return;
+        }
+        if (mc.thePlayer == null || mc.theWorld == null || mc.playerController == null) {
+            finishCarePackageInteraction(false, "WORLD_UNAVAILABLE");
+            return;
+        }
+        if (mc.currentScreen instanceof GuiContainer) {
+            finishCarePackageInteraction(true, null);
+            return;
+        }
+        if (mc.theWorld.getBlockState(carePackageTarget).getBlock() != Blocks.chest) {
+            finishCarePackageInteraction(false, "CHEST_UNAVAILABLE");
+            return;
+        }
+        if (mc.thePlayer.getDistanceSq(carePackageTarget.getX() + 0.5D, carePackageTarget.getY() + 0.5D, carePackageTarget.getZ() + 0.5D) > 49.0D) {
+            finishCarePackageInteraction(false, "OUT_OF_RANGE");
+            return;
+        }
+        if (++carePackageInteractionTicks > 400) {
+            finishCarePackageInteraction(false, "UNLOCK_TIMEOUT");
+            return;
+        }
+
+        CarePackageHologramStatus status = readCarePackageHologram(carePackageTarget);
+        reportCarePackageHologram(status);
+
+        // One normal client-side block click per client tick. This is the fastest
+        // stable rate without batching multiple interactions into one tick.
+        mc.thePlayer.swingItem();
+        mc.playerController.clickBlock(carePackageTarget, EnumFacing.UP);
+        mc.playerController.resetBlockRemoving();
+    }
+
+    private CarePackageHologramStatus readCarePackageHologram(BlockPos target) {
+        boolean sawOpen = false;
+        boolean sawLeftClick = false;
+        Integer remaining = null;
+
+        for (Object value : mc.theWorld.loadedEntityList) {
+            if (!(value instanceof Entity)) {
+                continue;
+            }
+            Entity entity = (Entity)value;
+            if (!entity.hasCustomName()) {
+                continue;
+            }
+            double dx = Math.abs(entity.posX - (target.getX() + 0.5D));
+            double dz = Math.abs(entity.posZ - (target.getZ() + 0.5D));
+            if (dx > 2.5D || dz > 2.5D || entity.posY < target.getY() || entity.posY > target.getY() + 5.5D) {
+                continue;
+            }
+
+            String raw = entity.getCustomNameTag();
+            String clean = EnumChatFormatting.getTextWithoutFormattingCodes(raw);
+            if (clean == null) {
+                continue;
+            }
+            clean = clean.trim();
+            String upper = clean.toUpperCase(Locale.ROOT);
+            if (upper.contains("OPEN!")) {
+                sawOpen = true;
+            }
+            if (upper.contains("LEFT CLICK")) {
+                sawLeftClick = true;
+            }
+
+            Matcher matcher = CARE_PACKAGE_COUNT.matcher(clean);
+            if (matcher.matches()) {
+                int count = Integer.parseInt(matcher.group(1));
+                if (count >= 0 && count <= 200) {
+                    remaining = count;
+                }
+            }
+        }
+
+        if (sawOpen) {
+            return new CarePackageHologramStatus("OPEN", 0);
+        }
+        if (sawLeftClick && remaining != null) {
+            return new CarePackageHologramStatus("LOCKED", remaining);
+        }
+        return new CarePackageHologramStatus("UNKNOWN", null);
+    }
+
+    private void reportCarePackageHologram(CarePackageHologramStatus status) {
+        int bucket = status.clicksRemaining == null ? Integer.MIN_VALUE : status.clicksRemaining / 25;
+        boolean changed = !status.state.equals(carePackageLastStatus) || bucket != carePackageLastBucket;
+        if (!changed || bridge == null || carePackageTarget == null) {
+            return;
+        }
+        carePackageLastStatus = status.state;
+        carePackageLastBucket = bucket;
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "carePackageStatus");
+        message.addProperty("x", carePackageTarget.getX());
+        message.addProperty("y", carePackageTarget.getY());
+        message.addProperty("z", carePackageTarget.getZ());
+        message.addProperty("status", status.state);
+        if (status.clicksRemaining != null) {
+            message.addProperty("clicksRemaining", status.clicksRemaining);
+        }
+        bridge.emit(message);
+    }
+
+    private void finishCarePackageInteraction(boolean ok, String error) {
+        String requestId = carePackageRequestId;
+        cancelCarePackageInteraction();
+        if (requestId != null) {
+            emitCarePackageInteractionResponse(requestId, ok, error);
+        }
+    }
+
+    private void emitCarePackageInteractionResponse(String requestId, boolean ok, String error) {
+        if (bridge == null) {
+            return;
+        }
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "response");
+        response.addProperty("requestId", requestId);
+        response.addProperty("kind", "carePackageInteraction");
+        response.addProperty("ok", ok);
+        if (error != null) {
+            response.addProperty("error", error);
+        }
+        bridge.emit(response);
     }
 
     private void detectDisconnectedScreen() {
@@ -990,6 +1189,7 @@ public final class BBotHeadlessPoc {
         havePreviousPosition = false;
         bridgeControlActive = false;
         observedChests.clear();
+        cancelCarePackageInteraction();
     }
 
     private void traceLargeClientStep() {
