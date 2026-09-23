@@ -18,6 +18,8 @@ class ControlledTransport implements BotTransport {
   launches: Array<Pick<Position,'x'|'z'>> = [];
   launchCompletions: Array<'LAUNCH'|'LANDING'> = [];
   navigations: Position[] = [];
+  carePackageInteractions: Position[] = [];
+  carePackageInteraction: (target:Position, signal:AbortSignal) => Promise<void> = async () => {};
   serverConnections: Array<{host:string;port:number}> = [];
   serverDisconnects = 0;
   playerCountValue: number | undefined;
@@ -31,6 +33,7 @@ class ControlledTransport implements BotTransport {
   async disconnectServer() { this.serverDisconnects++; }
   navigate(target: Position, signal: AbortSignal) { this.navigations.push({...target}); return this.navigation(target, signal); }
   launchToward(target: Pick<Position,'x'|'z'>, signal: AbortSignal, completion: 'LAUNCH'|'LANDING' = 'LANDING') { this.launches.push({...target}); this.launchCompletions.push(completion); return this.launcher(target,signal,completion); }
+  interactCarePackage(target:Position, signal:AbortSignal) { this.carePackageInteractions.push({...target}); return this.carePackageInteraction(target,signal); }
   stopPath() { this.stopped++; }
   close() { this.closed = true; }
 }
@@ -372,6 +375,8 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   t.events.chestAppeared?.(chest);
   await delay(0);await delay(0);await delay(0);await delay(0);
   assert.deepEqual(t.navigations.at(-1),chest);
+  assert.deepEqual(t.carePackageInteractions.at(-1),chest,
+    'real Care Package should enter the Forge unlock/open interaction after path arrival');
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'CHEST_DETECTED');
   assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
   assert.equal(f.manager.performanceSnapshot().bots[0]?.pathFailed,0);
@@ -477,6 +482,8 @@ test('manual Care Package test runs launch then same-bot synthetic chest path wi
   assert.throws(()=>f.manager.testCarePackage('bot-1'),{message:'INVALID_STATE'});
   finishLaunch();await delay(0);await delay(0);await delay(0);
   assert.deepEqual(t.navigations.at(-1),{x:4,y:64,z:0});
+  assert.equal(t.carePackageInteractions.length,0,
+    'manual synthetic Care Package test must not click a real world chest');
   assert.equal(f.scheduler.snapshot().some(job=>job.event.type==='care-package-test'),true);
   assert.equal(f.scheduler.snapshot().find(job=>job.event.type==='care-package-test')?.state,'COMPLETED');
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
