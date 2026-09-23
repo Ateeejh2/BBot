@@ -87,6 +87,19 @@ function yawToward(from: Position, target: Position): number {
   return Math.atan2(-dx, dz) * 180 / Math.PI;
 }
 
+export function shouldJumpTowardWaypoint(
+  state: Pick<BridgeState, 'onGround' | 'collidedH' | 'y'>,
+  targetY: number,
+  horizontal: number
+): boolean {
+  if (!state.onGround) return false;
+  if (state.collidedH) return true;
+  // Do not bunny-hop toward a waypoint merely because it is above us.
+  // A-star waypoints can be several blocks away; only jump for an upward
+  // step once the player is close enough to actually reach that step.
+  return horizontal <= 1.6 && targetY > state.y + 0.45;
+}
+
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
   return new Promise<void>((resolve, reject) => {
@@ -717,7 +730,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         if (Date.now() - improvedAt > 3000) throw new Error('Control walk stuck');
 
         const yaw = yawToward({ x: state.x, y: state.y, z: state.z }, target);
-        const jump = state.onGround && (state.collidedH || target.y > state.y + 0.45);
+        const jump = shouldJumpTowardWaypoint(state, target.y, horizontal);
         const sprint = state.onGround && horizontal > 3.0;
 
         send({ type: 'look', yaw, pitch: 0 });
@@ -924,36 +937,73 @@ export function createForgeTransport(config: Config, index: number, events: Tran
       return score(b) - score(a);
     });
 
-    const pad = centers[0]!;
-    events.diagnostic?.('launch pad selected', {
-      candidates: centers.length,
-      blocks: pad.blocks,
-      padX: Math.round(pad.x * 10) / 10,
-      padY: Math.round(pad.y * 10) / 10,
-      padZ: Math.round(pad.z * 10) / 10
-    });
+    let pad: (typeof centers)[number] | undefined;
+    let approachError: unknown;
+    const candidates = centers.slice(0, Math.min(4, centers.length));
 
-    const dx = pad.x - start.x;
-    const dz = pad.z - start.z;
-    const distance = Math.hypot(dx, dz) || 1;
-    const approach = {
-      x: pad.x - dx / distance * 2.2,
-      y: pad.y,
-      z: pad.z - dz / distance * 2.2
-    };
+    for (const candidate of candidates) {
+      signal.throwIfAborted();
+      const origin = current ?? start;
+      const dx = candidate.x - origin.x;
+      const dz = candidate.z - origin.z;
+      const distance = Math.hypot(dx, dz) || 1;
+      const approach = {
+        x: candidate.x - dx / distance * 2.2,
+        y: candidate.y,
+        z: candidate.z - dz / distance * 2.2
+      };
 
-    events.diagnostic?.('launch pad approach', {
-      startX: Math.round(start.x * 10) / 10,
-      startY: Math.round(start.y * 10) / 10,
-      startZ: Math.round(start.z * 10) / 10,
-      approachX: Math.round(approach.x * 10) / 10,
-      approachY: Math.round(approach.y * 10) / 10,
-      approachZ: Math.round(approach.z * 10) / 10,
-      distance: Math.round(distance * 10) / 10
-    });
+      events.diagnostic?.('launch pad approach', {
+        candidates: centers.length,
+        blocks: candidate.blocks,
+        padX: Math.round(candidate.x * 10) / 10,
+        padY: Math.round(candidate.y * 10) / 10,
+        padZ: Math.round(candidate.z * 10) / 10,
+        approachX: Math.round(approach.x * 10) / 10,
+        approachY: Math.round(approach.y * 10) / 10,
+        approachZ: Math.round(approach.z * 10) / 10,
+        distance: Math.round(distance * 10) / 10
+      });
 
-    await navigateCached(approach, 0.8, signal);
-    signal.throwIfAborted();
+      const approachController = new AbortController();
+      const forwardAbort = () => approachController.abort(
+        signal.reason instanceof Error ? signal.reason : new Error('Launch cancelled')
+      );
+      signal.addEventListener('abort', forwardAbort, { once: true });
+      const approachTimer = setTimeout(
+        () => approachController.abort(new Error('Launch pad approach timeout')),
+        12_000
+      );
+      try {
+        await navigateCached(approach, 0.8, approachController.signal);
+        pad = candidate;
+        events.diagnostic?.('launch pad selected', {
+          candidates: centers.length,
+          blocks: candidate.blocks,
+          padX: Math.round(candidate.x * 10) / 10,
+          padY: Math.round(candidate.y * 10) / 10,
+          padZ: Math.round(candidate.z * 10) / 10
+        });
+        break;
+      } catch (error) {
+        approachError = error;
+        if (signal.aborted) throw error;
+        events.diagnostic?.('launch pad approach failed', {
+          padX: Math.round(candidate.x * 10) / 10,
+          padY: Math.round(candidate.y * 10) / 10,
+          padZ: Math.round(candidate.z * 10) / 10,
+          reason: error instanceof Error ? error.message.slice(0, 120) : 'unknown'
+        });
+      } finally {
+        clearTimeout(approachTimer);
+        signal.removeEventListener('abort', forwardAbort);
+      }
+    }
+
+    if (!pad) {
+      if (approachError instanceof Error) throw approachError;
+      throw new Error('Launch pad unavailable');
+    }
 
     const beforeLaunch = current;
     if (!beforeLaunch) throw new Error('Launch position unavailable');
