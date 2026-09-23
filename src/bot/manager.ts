@@ -617,7 +617,7 @@ export class BotManager {
       // confirm here and must not trigger an extra /locraw request.
       b.joinSpawnObserved = true;
       this.confirmJoinedInstance(b);
-      if(b.machine.state==='IN_PIT_IDLE')b.transferSettleUntil=undefined;
+      if(b.instanceId&&!b.pendingInstance)b.transferSettleUntil=undefined;
       if(b.machine.state==='JOINING_PIT'&&!b.pendingInstance){
         try{
           b.transport?.chat('/locraw');
