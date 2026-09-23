@@ -10,6 +10,12 @@ HMC_VERSION="2.10.0"
 HMC_JAR="$RUNTIME/headlessmc-launcher-$HMC_VERSION.jar"
 HMC_URL="https://github.com/headlesshq/headlessmc/releases/download/$HMC_VERSION/headlessmc-launcher-$HMC_VERSION.jar"
 
+HMC_SPECIFICS_VERSION="2.4.0"
+HMC_SPECIFICS_NAME="hmc-specifics-1.8.9-$HMC_SPECIFICS_VERSION-lexforge-release.jar"
+HMC_SPECIFICS_JAR="$RUNTIME/$HMC_SPECIFICS_NAME"
+HMC_SPECIFICS_URL="https://github.com/headlesshq/hmc-specifics/releases/download/$HMC_SPECIFICS_VERSION/$HMC_SPECIFICS_NAME"
+HMC_SPECIFICS_SHA256="b5eebe93e106ecc9ed8c6480212728e22e2e6b984f07536f778f25b195d87e84"
+
 POC_JAR="$ROOT/build/libs/bbot-headless-poc-0.1.0.jar"
 
 if [[ -n "${JAVA8_HOME:-}" ]]; then
@@ -37,6 +43,7 @@ if [[ ! -f "$POC_JAR" ]]; then
 fi
 
 command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
+command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required" >&2; exit 1; }
 
 mkdir -p "$GAME_DIR/mods" "$HMC_DIR"
 
@@ -45,9 +52,18 @@ if [[ ! -f "$HMC_JAR" ]]; then
   curl -fL "$HMC_URL" -o "$HMC_JAR"
 fi
 
-# HeadlessMC's -specifics launch flag installs the version-matched HMC-Specifics
-# mod. Remove the old manually-copied jar so Forge does not see a stale/duplicate copy.
-rm -f "$GAME_DIR/mods/hmc-specifics-1.8.9-forge-latest.jar"
+if [[ ! -f "$HMC_SPECIFICS_JAR" ]]; then
+  echo "[BBotPoC] downloading pinned HMC-Specifics $HMC_SPECIFICS_VERSION for Forge 1.8.9"
+  curl -fL "$HMC_SPECIFICS_URL" -o "$HMC_SPECIFICS_JAR.tmp"
+  echo "$HMC_SPECIFICS_SHA256  $HMC_SPECIFICS_JAR.tmp" | sha256sum -c -
+  mv "$HMC_SPECIFICS_JAR.tmp" "$HMC_SPECIFICS_JAR"
+else
+  echo "$HMC_SPECIFICS_SHA256  $HMC_SPECIFICS_JAR" | sha256sum -c -
+fi
+
+# Keep exactly one pinned Forge 1.8.9 HMC-Specifics jar in the shared runtime.
+rm -f "$GAME_DIR/mods"/hmc-specifics-*.jar
+cp -f "$HMC_SPECIFICS_JAR" "$GAME_DIR/mods/"
 cp -f "$POC_JAR" "$GAME_DIR/mods/"
 
 cat > "$HMC_DIR/config.properties" <<EOF
@@ -62,4 +78,4 @@ EOF
 
 echo "[BBotPoC] runtime prepared in $RUNTIME"
 echo "[BBotPoC] next: ./scripts/run-hmc.sh"
-echo "[BBotPoC] launch with: launch forge:1.8.9 -specifics -lwjgl --jvm \"-Djava.awt.headless=true -Xms256m -Xmx768m\""
+echo "[BBotPoC] launch with: launch forge:1.8.9 -lwjgl --jvm \"-Djava.awt.headless=true -Xms256m -Xmx768m\""
