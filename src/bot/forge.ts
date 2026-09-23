@@ -37,6 +37,8 @@ interface BridgeEvent {
   y?: number;
   z?: number;
   stateId?: number;
+  status?: string;
+  clicksRemaining?: number;
 }
 
 interface BridgeResponse {
@@ -242,6 +244,32 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     if (!response.ok || response.kind !== 'playerCount' || !Number.isSafeInteger(response.playerCount) ||
         response.playerCount! < 0 || response.playerCount! > 1000) return undefined;
     return response.playerCount;
+  };
+
+  const interactCarePackage = async (target:Position, signal:AbortSignal):Promise<void> => {
+    await waitForBridge();
+    signal.throwIfAborted();
+    const cancel=()=>{
+      try{send({type:'cancelCarePackageInteraction'});}catch{}
+    };
+    signal.addEventListener('abort',cancel,{once:true});
+    try{
+      const response=await request({
+        type:'interactCarePackage',
+        x:Math.floor(target.x),y:Math.floor(target.y),z:Math.floor(target.z)
+      },signal,22_000);
+      if(!response.ok||response.kind!=='carePackageInteraction'){
+        const reason=response.error==='UNLOCK_TIMEOUT'?'Care Package unlock timeout':
+          response.error==='CHEST_UNAVAILABLE'?'Care Package chest unavailable':
+          response.error==='OUT_OF_RANGE'?'Care Package out of range':
+          'Care Package interaction failed';
+        events.diagnostic?.('care package interaction failed',{reason});
+        throw new Error(reason);
+      }
+      events.diagnostic?.('care package interaction completed');
+    }finally{
+      signal.removeEventListener('abort',cancel);
+    }
   };
 
   const listLoadedPitChunks = async (signal:AbortSignal):Promise<Array<{x:number;z:number}>> => {
@@ -608,6 +636,18 @@ export function createForgeTransport(config: Config, index: number, events: Tran
             message.stateId
           );
         }
+        break;
+      }
+      case 'carePackageStatus': {
+        if(!isFiniteNumber(message.x)||!isFiniteNumber(message.y)||!isFiniteNumber(message.z)||
+            !['LOCKED','OPEN','UNKNOWN'].includes(message.status??''))break;
+        const clicksRemaining=Number.isSafeInteger(message.clicksRemaining)&&message.clicksRemaining!>=0&&message.clicksRemaining!<=200
+          ?message.clicksRemaining:undefined;
+        events.diagnostic?.('care package hologram',{
+          status:message.status,
+          clicksRemaining:clicksRemaining??null,
+          x:message.x,y:message.y,z:message.z
+        });
         break;
       }
       case 'chickenSpawn':
@@ -1151,6 +1191,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     disconnectServer,
     navigate,
     launchToward,
+    interactCarePackage,
     stopPath,
     close: () => {
       if (closed) return;
