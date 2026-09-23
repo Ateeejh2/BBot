@@ -66,7 +66,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
-      detail: ['launch pad test failed','care package test failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason :
+      detail: ['launch pad test failed','care package test failed','care package launch failed','movement debug path failed'].includes(message) && typeof fields.reason === 'string' ? fields.reason :
         message === 'control path planning failed'
           ? `status=${typeof fields.status === 'string' ? fields.status : '?'} visited=${typeof fields.visitedNodes === 'number' ? fields.visitedNodes : '?'} generated=${typeof fields.generatedNodes === 'number' ? fields.generatedNodes : '?'} time=${typeof fields.planningMs === 'number' ? fields.planningMs.toFixed(1) : '?'}ms target=${typeof fields.targetX === 'number' ? fields.targetX.toFixed(1) : '?'},${typeof fields.targetY === 'number' ? fields.targetY.toFixed(1) : '?'},${typeof fields.targetZ === 'number' ? fields.targetZ.toFixed(1) : '?'}`
         : message === 'control walk collision'
