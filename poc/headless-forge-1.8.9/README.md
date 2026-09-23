@@ -81,7 +81,7 @@ build/libs/bbot-headless-poc-0.1.0.jar
 このscriptは次をPoC専用 `runtime/` に配置します。
 
 - HeadlessMC 2.10.0
-- HMC-Specifics is installed by HeadlessMC's `-specifics` launch flag
+- pinned HMC-Specifics for Forge 1.8.9 (downloaded during bootstrap, not at Launch time)
 - BBot Headless PoC mod
 - HeadlessMC config
 
@@ -104,7 +104,7 @@ login
 次にForge 1.8.9をheadless起動します。
 
 ```text
-launch forge:1.8.9 -specifics -lwjgl --jvm "-Djava.awt.headless=true -Xms256m -Xmx768m"
+launch forge:1.8.9 -lwjgl --jvm "-Djava.awt.headless=true -Xms256m -Xmx768m"
 ```
 
 起動後、hmc-specifics のcommandでテスト対象サーバーへ接続します。
