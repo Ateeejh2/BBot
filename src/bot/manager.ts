@@ -522,6 +522,7 @@ export class BotManager {
             name === 'pit path planned' || name === 'pit path replan requested' ||
             name === 'pit navigation prewarm started' || name === 'pit navigation prewarm completed' ||
             name === 'pit navigation prewarm failed' || name === 'care package hologram' ||
+            name === 'care package priority loot' ||
             name === 'care package interaction completed' || name === 'care package interaction failed' ||
             name === 'server disconnect reason' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
