@@ -39,6 +39,8 @@ interface BridgeEvent {
   stateId?: number;
   status?: string;
   clicksRemaining?: number;
+  clicked?: number;
+  items?: string;
 }
 
 interface BridgeResponse {
@@ -648,6 +650,13 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           clicksRemaining:clicksRemaining??null,
           x:message.x,y:message.y,z:message.z
         });
+        break;
+      }
+      case 'carePackageLoot': {
+        const clicked=Number.isSafeInteger(message.clicked)&&message.clicked!>0&&message.clicked!<=54
+          ?message.clicked:undefined;
+        const items=typeof message.items==='string'?message.items.slice(0,300):'';
+        if(clicked!==undefined)events.diagnostic?.('care package priority loot',{clicked,items});
         break;
       }
       case 'chickenSpawn':
