@@ -26,6 +26,10 @@ import net.minecraft.client.multiplayer.GuiConnecting;
 import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
+import net.minecraft.entity.player.InventoryPlayer;
+import net.minecraft.inventory.Container;
+import net.minecraft.inventory.Slot;
+import net.minecraft.item.ItemStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.entity.passive.EntityChicken;
@@ -113,6 +117,9 @@ public final class BBotHeadlessPoc {
     private int carePackageInteractionTicks;
     private String carePackageLastStatus;
     private int carePackageLastBucket = Integer.MIN_VALUE;
+    private int carePackageLootTicks;
+    private int carePackageLootEmptyTicks;
+    private boolean carePackageLootSawContents;
 
     private boolean havePreviousPosition;
     private double previousX;
@@ -546,6 +553,9 @@ public final class BBotHeadlessPoc {
         carePackageInteractionTicks = 0;
         carePackageLastStatus = null;
         carePackageLastBucket = Integer.MIN_VALUE;
+        carePackageLootTicks = 0;
+        carePackageLootEmptyTicks = 0;
+        carePackageLootSawContents = false;
         releaseMovementKeys();
         bridgeControlActive = true;
     }
@@ -556,6 +566,9 @@ public final class BBotHeadlessPoc {
         carePackageInteractionTicks = 0;
         carePackageLastStatus = null;
         carePackageLastBucket = Integer.MIN_VALUE;
+        carePackageLootTicks = 0;
+        carePackageLootEmptyTicks = 0;
+        carePackageLootSawContents = false;
     }
 
     private void tickCarePackageInteraction() {
@@ -567,7 +580,7 @@ public final class BBotHeadlessPoc {
             return;
         }
         if (mc.currentScreen instanceof GuiContainer) {
-            finishCarePackageInteraction(true, null);
+            tickCarePackagePriorityLoot();
             return;
         }
         if (mc.theWorld.getBlockState(carePackageTarget).getBlock() != Blocks.chest) {
@@ -591,6 +604,120 @@ public final class BBotHeadlessPoc {
         mc.thePlayer.swingItem();
         mc.playerController.clickBlock(carePackageTarget, EnumFacing.UP);
         mc.playerController.resetBlockRemoving();
+    }
+
+    private void tickCarePackagePriorityLoot() {
+        if (mc.thePlayer == null || mc.playerController == null || mc.thePlayer.openContainer == null) {
+            finishCarePackageInteraction(false, "CONTAINER_UNAVAILABLE");
+            return;
+        }
+
+        Container container = mc.thePlayer.openContainer;
+        InventoryPlayer playerInventory = mc.thePlayer.inventory;
+        int clicked = 0;
+        int visibleContainerStacks = 0;
+        StringBuilder names = new StringBuilder();
+
+        for (Object value : container.inventorySlots) {
+            if (!(value instanceof Slot)) {
+                continue;
+            }
+            Slot slot = (Slot)value;
+
+            // Care Package loot is only in the container side. Never click the
+            // player's own inventory while doing the instant priority pass.
+            if (slot.inventory == playerInventory) {
+                continue;
+            }
+
+            ItemStack stack = slot.getStack();
+            if (stack == null || stack.getItem() == null) {
+                continue;
+            }
+            visibleContainerStacks++;
+
+            String itemName = cleanItemDisplayName(stack.getDisplayName());
+            if (!isCarePackagePriorityItem(itemName)) {
+                continue;
+            }
+
+            // mode=1 is shift-click. Send every visible priority item in this
+            // same client tick; no artificial sleeps between Sword/Bow/Pants.
+            mc.playerController.windowClick(
+                container.windowId,
+                slot.slotNumber,
+                0,
+                1,
+                mc.thePlayer
+            );
+            clicked++;
+            if (names.length() > 0) {
+                names.append(", ");
+            }
+            names.append(itemName);
+        }
+
+        carePackageLootTicks++;
+        if (visibleContainerStacks > 0) {
+            carePackageLootSawContents = true;
+        }
+
+        if (clicked > 0) {
+            carePackageLootEmptyTicks = 0;
+            emitCarePackageLootEvent(clicked, names.toString());
+            return;
+        }
+
+        // If the server populated the chest and all priority items are gone,
+        // give it two extra client ticks for late slot updates, then resume BBot.
+        if (carePackageLootSawContents) {
+            carePackageLootEmptyTicks++;
+            if (carePackageLootEmptyTicks >= 2) {
+                mc.thePlayer.closeScreen();
+                finishCarePackageInteraction(true, null);
+                return;
+            }
+        }
+
+        // An opened container can arrive before its slot contents. Keep scanning
+        // for up to one second so a late first slot update is still insta-looted.
+        if (carePackageLootTicks >= 20 && !carePackageLootSawContents) {
+            mc.thePlayer.closeScreen();
+            finishCarePackageInteraction(true, null);
+        }
+    }
+
+    private boolean isCarePackagePriorityItem(String itemName) {
+        return "Mystic Sword".equalsIgnoreCase(itemName)
+            || "Mystic Bow".equalsIgnoreCase(itemName)
+            || "Fresh Green Pants".equalsIgnoreCase(itemName)
+            || "Fresh Red Pants".equalsIgnoreCase(itemName)
+            || "Fresh Orange Pants".equalsIgnoreCase(itemName)
+            || "Fresh Yellow Pants".equalsIgnoreCase(itemName)
+            || "Fresh Blue Pants".equalsIgnoreCase(itemName);
+    }
+
+    private String cleanItemDisplayName(String displayName) {
+        if (displayName == null) {
+            return "";
+        }
+        String clean = EnumChatFormatting.getTextWithoutFormattingCodes(displayName);
+        if (clean == null) {
+            return "";
+        }
+        return clean.replaceAll("\\s+", " ").trim();
+    }
+
+    private void emitCarePackageLootEvent(int clicked, String items) {
+        if (bridge == null) {
+            return;
+        }
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "carePackageLoot");
+        message.addProperty("clicked", clicked);
+        message.addProperty("items", items);
+        bridge.emit(message);
     }
 
     private CarePackageHologramStatus readCarePackageHologram(BlockPos target) {
