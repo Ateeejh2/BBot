@@ -521,6 +521,11 @@ test('verified Pit locraw confirms membership when spawn signal is missed', () =
 
   t.events.message('SERVER FOUND! Sending to mega-fallback!');
   assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.deepEqual(t.commands,['/play pit']);
+
+  f.tick(1499);
+  assert.deepEqual(t.commands,['/play pit']);
+  f.tick(1500);
   assert.deepEqual(t.commands,['/play pit','/locraw']);
 
   t.events.message('{"server":"mega-fallback","gametype":"PIT","mode":"PIT","map":"The Pit"}');
