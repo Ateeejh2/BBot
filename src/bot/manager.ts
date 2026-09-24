@@ -19,14 +19,14 @@ interface EventPreparation {
   predictionAbort?:AbortController; predictionTarget?:Position;
 }
 interface DebugWalk { generation:number; abort:AbortController }
-interface LimboRecovery { playAt:number; phase:'WAIT_LOBBY'|'JOINING_PIT'; source:'LIMBO'|'LOW_POPULATION'|'DISTRIBUTION' }
+interface LimboRecovery { playAt:number; phase:'WAIT_LOBBY'|'JOINING_PIT'; source:'LIMBO'|'LOW_POPULATION'|'DISTRIBUTION'|'JOIN_TIMEOUT' }
 interface CarePackageRun { timestamp:number; instanceId:string; target:Position; expiresAt:number; chestEvent?:GameEvent }
 interface ManagedBot {
   id: string; accountLabel: string; accountId?: string; minecraftName?: string; machine: StateMachine; generation: Generation;
   connection: number; transport?: BotTransport; instanceId?: string; pendingInstance?: string;
   pendingServer?: { host: string; port: number };
   ready: boolean; dueAt: number; deadline: number; reconnectAttempts: number; joinAttempts: number; joinSpawnObserved: boolean;
-  transferLocrawAt?: number;
+  transferLocrawAt?: number; joinFinalLocrawSent: boolean;
   stableSince?: number; paused: boolean; authCheckPending?: boolean; execution?: Execution; lastKickReason?: string; lastKickedAt?: number; moderation?: ModerationIncident;
   pathAttempts: number; pathCompleted: number; pathFailed: number; pathStartedAt?: number; lastPathMs?: number; lastPathQueueMs?: number;
   preparation?: EventPreparation; debugWalk?: DebugWalk; limboRecovery?: LimboRecovery; carePackage?:CarePackageRun; careRetryAt?:number;
@@ -57,7 +57,7 @@ export class BotManager {
       const bot: ManagedBot = { id: `bot-${i + 1}`, accountLabel: a.label,
         machine: new StateMachine((_from, to) => this.log(bot, 'state changed', { state: to })),
         generation: new Generation(), connection: 0, ready: false, dueAt: 0, deadline: 0,
-        reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, paused: config.api.enabled,
+        reconnectAttempts: 0, joinAttempts: 0, joinSpawnObserved: false, joinFinalLocrawSent: false, paused: config.api.enabled,
         pathAttempts: 0, pathCompleted: 0, pathFailed: 0, nextPitPopulationCheckAt: 0, debugWalkDone: false };
       return bot;
     });
@@ -128,6 +128,8 @@ export class BotManager {
     // Reuse the existing Forge bridge after an explicit server Disconnect.
     // The Forge worker/client lifecycle is independent from the Minecraft server session.
     if (b.transport?.connectServer) {
+      b.joinAttempts = 0;
+      b.joinFinalLocrawSent = false;
       b.paused = false; b.ready = false; b.dueAt = 0;
       b.machine.transition('CONNECTING');
       b.deadline = this.now() + this.config.connectTimeoutMs;
@@ -141,6 +143,8 @@ export class BotManager {
       return;
     }
 
+    b.joinAttempts = 0;
+    b.joinFinalLocrawSent = false;
     b.pendingServer = { host, port };
     try { this.connectBot(id); }
     catch (error) { b.pendingServer = undefined; throw error; }
@@ -367,8 +371,21 @@ export class BotManager {
         }
       }
       if (b.machine.state === 'JOINING_PIT' && now >= b.deadline) {
-        this.recover(b, 'UNKNOWN_RETURN');
-        this.log(b, 'join timed out; no confirmed instance');
+        if (!b.joinFinalLocrawSent && b.ready) {
+          b.joinFinalLocrawSent = true;
+          b.deadline = now + 1500;
+          try {
+            b.transport?.chat('/locraw');
+            this.log(b,'Pit instance final fallback requested',{source:'join-timeout',graceMs:1500});
+          } catch {
+            this.log(b,'Pit instance final fallback request failed',{source:'join-timeout'});
+          }
+          continue;
+        }
+        this.log(b,'join timed out; forcing lobby requeue',{finalLocrawSent:b.joinFinalLocrawSent});
+        b.limboRecovery=undefined;
+        this.startLobbyRequeue(b,'JOIN_TIMEOUT',0,{reason:'NO_INSTANCE_CONFIRMATION'});
+        continue;
       }
       if (b.machine.state === 'RECOVERING' && !b.ready && now >= b.deadline) { this.disconnected(b); continue; }
       if (this.movementDebug && b.machine.state === 'LOBBY' && b.ready && !b.debugWalkDone) {
@@ -609,7 +626,7 @@ export class BotManager {
     if (b.machine.state !== 'JOINING_PIT' || !b.pendingInstance || (!b.joinSpawnObserved && !authoritativeLocation)) return;
     try { this.registry.join(b.pendingInstance, b.id, this.now()); }
     catch { this.log(b, 'registry full; membership rejected'); this.recover(b, 'UNKNOWN_RETURN'); return; }
-    b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false;
+    b.instanceId = b.pendingInstance; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.joinFinalLocrawSent = false;
     b.pitPopulation=undefined;b.nextPitPopulationCheckAt=0;
     b.transport?.setInstance?.(b.instanceId);
     b.transport?.setPitScanEnabled?.(false);
@@ -729,7 +746,7 @@ export class BotManager {
       b.limboRecovery=undefined;
       b.paused = true; this.log(b, 'join attempt budget exhausted; inspect and restart after diagnosis'); return;
     }
-    b.joinAttempts++; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.transferLocrawAt=undefined;
+    b.joinAttempts++; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.joinFinalLocrawSent = false; b.transferLocrawAt=undefined;
     b.generation.invalidate(); b.machine.transition('JOINING_PIT');
     b.deadline = this.now() + this.config.joinTimeoutMs;
     try { b.transport?.chat('/play pit'); } catch { this.disconnected(b); }
@@ -820,7 +837,7 @@ export class BotManager {
 
   private startLobbyRequeue(
     b:ManagedBot,
-    source:'LOW_POPULATION'|'DISTRIBUTION',
+    source:'LOW_POPULATION'|'DISTRIBUTION'|'JOIN_TIMEOUT',
     delayMs=0,
     extra:Record<string,unknown>={}
   ):void {
@@ -830,7 +847,7 @@ export class BotManager {
     b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b,true);this.cancelPreparation(b);this.cancelExecution(b,false);b.generation.invalidate();
     this.registry.leave(b.id,now,'PLANNED');
-    b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.transferLocrawAt=undefined;b.stableSince=undefined;b.ready=false;
+    b.instanceId=undefined;b.pendingInstance=undefined;b.joinSpawnObserved=false;b.joinFinalLocrawSent=false;b.transferLocrawAt=undefined;b.stableSince=undefined;b.ready=false;
     b.pitPopulation=undefined;b.pitPopulationCheckInstance=undefined;b.nextPitPopulationCheckAt=0;
     b.machine.transition('RECOVERING');
     b.limboRecovery={playAt:now+delayMs,phase:'WAIT_LOBBY',source};
@@ -867,7 +884,7 @@ export class BotManager {
     b.transport?.setInstance?.(undefined);
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), reason);
-    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.transferLocrawAt = undefined; b.stableSince = undefined;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.joinSpawnObserved = false; b.joinFinalLocrawSent = false; b.transferLocrawAt = undefined; b.stableSince = undefined;
     b.machine.transition('RECOVERING');
     b.dueAt = this.now() + backoff(Math.max(0, b.joinAttempts - 1), { baseMs: this.config.playCooldownMs, maxMs: Math.max(this.config.playCooldownMs, this.config.reconnect.maxMs), jitter: 0 });
     this.log(b, 'membership lost; recovering', { reason });
@@ -884,7 +901,7 @@ export class BotManager {
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate();
     this.registry.leave(b.id, this.now(), 'DISCONNECT');
     b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
-    b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.transferLocrawAt = undefined; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.joinFinalLocrawSent = false; b.transferLocrawAt = undefined; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
     b.dueAt = 0;
@@ -900,7 +917,7 @@ export class BotManager {
     this.cancelDebugWalk(b, true); this.cancelPreparation(b); this.cancelExecution(b, false); b.generation.invalidate(); b.connection++;
     this.registry.leave(b.id, this.now(), this.stopped ? 'PLANNED' : 'DISCONNECT');
     b.limboRecovery=undefined;b.carePackage=undefined;b.careRetryAt=undefined;b.activity=undefined;
-    b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.transferLocrawAt = undefined; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
+    b.instanceId = undefined; b.pendingInstance = undefined; b.pendingServer = undefined; b.joinSpawnObserved = false; b.joinFinalLocrawSent = false; b.transferLocrawAt = undefined; b.stableSince = undefined; b.ready = false; b.debugWalkDone = false;
     const transport = b.transport; b.transport = undefined;
     b.debugSpawnAt = undefined; b.lastPositionCorrectionAt = undefined; b.lastHorizontalCollisionAt = undefined;
     b.machine.transition('DISCONNECTED');
