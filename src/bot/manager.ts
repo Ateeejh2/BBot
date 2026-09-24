@@ -509,6 +509,19 @@ export class BotManager {
           } else if(name==='pit path planned'){
             b.activity=undefined;
           }
+          if(this.carePackages&&b.instanceId){
+            if(name==='care package hologram'){
+              const clicksRemaining=typeof fields?.clicksRemaining==='number'&&Number.isSafeInteger(fields.clicksRemaining)
+                ?fields.clicksRemaining:undefined;
+              this.carePackages.markProgress(b.instanceId,now,'CLICKING',{clicksRemaining});
+            } else if(name==='care package opened'){
+              this.carePackages.markProgress(b.instanceId,now,'OPENED');
+            } else if(name==='care package priority loot'){
+              const gotItems=typeof fields?.items==='string'
+                ?fields.items.split(',').map(value=>value.trim()).filter(Boolean):[];
+              this.carePackages.markProgress(b.instanceId,now,'OPENED',{gotItems});
+            }
+          }
           let correlated=fields;
           if(name==='control walk collision'){
             b.lastHorizontalCollisionAt=now;
@@ -522,7 +535,7 @@ export class BotManager {
             name === 'pit path planned' || name === 'pit path replan requested' ||
             name === 'pit navigation prewarm started' || name === 'pit navigation prewarm completed' ||
             name === 'pit navigation prewarm failed' || name === 'care package hologram' ||
-            name === 'care package priority loot' ||
+            name === 'care package opened' || name === 'care package priority loot' ||
             name === 'care package interaction completed' || name === 'care package interaction failed' ||
             name === 'server disconnect reason' ? 'info' : 'debug';
           this.logger.log(level, name, { botId: b.id, accountLabel: b.accountLabel,
@@ -1082,6 +1095,7 @@ export class BotManager {
       let stage: 'PATH' | 'TASK' = 'PATH';
       let taskTimedOut = false;
       try {
+        if(event.type==='care-package'&&b.instanceId)this.carePackages?.markProgress(b.instanceId,this.now(),'PATHFINDING');
         await this.paths.submit(`${b.id}:${id}:${lease}`, execution.abort.signal,
           async signal => {
             pathRan = true;
@@ -1091,6 +1105,7 @@ export class BotManager {
             try {
               await transport.navigate(event.target, signal);
               b.pathCompleted++;
+              if(event.type==='care-package'&&b.instanceId)this.carePackages?.markProgress(b.instanceId,this.now(),'PATHFIND_DONE');
             } catch (error) {
               b.pathFailed++;
               throw error;
@@ -1123,6 +1138,7 @@ export class BotManager {
                   execution.abort.signal.throwIfAborted();
                   try{
                     await transport.interactCarePackage(event.target,execution.abort.signal);
+                    if(b.instanceId)this.carePackages?.markProgress(b.instanceId,this.now(),'GOT');
                     return;
                   }catch(error){
                     if(!(error instanceof Error)||error.message!=='Care Package out of range')throw error;
@@ -1132,7 +1148,9 @@ export class BotManager {
                       recovery:knockbackRecoveries,
                       targetX:event.target.x,targetY:event.target.y,targetZ:event.target.z
                     });
+                    if(b.instanceId)this.carePackages?.markProgress(b.instanceId,this.now(),'PATHFINDING');
                     await transport.navigate(event.target,execution.abort.signal);
+                    if(b.instanceId)this.carePackages?.markProgress(b.instanceId,this.now(),'PATHFIND_DONE');
                     this.log(b,'care package reach restored',{eventId:event.id,recovery:knockbackRecoveries});
                   }
                 }
@@ -1148,6 +1166,10 @@ export class BotManager {
           const reason: JobFailureReason = error instanceof Error && error.message === 'JOB_EXPIRED' ? 'JOB_EXPIRED' :
             stage === 'PATH' && error instanceof PathfindingError ? error.code :
             stage === 'TASK' ? (taskTimedOut ? 'TASK_TIMEOUT' : 'TASK_FAILED') : 'PATH_FAILED';
+          if(event.type==='care-package'&&b.instanceId){
+            const detail=error instanceof Error&&error.message?error.message:reason;
+            this.carePackages?.markProgress(b.instanceId,this.now(),'FAIL',{failureReason:detail});
+          }
           this.scheduler.release(id, b.id, lease, this.now(), reason);
           const job = this.scheduler.jobs.get(id);
           this.log(b, 'job returned or failed', { eventId: event.id, failureReason: reason, attempt: job?.attempts, jobState: job?.state });
