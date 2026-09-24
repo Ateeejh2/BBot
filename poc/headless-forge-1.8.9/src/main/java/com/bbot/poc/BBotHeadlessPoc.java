@@ -32,6 +32,7 @@ import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.SharedMonsterAttributes;
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.passive.EntityChicken;
 import net.minecraft.init.Blocks;
 import net.minecraft.network.NetworkManager;
@@ -43,6 +44,7 @@ import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.IChatComponent;
 import net.minecraft.util.Session;
+import net.minecraft.util.Vec3;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
@@ -121,6 +123,10 @@ public final class BBotHeadlessPoc {
     private int carePackageLootEmptyTicks;
     private boolean carePackageLootSawContents;
     private boolean carePackageOpenedReported;
+    private int carePackageClicksSent;
+    private int carePackageLastTelemetryRemaining = Integer.MIN_VALUE;
+    private boolean carePackageLastTelemetryLosBlocked;
+    private boolean carePackageTelemetryReported;
 
     private boolean havePreviousPosition;
     private double previousX;
@@ -558,6 +564,10 @@ public final class BBotHeadlessPoc {
         carePackageLootEmptyTicks = 0;
         carePackageLootSawContents = false;
         carePackageOpenedReported = false;
+        carePackageClicksSent = 0;
+        carePackageLastTelemetryRemaining = Integer.MIN_VALUE;
+        carePackageLastTelemetryLosBlocked = false;
+        carePackageTelemetryReported = false;
         releaseMovementKeys();
         bridgeControlActive = true;
     }
@@ -572,6 +582,10 @@ public final class BBotHeadlessPoc {
         carePackageLootEmptyTicks = 0;
         carePackageLootSawContents = false;
         carePackageOpenedReported = false;
+        carePackageClicksSent = 0;
+        carePackageLastTelemetryRemaining = Integer.MIN_VALUE;
+        carePackageLastTelemetryLosBlocked = false;
+        carePackageTelemetryReported = false;
     }
 
     private void tickCarePackageInteraction() {
@@ -609,12 +623,15 @@ public final class BBotHeadlessPoc {
         // Knockback can change our position/angle between ticks. Re-aim at the
         // chest center on every interaction tick before sending the click.
         faceCarePackageTarget(carePackageTarget);
+        boolean losBlockedByPlayer = isCarePackageLineBlockedByPlayer(carePackageTarget);
 
-        // One normal client-side block click per client tick. This is the fastest
-        // stable rate without batching multiple interactions into one tick.
+        // One normal client-side block click per client tick. Count what BBot
+        // actually sends; this does not claim the server accepted the click.
         mc.thePlayer.swingItem();
         mc.playerController.clickBlock(carePackageTarget, EnumFacing.UP);
         mc.playerController.resetBlockRemoving();
+        carePackageClicksSent++;
+        reportCarePackageTelemetry(status, losBlockedByPlayer);
     }
 
     private boolean isCarePackageTargetInReach(BlockPos target) {
@@ -628,6 +645,65 @@ public final class BBotHeadlessPoc {
         // Small tolerance for the chest volume itself and tick-to-tick motion.
         double allowed = Math.max(3.0D, reach + 0.35D);
         return dx * dx + dy * dy + dz * dz <= allowed * allowed;
+    }
+
+    private boolean isCarePackageLineBlockedByPlayer(BlockPos target) {
+        if (mc.thePlayer == null || mc.theWorld == null) {
+            return false;
+        }
+        Vec3 start = new Vec3(
+            mc.thePlayer.posX,
+            mc.thePlayer.posY + mc.thePlayer.getEyeHeight(),
+            mc.thePlayer.posZ
+        );
+        Vec3 end = new Vec3(
+            target.getX() + 0.5D,
+            target.getY() + 0.5D,
+            target.getZ() + 0.5D
+        );
+
+        for (Object value : mc.theWorld.playerEntities) {
+            if (!(value instanceof EntityPlayer)) {
+                continue;
+            }
+            EntityPlayer player = (EntityPlayer)value;
+            if (player == mc.thePlayer || player.isDead) {
+                continue;
+            }
+            if (player.getEntityBoundingBox().expand(0.1D, 0.1D, 0.1D).calculateIntercept(start, end) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void reportCarePackageTelemetry(CarePackageHologramStatus status, boolean losBlockedByPlayer) {
+        if (bridge == null || carePackageTarget == null) {
+            return;
+        }
+        int remaining = status.clicksRemaining == null ? Integer.MIN_VALUE : status.clicksRemaining;
+        boolean changed = !carePackageTelemetryReported
+            || remaining != carePackageLastTelemetryRemaining
+            || losBlockedByPlayer != carePackageLastTelemetryLosBlocked
+            || carePackageInteractionTicks % 5 == 0;
+        if (!changed) {
+            return;
+        }
+
+        carePackageTelemetryReported = true;
+        carePackageLastTelemetryRemaining = remaining;
+        carePackageLastTelemetryLosBlocked = losBlockedByPlayer;
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "carePackageTelemetry");
+        message.addProperty("status", status.state);
+        if (status.clicksRemaining != null) {
+            message.addProperty("clicksRemaining", status.clicksRemaining);
+        }
+        message.addProperty("clicksSent", carePackageClicksSent);
+        message.addProperty("losBlocked", losBlockedByPlayer);
+        bridge.emit(message);
     }
 
     private void faceCarePackageTarget(BlockPos target) {
