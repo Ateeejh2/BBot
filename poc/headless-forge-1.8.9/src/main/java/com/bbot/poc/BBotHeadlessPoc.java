@@ -543,7 +543,7 @@ public final class BBotHeadlessPoc {
             emitCarePackageInteractionResponse(requestId, false, "CHEST_UNAVAILABLE");
             return;
         }
-        if (mc.thePlayer.getDistanceSq(target.getX() + 0.5D, target.getY() + 0.5D, target.getZ() + 0.5D) > 49.0D) {
+        if (!isCarePackageTargetInReach(target)) {
             emitCarePackageInteractionResponse(requestId, false, "OUT_OF_RANGE");
             return;
         }
@@ -587,7 +587,7 @@ public final class BBotHeadlessPoc {
             finishCarePackageInteraction(false, "CHEST_UNAVAILABLE");
             return;
         }
-        if (mc.thePlayer.getDistanceSq(carePackageTarget.getX() + 0.5D, carePackageTarget.getY() + 0.5D, carePackageTarget.getZ() + 0.5D) > 49.0D) {
+        if (!isCarePackageTargetInReach(carePackageTarget)) {
             finishCarePackageInteraction(false, "OUT_OF_RANGE");
             return;
         }
@@ -599,11 +599,40 @@ public final class BBotHeadlessPoc {
         CarePackageHologramStatus status = readCarePackageHologram(carePackageTarget);
         reportCarePackageHologram(status);
 
+        // Knockback can change our position/angle between ticks. Re-aim at the
+        // chest center on every interaction tick before sending the click.
+        faceCarePackageTarget(carePackageTarget);
+
         // One normal client-side block click per client tick. This is the fastest
         // stable rate without batching multiple interactions into one tick.
         mc.thePlayer.swingItem();
         mc.playerController.clickBlock(carePackageTarget, EnumFacing.UP);
         mc.playerController.resetBlockRemoving();
+    }
+
+    private boolean isCarePackageTargetInReach(BlockPos target) {
+        if (mc.thePlayer == null || mc.playerController == null) {
+            return false;
+        }
+        double dx = target.getX() + 0.5D - mc.thePlayer.posX;
+        double dy = target.getY() + 0.5D - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
+        double dz = target.getZ() + 0.5D - mc.thePlayer.posZ;
+        double reach = mc.playerController.getBlockReachDistance();
+        // Small tolerance for the chest volume itself and tick-to-tick motion.
+        double allowed = Math.max(3.0D, reach + 0.35D);
+        return dx * dx + dy * dy + dz * dz <= allowed * allowed;
+    }
+
+    private void faceCarePackageTarget(BlockPos target) {
+        if (mc.thePlayer == null) {
+            return;
+        }
+        double dx = target.getX() + 0.5D - mc.thePlayer.posX;
+        double dy = target.getY() + 0.5D - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
+        double dz = target.getZ() + 0.5D - mc.thePlayer.posZ;
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        mc.thePlayer.rotationYaw = (float)(Math.atan2(-dx, dz) * 180.0D / Math.PI);
+        mc.thePlayer.rotationPitch = (float)(-Math.atan2(dy, Math.max(0.0001D, horizontal)) * 180.0D / Math.PI);
     }
 
     private void tickCarePackagePriorityLoot() {
