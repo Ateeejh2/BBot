@@ -175,8 +175,15 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
                 + " lootDelayTicks=" + lootDelayTicks
                 + " autoKbAt=" + autoKnockbackAt
                 + " packetTelemetry=" + packetTelemetryEnabled);
+            List<UUID> reported = new ArrayList<UUID>();
+            for (Map.Entry<UUID, PacketTrace> entry : packetTraces.entrySet()) {
+                sender.sendMessage(packetSummary(entry.getKey(), entry.getValue().playerName));
+                reported.add(entry.getKey());
+            }
             for (Player player : pitWorld.getPlayers()) {
-                sender.sendMessage(packetSummary(player));
+                if (!reported.contains(player.getUniqueId())) {
+                    sender.sendMessage(packetSummary(player.getUniqueId(), player.getName()));
+                }
             }
             return true;
         }
@@ -432,14 +439,14 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         trace.record(elapsedMs, type, detail);
     }
 
-    private String packetSummary(Player player) {
-        PacketTrace trace = packetTraces.get(player.getUniqueId());
-        int accepted = acceptedClicksByPlayer.containsKey(player.getUniqueId())
-            ? acceptedClicksByPlayer.get(player.getUniqueId()) : 0;
+    private String packetSummary(UUID playerId, String playerName) {
+        PacketTrace trace = packetTraces.get(playerId);
+        int accepted = acceptedClicksByPlayer.containsKey(playerId)
+            ? acceptedClicksByPlayer.get(playerId) : 0;
         if (trace == null) {
-            return ChatColor.GRAY + "Packets " + player.getName() + ": accepted=" + accepted + " no packets recorded";
+            return ChatColor.GRAY + "Packets " + playerName + ": accepted=" + accepted + " no packets recorded";
         }
-        return ChatColor.GRAY + "Packets " + player.getName()
+        return ChatColor.GRAY + "Packets " + playerName
             + ": accepted=" + accepted
             + " arm=" + trace.armAnimations()
             + " dig=" + trace.blockDigs()
@@ -447,6 +454,13 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
             + " place=" + trace.blockPlaces()
             + " windowClick=" + trace.windowClicks()
             + " closeWindow=" + trace.closeWindows();
+    }
+
+    private UUID tracedPlayerId(String playerName) {
+        for (Map.Entry<UUID, PacketTrace> entry : packetTraces.entrySet()) {
+            if (entry.getValue().playerName.equalsIgnoreCase(playerName)) return entry.getKey();
+        }
+        return null;
     }
 
     private void handlePacketsCommand(CommandSender sender, String[] args) {
@@ -458,25 +472,46 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         }
 
         Player target = null;
+        UUID targetId = null;
+        String targetName = null;
         int limit = 40;
         if (args.length >= 2) {
             target = Bukkit.getPlayerExact(args[1]);
-            if (target == null && args[1].matches("\\d+")) {
+            if (target != null) {
+                targetId = target.getUniqueId();
+                targetName = target.getName();
+            } else if (args[1].matches("\\d+")) {
                 limit = parseInt(args[1], 40);
+            } else {
+                targetId = tracedPlayerId(args[1]);
+                if (targetId != null) targetName = packetTraces.get(targetId).playerName;
             }
         }
         if (args.length >= 3) limit = parseInt(args[2], 40);
         limit = Math.max(1, Math.min(200, limit));
 
-        if (target == null && sender instanceof Player) target = (Player)sender;
-        if (target == null && pitWorld.getPlayers().size() == 1) target = pitWorld.getPlayers().get(0);
-        if (target == null) {
+        if (targetId == null && sender instanceof Player) {
+            target = (Player)sender;
+            targetId = target.getUniqueId();
+            targetName = target.getName();
+        }
+        if (targetId == null && packetTraces.size() == 1) {
+            Map.Entry<UUID, PacketTrace> only = packetTraces.entrySet().iterator().next();
+            targetId = only.getKey();
+            targetName = only.getValue().playerName;
+        }
+        if (targetId == null && pitWorld.getPlayers().size() == 1) {
+            target = pitWorld.getPlayers().get(0);
+            targetId = target.getUniqueId();
+            targetName = target.getName();
+        }
+        if (targetId == null || targetName == null) {
             sender.sendMessage(ChatColor.RED + "Usage: /caretest packets [player] [limit]");
             return;
         }
 
-        PacketTrace trace = packetTraces.get(target.getUniqueId());
-        sender.sendMessage(packetSummary(target));
+        PacketTrace trace = packetTraces.get(targetId);
+        sender.sendMessage(packetSummary(targetId, targetName));
         if (trace == null) return;
         List<TraceEntry> entries = trace.latest(limit);
         if (entries.isEmpty()) {
