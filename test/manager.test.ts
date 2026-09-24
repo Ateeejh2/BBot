@@ -676,3 +676,78 @@ test('task timeout returns job and does not leave bot WORKING', async () => {
   assert.equal(f.scheduler.jobs.get('job')?.state, 'QUEUED'); assert.equal(f.scheduler.jobs.get('job')?.lastFailure, 'TASK_TIMEOUT');
   assert.equal(f.manager.views()[0]?.state, 'IN_PIT_IDLE'); f.manager.stop();
 });
+
+
+test('kick then explicit Forge Start gets a fresh Pit join budget and locraw can confirm the new instance', () => {
+  const f=fixture(1,new MockTaskHandler(),true);
+  f.config.mode='live';
+  f.config.transport='forge';
+  f.config.joinMaxAttempts=1;
+
+  f.manager.startServer('bot-1','mc.example.test',25565);
+  const first=f.connections[0]!;
+  first.events.spawn();
+  f.tick(5000);
+  assert.deepEqual(first.commands,['/play pit']);
+  f.join(first,'before-kick');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+
+  first.events.kicked?.('Disconnected for regression test',true);
+  assert.equal(f.manager.views()[0]?.state,'DISCONNECTED');
+
+  f.manager.startServer('bot-1','mc.example.test',25565);
+  const second=f.connections[1]!;
+  second.events.spawn();
+  f.tick(10000);
+  assert.deepEqual(second.commands,['/play pit'],
+    'new Minecraft server session must receive a fresh Pit join attempt');
+
+  // Rejoin can miss the SERVER FOUND line. Spawn plus authoritative /locraw
+  // must still be enough to bind the current Pit backend.
+  second.events.worldReset();
+  second.events.spawn();
+  assert.ok(second.commands.includes('/locraw'));
+  second.events.message('{"server":"mini-rejoin-42","gametype":"PIT","mode":"normal"}');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(f.manager.views()[0]?.instanceId,'mini-rejoin-42');
+  f.manager.stop();
+});
+
+test('unconfirmed Pit join uses final locraw probe then forces a clean lobby requeue', () => {
+  const f=fixture(1,new MockTaskHandler(),true);
+  f.config.mode='live';
+  f.config.transport='forge';
+
+  f.manager.startServer('bot-1','mc.example.test',25565);
+  const t=f.connections[0]!;
+  t.events.spawn();
+  f.tick(5000);
+  assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.deepEqual(t.commands,['/play pit']);
+
+  // World transfer happened, but both transfer text and locraw response are lost.
+  t.events.worldReset();
+  t.events.spawn();
+  assert.deepEqual(t.commands,['/play pit','/locraw']);
+
+  f.tick(6000);
+  assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.deepEqual(t.commands,['/play pit','/locraw','/locraw'],
+    'timeout gets one final authoritative locraw probe');
+
+  f.tick(7500);
+  assert.equal(f.manager.views()[0]?.state,'RECOVERING');
+  assert.equal(f.manager.views()[0]?.instanceId,undefined);
+  assert.equal(t.commands.at(-1),'/l',
+    'failed instance confirmation must leave the ambiguous Pit world before retrying');
+
+  t.events.worldReset();
+  t.events.spawn();
+  f.tick(7501);
+  assert.equal(f.manager.views()[0]?.state,'JOINING_PIT');
+  assert.equal(t.commands.at(-1),'/play pit');
+  f.join(t,'clean-rejoin');
+  assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
+  assert.equal(f.manager.views()[0]?.instanceId,'clean-rejoin');
+  f.manager.stop();
+});
