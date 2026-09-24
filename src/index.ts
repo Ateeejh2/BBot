@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   const scheduler = new Scheduler(config.jobMaxAttempts, config.maxJobs, config.jobRetryMs);
   const paths = new PathfindingController(config.pathConcurrency, config.pathTimeoutMs);
   const carePackages = config.mode === 'live' ? new BrookeCarePackageSchedule() : undefined;
-  const carePackageCoordinator = carePackages ? new CarePackageCoordinator(carePackages) : undefined;
+  const carePackageCoordinator = carePackages ? new CarePackageCoordinator(carePackages,60_000,180_000,2_000,6,3,config.careTestServer) : undefined;
   const manager = new BotManager(config, factory, registry, scheduler, paths, new MockTaskHandler(), logger,
     Date.now, Math.random, undefined, carePackageCoordinator);
   if (config.api.enabled && config.mode === 'live') await controls.bind(manager);
