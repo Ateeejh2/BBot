@@ -341,12 +341,15 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   let careInteractionAttempts=0;
   t.carePackageInteraction=async()=>{
     careInteractionAttempts++;
-    if(careInteractionAttempts===1)throw new Error('Care Package out of range');
+    if(careInteractionAttempts===1){
+      t.events.diagnostic?.('care package telemetry',{status:'LOCKED',clicksRemaining:91,clicksSent:3,losBlocked:false});
+      throw new Error('Care Package out of range');
+    }
     t.events.diagnostic?.('care package hologram',{status:'LOCKED',clicksRemaining:73});
     t.events.diagnostic?.('care package telemetry',{status:'LOCKED',clicksRemaining:73,clicksSent:18,losBlocked:true});
     assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.progressPhase,'CLICKING');
     assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.clicksRemaining,73);
-    assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.clicksSent,18);
+    assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.clicksSent,21);
     assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.losBlocked,true);
     t.events.diagnostic?.('care package opened');
     assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.progressPhase,'OPENED');
