@@ -297,6 +297,13 @@ public final class BBotHeadlessPoc {
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase == TickEvent.Phase.START) {
+            // Vanilla 1.8.9 processes mouse input before the player/world update
+            // that emits C03 movement packets. Keep Care Package interaction in
+            // the same tick phase instead of sending it after movement at END.
+            tickCarePackageInteraction();
+            return;
+        }
         if (event.phase != TickEvent.Phase.END) {
             return;
         }
@@ -333,7 +340,6 @@ public final class BBotHeadlessPoc {
         mc.skipRenderWorld = skipRender;
         totalTicks++;
 
-        tickCarePackageInteraction();
         traceLargeClientStep();
 
         if (!bridgeControlActive) {
