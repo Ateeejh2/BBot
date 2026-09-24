@@ -120,6 +120,7 @@ public final class BBotHeadlessPoc {
     private int carePackageLootTicks;
     private int carePackageLootEmptyTicks;
     private boolean carePackageLootSawContents;
+    private boolean carePackageOpenedReported;
 
     private boolean havePreviousPosition;
     private double previousX;
@@ -556,6 +557,7 @@ public final class BBotHeadlessPoc {
         carePackageLootTicks = 0;
         carePackageLootEmptyTicks = 0;
         carePackageLootSawContents = false;
+        carePackageOpenedReported = false;
         releaseMovementKeys();
         bridgeControlActive = true;
     }
@@ -569,6 +571,7 @@ public final class BBotHeadlessPoc {
         carePackageLootTicks = 0;
         carePackageLootEmptyTicks = 0;
         carePackageLootSawContents = false;
+        carePackageOpenedReported = false;
     }
 
     private void tickCarePackageInteraction() {
@@ -580,6 +583,10 @@ public final class BBotHeadlessPoc {
             return;
         }
         if (mc.currentScreen instanceof GuiContainer) {
+            if (!carePackageOpenedReported) {
+                carePackageOpenedReported = true;
+                emitCarePackageOpenedEvent();
+            }
             tickCarePackagePriorityLoot();
             return;
         }
@@ -735,6 +742,16 @@ public final class BBotHeadlessPoc {
             return "";
         }
         return clean.replaceAll("\\s+", " ").trim();
+    }
+
+    private void emitCarePackageOpenedEvent() {
+        if (bridge == null) {
+            return;
+        }
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "event");
+        message.addProperty("event", "carePackageOpened");
+        bridge.emit(message);
     }
 
     private void emitCarePackageLootEvent(int clicked, String items) {
