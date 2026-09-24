@@ -469,8 +469,8 @@ test('Care test mode ignores persisted production server destination', async () 
     const controls=new ControlStore(config,async()=>{});
     await controls.load();
     assert.deepEqual(controls.getServer(),{host:'127.0.0.1',port:25567,version:'1.8.9',revision:0});
-    await assert.rejects(
-      controls.saveServer({host:'play.example.com',port:25565,version:'1.8.9'}),
+    assert.throws(
+      () => controls.saveServer({host:'play.example.com',port:25565,version:'1.8.9'}),
       /INVALID_TEST_SERVER_TARGET/
     );
   } finally {await rm(dir,{recursive:true,force:true});}
