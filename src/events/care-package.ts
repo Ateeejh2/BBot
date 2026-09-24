@@ -123,6 +123,11 @@ export class CarePackageCoordinator {
       value.instanceId===normalized&&value.endedAt===undefined&&value.chest!==undefined&&
       value.chest.x===position.x&&value.chest.y===position.y&&value.chest.z===position.z);
     if(!tracked)return;
+    if(tracked.progressPhase!=='GOT'&&tracked.progressPhase!=='FAIL'){
+      tracked.progressPhase='FAIL';
+      tracked.failureReason='Chest disappeared';
+      tracked.progressUpdatedAt=now;
+    }
     tracked.endedAt=now;tracked.state='ENDED';
     return {timestamp:tracked.timestamp,instanceId:tracked.instanceId,eventId:`care-package:${tracked.timestamp}:${tracked.instanceId}`};
   }
