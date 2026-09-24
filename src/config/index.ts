@@ -97,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     connectTimeoutMs: integer('CONNECT_TIMEOUT_MS', 60000, 1000, 600000),
     connectionSpacingMs: integer('CONNECTION_SPACING_MS', 3000, 100, 60000),
     playCooldownMs: integer('PLAY_COOLDOWN_MS', 15000, 1000, 600000),
+    careTestServer: bool('CARE_TEST_SERVER', false),
     joinTimeoutMs: integer('JOIN_TIMEOUT_MS', 30000, 1000, 600000),
     joinMaxAttempts: integer('JOIN_MAX_ATTEMPTS', 5, 1, 100),
     pitEventMinPlayers: integer('PIT_EVENT_MIN_PLAYERS', 21, 0, 200),
