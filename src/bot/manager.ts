@@ -994,11 +994,13 @@ export class BotManager {
     const now=this.now();
     const accepted=this.scheduler.enqueue(event,now);
     if(!accepted){
+      this.carePackages?.markProgress(event.instanceId,now,'FAIL',{failureReason:'ENQUEUE_REJECTED'});
       this.log(bot,'care package chest handoff failed',{eventId:event.id,reason:'ENQUEUE_REJECTED'});
       return;
     }
     const assignment=this.scheduler.assignTo(event.id,this.view(bot),now);
     if(!assignment){
+      this.carePackages?.markProgress(event.instanceId,now,'FAIL',{failureReason:'RESERVATION_FAILED'});
       this.log(bot,'care package chest handoff failed',{eventId:event.id,reason:'RESERVATION_FAILED'});
       return;
     }
