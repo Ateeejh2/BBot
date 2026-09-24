@@ -1,0 +1,17 @@
+name: BBotCareTest
+main: com.bbot.caretest.BBotCareTestPlugin
+version: 0.1.0
+author: BBot
+commands:
+  caretest:
+    description: Controls the local Care Package test event
+    usage: /caretest
+  play:
+    description: Emulates Hypixel /play pit for BBot
+    usage: /play pit
+  l:
+    description: Returns to the local test lobby
+    usage: /l
+  lobby:
+    description: Returns to the local test lobby
+    usage: /lobby
