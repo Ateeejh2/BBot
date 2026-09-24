@@ -105,6 +105,7 @@ export class CarePackageCoordinator {
     if(!tracked.chest)return;
     tracked.progressPhase=phase;
     tracked.progressUpdatedAt=now;
+    if(phase==='PATHFINDING')tracked.lastTransportClicksSent=undefined;
     if(detail?.clicksRemaining!==undefined&&Number.isSafeInteger(detail.clicksRemaining)&&detail.clicksRemaining>=0&&detail.clicksRemaining<=200){
       tracked.clicksRemaining=detail.clicksRemaining;
     }
