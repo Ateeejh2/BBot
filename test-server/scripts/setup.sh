@@ -61,6 +61,9 @@ EOF
 cat > "$RUNTIME/server.properties" <<'EOF'
 server-ip=127.0.0.1
 server-port=25567
+# Spigot 1.8.8 bundles an old Netty epoll transport that fails on Java 21.
+# Vulcan 2.9.7.22 needs Java 21, so force Java NIO instead of native epoll.
+use-native-transport=false
 online-mode=false
 motd=BBot Care Package Test Server
 level-name=world
