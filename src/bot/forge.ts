@@ -652,6 +652,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         });
         break;
       }
+      case 'carePackageOpened': {
+        events.diagnostic?.('care package opened');
+        break;
+      }
       case 'carePackageLoot': {
         const clicked=Number.isSafeInteger(message.clicked)&&message.clicked!>0&&message.clicked!<=54
           ?message.clicked:undefined;
