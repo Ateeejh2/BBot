@@ -1106,7 +1106,7 @@ export class BotManager {
         stage = 'TASK';
         this.scheduler.running(id, b.id, lease, this.now()); b.machine.transition('WORKING');
         const taskTimeoutMs = event.type === 'care-package'
-          ? Math.max(this.config.taskTimeoutMs, 25_000)
+          ? Math.max(this.config.taskTimeoutMs, 60_000)
           : this.config.taskTimeoutMs;
         const timer = setTimeout(() => { taskTimedOut = true; execution.abort.abort(); }, taskTimeoutMs);
         let taskAbort: (() => void) | undefined;
@@ -1118,7 +1118,24 @@ export class BotManager {
             Promise.resolve().then(() => {
               execution.abort.signal.throwIfAborted();
               if (event.type === 'care-package' && transport.interactCarePackage) {
-                return transport.interactCarePackage(event.target, execution.abort.signal);
+                let knockbackRecoveries=0;
+                while(true){
+                  execution.abort.signal.throwIfAborted();
+                  try{
+                    await transport.interactCarePackage(event.target,execution.abort.signal);
+                    return;
+                  }catch(error){
+                    if(!(error instanceof Error)||error.message!=='Care Package out of range')throw error;
+                    knockbackRecoveries++;
+                    this.log(b,'care package knocked out of reach; returning',{
+                      eventId:event.id,
+                      recovery:knockbackRecoveries,
+                      targetX:event.target.x,targetY:event.target.y,targetZ:event.target.z
+                    });
+                    await transport.navigate(event.target,execution.abort.signal);
+                    this.log(b,'care package reach restored',{eventId:event.id,recovery:knockbackRecoveries});
+                  }
+                }
               }
               return this.task.onArrive(this.view(b), event, execution.abort.signal);
             }).then(resolve, reject).finally(() => execution.abort.signal.removeEventListener('abort', abort));
