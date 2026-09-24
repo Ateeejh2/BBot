@@ -90,6 +90,22 @@ spawn後、cooldownを待って`/play pit`を送信します。`/server`は使�
 
 **到着判定の制約:** 初期設定ではserver systemチャットの`SERVER FOUND! Sending to <INSTANCE>!`を受信し、その後のspawnを確認した場合だけ所属を確定します。通知だけでは移動を開始しません。通知より先にspawnが来る環境や、通知がsystemチャットとして届かない環境では確定せずtimeoutになります。`DEBUG=true`時の`transfer text observed`には、内容や認証情報を記録せず受信channel・送信者の有無・判定可能性を記録します。1.8.9でchat channelに届くことを実測で確認した場合だけ`TRANSFER_MESSAGE_CHANNEL=chat`へ切り替えて再試験してください。chat channelには送信元を認証できない場合があるため、完全一致のプレイヤー文をサーバー通知と誤認するリスクがあります。通知・イベントの順序が異なる場合は、実際の観測結果に合わせてadapterを修正してください。
 
+## ローカルCare Packageテストサーバー
+
+Care Packageの実イベント待ちを避けるため、Spigot 1.8.8上で疑似Care Packageを何度でも再現できるテストハーネスを `test-server/` に用意しています。
+
+```bash
+npm run test-server:setup
+npm run test-server:use
+npm run test-server:start
+```
+
+別ターミナルでBBotを起動し、Dashboardから `bot-1 → Launch → Start`。ローカルプラグインが `/play pit` を疑似転送して `caretest` instanceへ入れます。Idle後、テストサーバーのコンソールで `caretest start` を実行すると、Chest生成 → 共有click残数 → OPEN → Mystic/Fresh lootまで再現します。
+
+KB、Chest消去、loot遅延も `caretest knockback` / `caretest autokb` / `caretest vanish` / `caretest lootdelay` で再現できます。詳細は [test-server/README.md](test-server/README.md) を参照してください。終了後は `npm run test-server:restore` で通常の `.env` に戻します。
+
+Vulcan等の第三者プラグインjarは同梱しません。ライセンス済みjarを `test-server/runtime/plugins/` に置けば通常のSpigotプラグインとして読み込まれます。このテストは互換性・flag観測用であり、特定のアンチチート回避を目的にしません。
+
 ## Debugログと復旧確認
 
 別のPowerShellで、リポジトリのディレクトリから確認します。
