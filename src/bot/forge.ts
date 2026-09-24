@@ -39,6 +39,8 @@ interface BridgeEvent {
   stateId?: number;
   status?: string;
   clicksRemaining?: number;
+  clicksSent?: number;
+  losBlocked?: boolean;
   clicked?: number;
   items?: string;
 }
@@ -650,6 +652,22 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           clicksRemaining:clicksRemaining??null,
           x:message.x,y:message.y,z:message.z
         });
+        break;
+      }
+      case 'carePackageTelemetry': {
+        const clicksRemaining=Number.isSafeInteger(message.clicksRemaining)&&message.clicksRemaining!>=0&&message.clicksRemaining!<=200
+          ?message.clicksRemaining:undefined;
+        const clicksSent=Number.isSafeInteger(message.clicksSent)&&message.clicksSent!>=0&&message.clicksSent!<=1000
+          ?message.clicksSent:undefined;
+        const losBlocked=typeof message.losBlocked==='boolean'?message.losBlocked:undefined;
+        if(clicksSent!==undefined&&losBlocked!==undefined){
+          events.diagnostic?.('care package telemetry',{
+            status:typeof message.status==='string'?message.status:'UNKNOWN',
+            clicksRemaining:clicksRemaining??null,
+            clicksSent,
+            losBlocked
+          });
+        }
         break;
       }
       case 'carePackageOpened': {
