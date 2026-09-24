@@ -71,4 +71,7 @@ test('Care Package click press and release are split across client ticks', () =>
   assert.match(source,/if \(carePackageClickPressed\) \{[\s\S]*?releaseCarePackageClick\(\);[\s\S]*?return;/);
   assert.match(source,/mc\.thePlayer\.swingItem\(\);[\s\S]*?mc\.playerController\.clickBlock\(carePackageTarget, EnumFacing\.UP\)/);
   assert.doesNotMatch(source,/clickBlock\(carePackageTarget, EnumFacing\.UP\);\s*mc\.playerController\.resetBlockRemoving\(\);/);
+  assert.match(source,/if \(event\.phase == TickEvent\.Phase\.START\) \{[\s\S]*?tickCarePackageInteraction\(\);[\s\S]*?return;/);
+  const endPhase=source.slice(source.indexOf('if (event.phase != TickEvent.Phase.END)'));
+  assert.doesNotMatch(endPhase,/totalTicks\+\+;\s*tickCarePackageInteraction\(\);/);
 });
