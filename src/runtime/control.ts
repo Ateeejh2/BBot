@@ -309,6 +309,9 @@ export class ControlStore {
   }
   saveServer(body: unknown): Promise<ServerConnection> {
     const valid = validateConnection(body);
+    if (this.config.careTestServer && (!['127.0.0.1','localhost'].includes(valid.host) || valid.port !== 25567)) {
+      throw Error('INVALID_TEST_SERVER_TARGET');
+    }
     if (!this.manager?.allStopped()) throw Error('INVALID_STATE');
     return this.exclusive(async () => {
       return this.manager!.withConfigurationLock(() => this.manager!.allStopped(), async () => {
