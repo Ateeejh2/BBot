@@ -65,7 +65,7 @@ test('Pit death recap requires the whole normalized server line', () => {
 
 test('Care Package click press and release are split across client ticks', () => {
   const source=readFileSync(
-    new URL('../poc/headless-forge-1.8.9/src/main/java/com/bbot/poc/BBotHeadlessPoc.java',import.meta.url),
+    new URL('../../poc/headless-forge-1.8.9/src/main/java/com/bbot/poc/BBotHeadlessPoc.java',import.meta.url),
     'utf8'
   );
   assert.match(source,/if \(carePackageClickPressed\) \{[\s\S]*?releaseCarePackageClick\(\);[\s\S]*?return;/);
