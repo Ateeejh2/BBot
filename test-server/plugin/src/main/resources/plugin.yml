@@ -15,3 +15,6 @@ commands:
   lobby:
     description: Returns to the local test lobby
     usage: /lobby
+  locraw:
+    description: Emulates Hypixel /locraw for the local test server
+    usage: /locraw
