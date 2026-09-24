@@ -1115,7 +1115,7 @@ export class BotManager {
             const abort = () => reject(new Error('Task aborted'));
             taskAbort = abort;
             execution.abort.signal.addEventListener('abort', abort, { once: true });
-            Promise.resolve().then(() => {
+            Promise.resolve().then(async () => {
               execution.abort.signal.throwIfAborted();
               if (event.type === 'care-package' && transport.interactCarePackage) {
                 let knockbackRecoveries=0;
