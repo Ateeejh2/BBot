@@ -11,3 +11,7 @@ logs/
 coverage/
 *.tsbuildinfo
 .tools/
+# Local Care Package test server artifacts
+test-server/runtime/
+test-server/.buildtools/
+test-server/.plugin-build/
