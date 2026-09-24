@@ -25,7 +25,8 @@ export class CarePackageCoordinator {
   private tracked = new Map<string,TrackedInstance>();
   constructor(private schedule:CarePackageSchedule,
     private armLeadMs=60_000, private activeAfterMs=180_000,
-    private clusterWindowMs=2_000, private clusterRadius=6, private clusterMin=3) {}
+    private clusterWindowMs=2_000, private clusterRadius=6, private clusterMin=3,
+    private testServerMode=false) {}
 
   trackingSnapshot(now:number):CarePackageTrackingSnapshot {
     this.prune(now);
@@ -46,7 +47,7 @@ export class CarePackageCoordinator {
   observeAnnouncement(instanceId:string,text:string,now:number):CarePackageStartDetection|undefined {
     const announcement=parseCarePackageAnnouncement(text);
     if(!announcement)return;
-    const timestamp=this.activeTimestamp(now);
+    const timestamp=this.activeTimestamp(now)??(this.testServerMode?now:undefined);
     if(timestamp===undefined)return;
     const tracked=this.get(timestamp,instanceId);
     if(tracked.startedAt!==undefined)return;
