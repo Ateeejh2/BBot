@@ -127,6 +127,19 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
             }, 2L);
             return true;
         }
+        if ("locraw".equals(name)) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("{\"server\":\"caretest\",\"gametype\":\"PIT\",\"mode\":\"PIT\",\"map\":\"The Pit\"}");
+                return true;
+            }
+            Player player = (Player)sender;
+            if (player.getWorld().equals(pitWorld)) {
+                player.sendMessage("{\"server\":\"caretest\",\"gametype\":\"PIT\",\"mode\":\"PIT\",\"map\":\"The Pit\"}");
+            } else {
+                player.sendMessage("{\"server\":\"caretest-lobby\",\"gametype\":\"PROTOTYPE\",\"mode\":\"LOBBY\",\"map\":\"Lobby\"}");
+            }
+            return true;
+        }
         if ("l".equals(name) || "lobby".equals(name)) {
             if (sender instanceof Player) {
                 Player player = (Player)sender;
