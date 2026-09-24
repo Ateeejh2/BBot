@@ -11,6 +11,18 @@ import { MockTaskHandler, type TaskHandler } from '../src/events/task.js';
 import type { BotTransport, TransportEvents } from '../src/bot/transport.js';
 import type { Position } from '../src/core/types.js';
 import { CarePackageCoordinator } from '../src/events/care-package.js';
+
+test('Care Package test-server mode arms from announcement without Brooke schedule', () => {
+  const schedule={refresh:async()=>{},snapshot:()=>({source:'brookeafk.com' as const,sourceUrl:'https://brookeafk.com/',status:'OK' as const,events:[]}),eventsBetween:()=>[]};
+  const coordinator=new CarePackageCoordinator(schedule,60_000,180_000,2_000,6,3,true);
+  const started=coordinator.observeAnnouncement('caretest','MINOR EVENT! CARE PACKAGE in Test Area',5000);
+  assert.equal(started?.timestamp,5000);
+  assert.equal(started?.area,'Test Area');
+  const event=coordinator.observeChest('caretest',{x:8,y:65,z:0},6000);
+  assert.equal(event?.type,'care-package');
+  assert.deepEqual(event?.target,{x:8,y:65,z:0});
+  assert.equal(coordinator.trackingSnapshot(6000).instances[0]?.progressPhase,'CHEST_FOUND');
+});
 class ControlledTransport implements BotTransport {
   commands: string[] = []; closed = false; stopped = 0;
   navigation: (target: Position, signal: AbortSignal) => Promise<void> = async () => {};
