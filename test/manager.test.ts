@@ -342,6 +342,12 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   t.carePackageInteraction=async()=>{
     careInteractionAttempts++;
     if(careInteractionAttempts===1)throw new Error('Care Package out of range');
+    t.events.diagnostic?.('care package hologram',{status:'LOCKED',clicksRemaining:73});
+    assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.progressPhase,'CLICKING');
+    assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.clicksRemaining,73);
+    t.events.diagnostic?.('care package opened');
+    assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.progressPhase,'OPENED');
+    t.events.diagnostic?.('care package priority loot',{clicked:2,items:'Mystic Sword, Fresh Red Pants'});
   };
   t.navigation=(_target,signal)=>{
     if(predictionStarted)return Promise.resolve();
@@ -386,6 +392,8 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   assert.ok(t.navigations.filter(value=>value.x===chest.x&&value.y===chest.y&&value.z===chest.z).length>=2,
     'knockback outside reach should pathfind back to the chest before retrying');
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'CHEST_DETECTED');
+  assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.progressPhase,'GOT');
+  assert.deepEqual(f.manager.carePackageTrackingSnapshot()?.instances[0]?.gotItems,['Mystic Sword','Fresh Red Pants']);
   assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
   assert.equal(f.manager.performanceSnapshot().bots[0]?.pathFailed,0);
   assert.equal(f.manager.views()[0]?.state,'IN_PIT_IDLE');
