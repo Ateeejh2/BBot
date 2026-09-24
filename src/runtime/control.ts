@@ -119,14 +119,22 @@ export class ControlStore {
   }
   async load(): Promise<void> {
     this.server = { host: this.config.host, port: this.config.port, version: '1.8.9', revision: 0 };
-    try {
-      const raw: unknown = JSON.parse(await readFile(join(this.config.dataDir, 'server-connection.json'), 'utf8'));
-      const record = raw as Record<string, unknown>;
-      const valid = validateConnection({ host: record?.host, port: record?.port, version: record?.version });
-      const revision = (raw as { revision?: unknown }).revision;
-      if (!Number.isSafeInteger(revision) || (revision as number) < 0) throw Error('INVALID_RUNTIME_CONFIG');
-      this.server = { ...valid, revision: revision as number };
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw Error('INVALID_RUNTIME_CONFIG'); }
+    if (this.config.careTestServer) {
+      if (!['127.0.0.1','localhost'].includes(this.config.host) || this.config.port !== 25567) {
+        throw Error('INVALID_TEST_SERVER_TARGET');
+      }
+      // Test mode is a hard safety boundary: never restore a persisted production
+      // server destination over the explicitly configured local harness.
+    } else {
+      try {
+        const raw: unknown = JSON.parse(await readFile(join(this.config.dataDir, 'server-connection.json'), 'utf8'));
+        const record = raw as Record<string, unknown>;
+        const valid = validateConnection({ host: record?.host, port: record?.port, version: record?.version });
+        const revision = (raw as { revision?: unknown }).revision;
+        if (!Number.isSafeInteger(revision) || (revision as number) < 0) throw Error('INVALID_RUNTIME_CONFIG');
+        this.server = { ...valid, revision: revision as number };
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw Error('INVALID_RUNTIME_CONFIG'); }
+    }
     this.config.host = this.server.host; this.config.port = this.server.port;
     try {
       const raw: unknown = JSON.parse(await readFile(join(this.config.dataDir, 'accounts-runtime.json'), 'utf8'));
