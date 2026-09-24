@@ -39,6 +39,8 @@ caretest packets clear
 caretest knockback [strength]
 caretest autokb <remaining|off> [strength]
 caretest lootdelay <ticks>
+caretest blocker on
+caretest blocker off
 caretest vanish
 caretest stop
 ```
@@ -113,3 +115,24 @@ npm run test-server:restore
 ```
 
 This restores the `.env` saved by the first `test-server:use` invocation.
+
+
+### Player LOS blocker
+
+The local harness can spawn a packet-only 1.8.8 player NPC named `CareBlocker`.
+It follows the nearest real player and stays between that player's eye line and
+the Care Package chest. On the 1.8.9 client it is represented as a normal player
+entity, so BBot's `EntityPlayer` line-of-sight check can be exercised without a
+second Minecraft client.
+
+```text
+caretest blocker on
+caretest status
+caretest start 200
+caretest blocker off
+```
+
+With the blocker enabled, Dashboard Care Package telemetry should report
+`Chest LOS: Player Blocking` while the NPC intersects the eye-to-chest segment.
+Disabling it should return the telemetry to `Chest LOS: Clear`. The blocker is
+removed by `caretest blocker off` and by an explicit `caretest stop`.
