@@ -510,7 +510,14 @@ export class BotManager {
             b.activity=undefined;
           }
           if(this.carePackages&&b.instanceId){
-            if(name==='care package hologram'){
+            if(name==='care package telemetry'){
+              const clicksRemaining=typeof fields?.clicksRemaining==='number'&&Number.isSafeInteger(fields.clicksRemaining)
+                ?fields.clicksRemaining:undefined;
+              const clicksSent=typeof fields?.clicksSent==='number'&&Number.isSafeInteger(fields.clicksSent)
+                ?fields.clicksSent:undefined;
+              const losBlocked=typeof fields?.losBlocked==='boolean'?fields.losBlocked:undefined;
+              this.carePackages.markProgress(b.instanceId,now,'CLICKING',{clicksRemaining,clicksSent,losBlocked});
+            } else if(name==='care package hologram'){
               const clicksRemaining=typeof fields?.clicksRemaining==='number'&&Number.isSafeInteger(fields.clicksRemaining)
                 ?fields.clicksRemaining:undefined;
               this.carePackages.markProgress(b.instanceId,now,'CLICKING',{clicksRemaining});
