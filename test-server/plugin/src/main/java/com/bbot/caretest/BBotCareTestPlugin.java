@@ -3,13 +3,24 @@ package com.bbot.caretest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
+import com.mojang.authlib.GameProfile;
+import net.minecraft.server.v1_8_R3.EntityPlayer;
+import net.minecraft.server.v1_8_R3.MinecraftServer;
+import net.minecraft.server.v1_8_R3.PacketPlayOutEntityDestroy;
+import net.minecraft.server.v1_8_R3.PacketPlayOutEntityTeleport;
+import net.minecraft.server.v1_8_R3.PacketPlayOutNamedEntitySpawn;
+import net.minecraft.server.v1_8_R3.PacketPlayOutPlayerInfo;
+import net.minecraft.server.v1_8_R3.PlayerInteractManager;
+import net.minecraft.server.v1_8_R3.WorldServer;
 import net.minecraft.server.v1_8_R3.PacketPlayInArmAnimation;
 import net.minecraft.server.v1_8_R3.PacketPlayInBlockDig;
 import net.minecraft.server.v1_8_R3.PacketPlayInBlockPlace;
@@ -28,6 +39,8 @@ import org.bukkit.WorldType;
 import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.craftbukkit.v1_8_R3.CraftServer;
+import org.bukkit.craftbukkit.v1_8_R3.CraftWorld;
 import org.bukkit.craftbukkit.v1_8_R3.entity.CraftPlayer;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Player;
@@ -52,6 +65,8 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
     private static final int CHEST_Z = 0;
     private static final int PACKET_TRACE_LIMIT = 1200;
     private static final String PACKET_HANDLER_NAME = "bbot_care_trace";
+    private static final UUID BLOCKER_UUID = UUID.fromString("00000000-0000-4000-8000-00000000bb01");
+    private static final String BLOCKER_NAME = "CareBlocker";
 
     private World pitWorld;
     private Location chestLocation;
@@ -71,6 +86,10 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
     private volatile long packetTraceStartedNanos = System.nanoTime();
     private final Map<UUID, PacketTrace> packetTraces = new ConcurrentHashMap<UUID, PacketTrace>();
     private final Map<UUID, Integer> acceptedClicksByPlayer = new ConcurrentHashMap<UUID, Integer>();
+    private final Set<UUID> blockerViewers = new HashSet<UUID>();
+    private boolean blockerEnabled;
+    private EntityPlayer blockerNpc;
+    private int blockerTaskId = -1;
 
     @Override
     public void onEnable() {
@@ -92,6 +111,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        disableBlocker();
         for (Player player : Bukkit.getOnlinePlayers()) uninjectPacketTap(player);
         stopEvent(false);
     }
@@ -123,6 +143,10 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
                 @Override public void run() {
                     player.teleport(new Location(pitWorld, 0.5D, 65.0D, 0.5D, -90.0F, 0.0F));
                     player.setGameMode(GameMode.SURVIVAL);
+                    if (blockerEnabled) {
+                        updateBlockerPosition();
+                        showBlockerTo(player);
+                    }
                 }
             }, 2L);
             return true;
@@ -143,6 +167,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         if ("l".equals(name) || "lobby".equals(name)) {
             if (sender instanceof Player) {
                 Player player = (Player)sender;
+                hideBlockerFrom(player);
                 player.teleport(Bukkit.getWorlds().get(0).getSpawnLocation());
                 player.sendMessage(ChatColor.GRAY + "Returned to local test lobby.");
             }
@@ -174,6 +199,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
                 + " acceptedClicks=" + acceptedClicks
                 + " lootDelayTicks=" + lootDelayTicks
                 + " autoKbAt=" + autoKnockbackAt
+                + " blocker=" + blockerEnabled
                 + " packetTelemetry=" + packetTelemetryEnabled);
             List<UUID> reported = new ArrayList<UUID>();
             for (Map.Entry<UUID, PacketTrace> entry : packetTraces.entrySet()) {
@@ -189,6 +215,20 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         }
         if ("packets".equals(sub)) {
             handlePacketsCommand(sender, args);
+            return true;
+        }
+        if ("blocker".equals(sub)) {
+            if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
+                sender.sendMessage(ChatColor.RED + "Usage: /caretest blocker <on|off>");
+                return true;
+            }
+            if ("on".equalsIgnoreCase(args[1])) {
+                enableBlocker();
+                sender.sendMessage(ChatColor.GREEN + "Player LOS blocker enabled.");
+            } else {
+                disableBlocker();
+                sender.sendMessage(ChatColor.YELLOW + "Player LOS blocker disabled.");
+            }
             return true;
         }
         if ("vanish".equals(sub)) {
@@ -251,6 +291,8 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
             + ChatColor.GRAY + " - reproducible knockback");
         sender.sendMessage(ChatColor.AQUA + "/caretest lootdelay <ticks>"
             + ChatColor.GRAY + " - delay GUI slot population");
+        sender.sendMessage(ChatColor.AQUA + "/caretest blocker <on|off>"
+            + ChatColor.GRAY + " - place a Player entity between the bot and chest");
         sender.sendMessage(ChatColor.AQUA + "/caretest vanish"
             + ChatColor.GRAY + " - remove the chest mid-run");
         sender.sendMessage(ChatColor.AQUA + "/caretest stop"
@@ -294,6 +336,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         removeHologram();
         if (removeChest && chestLocation != null) {
             chestLocation.getBlock().setType(Material.AIR);
+            disableBlocker();
         }
     }
 
@@ -337,14 +380,135 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
     public void onJoin(final PlayerJoinEvent event) {
         Bukkit.getScheduler().runTaskLater(this, new Runnable() {
             @Override public void run() {
-                if (event.getPlayer().isOnline()) injectPacketTap(event.getPlayer());
+                if (!event.getPlayer().isOnline()) return;
+                injectPacketTap(event.getPlayer());
+                if (blockerEnabled && event.getPlayer().getWorld().equals(pitWorld)) {
+                    updateBlockerPosition();
+                    showBlockerTo(event.getPlayer());
+                }
             }
         }, 1L);
     }
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
+        blockerViewers.remove(event.getPlayer().getUniqueId());
         uninjectPacketTap(event.getPlayer());
+    }
+
+    private void enableBlocker() {
+        if (blockerEnabled) {
+            updateBlockerPosition();
+            return;
+        }
+        blockerEnabled = true;
+        ensureBlockerNpc();
+        updateBlockerPosition();
+        for (Player player : pitWorld.getPlayers()) showBlockerTo(player);
+        blockerTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
+            @Override public void run() {
+                if (!blockerEnabled) return;
+                updateBlockerPosition();
+            }
+        }, 2L, 2L);
+    }
+
+    private void disableBlocker() {
+        if (blockerTaskId >= 0) {
+            Bukkit.getScheduler().cancelTask(blockerTaskId);
+            blockerTaskId = -1;
+        }
+        if (blockerNpc != null) {
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                hideBlockerFrom(player);
+            }
+        }
+        blockerViewers.clear();
+        blockerNpc = null;
+        blockerEnabled = false;
+    }
+
+    private void ensureBlockerNpc() {
+        if (blockerNpc != null) return;
+        MinecraftServer server = ((CraftServer)Bukkit.getServer()).getServer();
+        WorldServer world = ((CraftWorld)pitWorld).getHandle();
+        blockerNpc = new EntityPlayer(
+            server,
+            world,
+            new GameProfile(BLOCKER_UUID, BLOCKER_NAME),
+            new PlayerInteractManager(world)
+        );
+    }
+
+    private Player nearestPitPlayerToChest() {
+        Player nearest = null;
+        double best = Double.POSITIVE_INFINITY;
+        Location center = chestLocation.clone().add(0.5D, 0.5D, 0.5D);
+        for (Player player : pitWorld.getPlayers()) {
+            if (!player.isOnline()) continue;
+            double distance = player.getLocation().distanceSquared(center);
+            if (distance < best) {
+                best = distance;
+                nearest = player;
+            }
+        }
+        return nearest;
+    }
+
+    private void updateBlockerPosition() {
+        if (!blockerEnabled) return;
+        ensureBlockerNpc();
+
+        Location center = chestLocation.clone().add(0.5D, 0.5D, 0.5D);
+        Player reference = nearestPitPlayerToChest();
+        Location eye = reference == null
+            ? new Location(pitWorld, 0.5D, 66.62D, 0.5D)
+            : reference.getEyeLocation();
+
+        double dx = eye.getX() - center.getX();
+        double dz = eye.getZ() - center.getZ();
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (horizontal < 0.001D) {
+            dx = -1.0D;
+            dz = 0.0D;
+            horizontal = 1.0D;
+        }
+
+        // Keep the fake player between the viewing player and chest, but never
+        // inside the chest block itself. Its normal player AABB then intersects
+        // BBot's eye-to-chest segment.
+        double offset = Math.max(0.45D, Math.min(0.90D, horizontal * 0.55D));
+        double x = center.getX() + dx / horizontal * offset;
+        double z = center.getZ() + dz / horizontal * offset;
+        float yaw = (float)Math.toDegrees(Math.atan2(-dx, dz));
+        blockerNpc.setLocation(x, CHEST_Y, z, yaw, 0.0F);
+
+        for (Player player : pitWorld.getPlayers()) {
+            if (!blockerViewers.contains(player.getUniqueId())) {
+                showBlockerTo(player);
+            } else {
+                ((CraftPlayer)player).getHandle().playerConnection
+                    .sendPacket(new PacketPlayOutEntityTeleport(blockerNpc));
+            }
+        }
+    }
+
+    private void showBlockerTo(Player player) {
+        if (!blockerEnabled || blockerNpc == null || !player.isOnline() || !player.getWorld().equals(pitWorld)) return;
+        if (blockerViewers.contains(player.getUniqueId())) return;
+        ((CraftPlayer)player).getHandle().playerConnection.sendPacket(
+            new PacketPlayOutPlayerInfo(PacketPlayOutPlayerInfo.EnumPlayerInfoAction.ADD_PLAYER, blockerNpc)
+        );
+        ((CraftPlayer)player).getHandle().playerConnection.sendPacket(new PacketPlayOutNamedEntitySpawn(blockerNpc));
+        blockerViewers.add(player.getUniqueId());
+    }
+
+    private void hideBlockerFrom(Player player) {
+        if (blockerNpc == null || !blockerViewers.remove(player.getUniqueId()) || !player.isOnline()) return;
+        ((CraftPlayer)player).getHandle().playerConnection.sendPacket(new PacketPlayOutEntityDestroy(blockerNpc.getId()));
+        ((CraftPlayer)player).getHandle().playerConnection.sendPacket(
+            new PacketPlayOutPlayerInfo(PacketPlayOutPlayerInfo.EnumPlayerInfoAction.REMOVE_PLAYER, blockerNpc)
+        );
     }
 
     private void injectPacketTap(final Player player) {
