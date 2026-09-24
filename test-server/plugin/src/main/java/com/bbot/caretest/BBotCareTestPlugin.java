@@ -335,6 +335,8 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
             getLogger().warning("Packet telemetry injection failed for " + player.getName() + ": " + error.getClass().getSimpleName());
             return;
         }
+        final UUID playerId = player.getUniqueId();
+        final String playerName = player.getName();
         channel.eventLoop().execute(new Runnable() {
             @Override public void run() {
                 try {
@@ -345,7 +347,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
                     ChannelDuplexHandler handler = new ChannelDuplexHandler() {
                         @Override
                         public void channelRead(ChannelHandlerContext context, Object message) throws Exception {
-                            recordInboundPacket(player, message);
+                            recordInboundPacket(playerId, playerName, message);
                             super.channelRead(context, message);
                         }
                     };
@@ -382,7 +384,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         });
     }
 
-    private void recordInboundPacket(Player player, Object message) {
+    private void recordInboundPacket(UUID playerId, String playerName, Object message) {
         if (!packetTelemetryEnabled || !active) return;
 
         String type = null;
@@ -407,10 +409,10 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
         }
         if (type == null) return;
 
-        PacketTrace trace = packetTraces.get(player.getUniqueId());
+        PacketTrace trace = packetTraces.get(playerId);
         if (trace == null) {
-            PacketTrace created = new PacketTrace(player.getName());
-            PacketTrace previous = packetTraces.putIfAbsent(player.getUniqueId(), created);
+            PacketTrace created = new PacketTrace(playerName);
+            PacketTrace previous = packetTraces.putIfAbsent(playerId, created);
             trace = previous == null ? created : previous;
         }
         long elapsedMs = Math.max(0L, (System.nanoTime() - packetTraceStartedNanos) / 1000000L);
