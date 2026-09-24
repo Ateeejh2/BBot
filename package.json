@@ -14,7 +14,11 @@
     "setup:viewer": "node scripts/setup-viewer.mjs",
     "viewer:tunnel": "node scripts/viewer-tunnel.mjs",
     "setup:web-control": "node scripts/setup-web-control.mjs",
-    "debug:pit-cache": "node scripts/compare-pit-cache.mjs"
+    "debug:pit-cache": "node scripts/compare-pit-cache.mjs",
+    "test-server:setup": "bash test-server/scripts/setup.sh",
+    "test-server:start": "bash test-server/scripts/start.sh",
+    "test-server:use": "node test-server/scripts/use.mjs",
+    "test-server:restore": "node test-server/scripts/restore.mjs"
   },
   "repository": {
     "type": "git",
