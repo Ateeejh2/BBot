@@ -9,7 +9,7 @@ interface TrackedInstance {
   timestamp:number; instanceId:string; state:CarePackageInstanceState;
   observations:Observation[]; startedAt?:number; area?:string; carrier?:Position; chest?:Position; endedAt?:number;
   progressPhase?:CarePackageProgressPhase; clicksRemaining?:number; clicksSent?:number; losBlocked?:boolean;
-  gotItems?:string[]; failureReason?:string; progressUpdatedAt?:number;
+  lastTransportClicksSent?:number; gotItems?:string[]; failureReason?:string; progressUpdatedAt?:number;
 }
 
 export interface CarePackageCarrierDetection { timestamp:number; instanceId:string; target:Position }
@@ -85,7 +85,7 @@ export class CarePackageCoordinator {
     if(tracked.startedAt===undefined||tracked.chest)return;
     tracked.chest={...position}; tracked.state='CHEST_DETECTED';
     tracked.progressPhase='CHEST_FOUND'; tracked.clicksRemaining=undefined; tracked.clicksSent=0; tracked.losBlocked=undefined;
-    tracked.gotItems=[]; tracked.failureReason=undefined; tracked.progressUpdatedAt=now;
+    tracked.lastTransportClicksSent=undefined; tracked.gotItems=[]; tracked.failureReason=undefined; tracked.progressUpdatedAt=now;
     return {
       id:`care-package:${timestamp}:${tracked.instanceId}`,
       instanceId:tracked.instanceId,
@@ -109,7 +109,11 @@ export class CarePackageCoordinator {
       tracked.clicksRemaining=detail.clicksRemaining;
     }
     if(detail?.clicksSent!==undefined&&Number.isSafeInteger(detail.clicksSent)&&detail.clicksSent>=0&&detail.clicksSent<=1000){
-      tracked.clicksSent=detail.clicksSent;
+      const raw=detail.clicksSent;
+      const previous=tracked.lastTransportClicksSent;
+      const delta=previous===undefined?raw:raw>=previous?raw-previous:raw;
+      tracked.clicksSent=(tracked.clicksSent??0)+delta;
+      tracked.lastTransportClicksSent=raw;
     }
     if(detail?.losBlocked!==undefined)tracked.losBlocked=detail.losBlocked;
     if(detail?.gotItems?.length){
