@@ -338,6 +338,11 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   f.tick(0);const t=f.connections[0]!;t.events.spawn();f.tick(1000);f.join(t,'mega-a');
   let finishLaunch!:()=>void;t.launcher=()=>new Promise<void>(resolve=>{finishLaunch=resolve;});
   let predictionStarted=false;
+  let careInteractionAttempts=0;
+  t.carePackageInteraction=async()=>{
+    careInteractionAttempts++;
+    if(careInteractionAttempts===1)throw new Error('Care Package out of range');
+  };
   t.navigation=(_target,signal)=>{
     if(predictionStarted)return Promise.resolve();
     predictionStarted=true;
@@ -375,8 +380,11 @@ test('Care Package launches, moves toward prediction, then corrects to the real 
   t.events.chestAppeared?.(chest);
   await delay(0);await delay(0);await delay(0);await delay(0);
   assert.deepEqual(t.navigations.at(-1),chest);
-  assert.deepEqual(t.carePackageInteractions.at(-1),chest,
-    'real Care Package should enter the Forge unlock/open interaction after path arrival');
+  assert.equal(t.carePackageInteractions.length,2,
+    'knockback outside reach should retry the real Care Package interaction');
+  assert.deepEqual(t.carePackageInteractions.at(-1),chest);
+  assert.ok(t.navigations.filter(value=>value.x===chest.x&&value.y===chest.y&&value.z===chest.z).length>=2,
+    'knockback outside reach should pathfind back to the chest before retrying');
   assert.equal(f.manager.carePackageTrackingSnapshot()?.instances[0]?.state,'CHEST_DETECTED');
   assert.equal(f.scheduler.jobs.get('care-package:1000:mega-a')?.state,'COMPLETED');
   assert.equal(f.manager.performanceSnapshot().bots[0]?.pathFailed,0);
