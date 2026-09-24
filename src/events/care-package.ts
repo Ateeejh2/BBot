@@ -8,7 +8,8 @@ interface Observation { at:number; position:Position }
 interface TrackedInstance {
   timestamp:number; instanceId:string; state:CarePackageInstanceState;
   observations:Observation[]; startedAt?:number; area?:string; carrier?:Position; chest?:Position; endedAt?:number;
-  progressPhase?:CarePackageProgressPhase; clicksRemaining?:number; gotItems?:string[]; failureReason?:string; progressUpdatedAt?:number;
+  progressPhase?:CarePackageProgressPhase; clicksRemaining?:number; clicksSent?:number; losBlocked?:boolean;
+  gotItems?:string[]; failureReason?:string; progressUpdatedAt?:number;
 }
 
 export interface CarePackageCarrierDetection { timestamp:number; instanceId:string; target:Position }
@@ -16,7 +17,8 @@ export interface CarePackageStartDetection { timestamp:number; instanceId:string
 export interface CarePackageTrackingSnapshot {
   timestamp?:number;
   instances:Array<{instanceId:string;state:CarePackageInstanceState;startedAt?:number;area?:string;target?:Position;
-    progressPhase?:CarePackageProgressPhase;clicksRemaining?:number;gotItems?:string[];failureReason?:string;progressUpdatedAt?:number}>;
+    progressPhase?:CarePackageProgressPhase;clicksRemaining?:number;clicksSent?:number;losBlocked?:boolean;
+    gotItems?:string[];failureReason?:string;progressUpdatedAt?:number}>;
 }
 
 export class CarePackageCoordinator {
@@ -37,7 +39,7 @@ export class CarePackageCoordinator {
     return { timestamp, instances:active
       .filter(v=>timestamp===undefined||v.timestamp===timestamp)
       .map(v=>({instanceId:v.instanceId,state:v.state,startedAt:v.startedAt,area:v.area,target:v.chest??v.carrier,
-        progressPhase:v.progressPhase,clicksRemaining:v.clicksRemaining,
+        progressPhase:v.progressPhase,clicksRemaining:v.clicksRemaining,clicksSent:v.clicksSent,losBlocked:v.losBlocked,
         gotItems:v.gotItems?[...v.gotItems]:undefined,failureReason:v.failureReason,progressUpdatedAt:v.progressUpdatedAt})) };
   }
 
@@ -82,7 +84,8 @@ export class CarePackageCoordinator {
     const tracked=this.get(timestamp,instanceId);
     if(tracked.startedAt===undefined||tracked.chest)return;
     tracked.chest={...position}; tracked.state='CHEST_DETECTED';
-    tracked.progressPhase='CHEST_FOUND'; tracked.clicksRemaining=undefined; tracked.gotItems=[]; tracked.failureReason=undefined; tracked.progressUpdatedAt=now;
+    tracked.progressPhase='CHEST_FOUND'; tracked.clicksRemaining=undefined; tracked.clicksSent=0; tracked.losBlocked=undefined;
+    tracked.gotItems=[]; tracked.failureReason=undefined; tracked.progressUpdatedAt=now;
     return {
       id:`care-package:${timestamp}:${tracked.instanceId}`,
       instanceId:tracked.instanceId,
@@ -94,7 +97,7 @@ export class CarePackageCoordinator {
   }
 
   markProgress(instanceId:string, now:number, phase:CarePackageProgressPhase, detail?:{
-    clicksRemaining?:number; gotItems?:string[]; failureReason?:string;
+    clicksRemaining?:number; clicksSent?:number; losBlocked?:boolean; gotItems?:string[]; failureReason?:string;
   }):void {
     const timestamp=this.activeTimestampForInstance(instanceId,now);
     if(timestamp===undefined)return;
@@ -105,6 +108,10 @@ export class CarePackageCoordinator {
     if(detail?.clicksRemaining!==undefined&&Number.isSafeInteger(detail.clicksRemaining)&&detail.clicksRemaining>=0&&detail.clicksRemaining<=200){
       tracked.clicksRemaining=detail.clicksRemaining;
     }
+    if(detail?.clicksSent!==undefined&&Number.isSafeInteger(detail.clicksSent)&&detail.clicksSent>=0&&detail.clicksSent<=1000){
+      tracked.clicksSent=detail.clicksSent;
+    }
+    if(detail?.losBlocked!==undefined)tracked.losBlocked=detail.losBlocked;
     if(detail?.gotItems?.length){
       const existing=new Set(tracked.gotItems??[]);
       for(const item of detail.gotItems){
