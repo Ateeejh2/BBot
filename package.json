@@ -18,7 +18,8 @@
     "test-server:setup": "bash test-server/scripts/setup.sh",
     "test-server:start": "bash test-server/scripts/start.sh",
     "test-server:use": "node test-server/scripts/use.mjs",
-    "test-server:restore": "node test-server/scripts/restore.mjs"
+    "test-server:restore": "node test-server/scripts/restore.mjs",
+    "test-server:install-vulcan": "bash test-server/scripts/install-vulcan.sh"
   },
   "repository": {
     "type": "git",
