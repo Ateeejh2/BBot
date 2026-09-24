@@ -2,18 +2,21 @@ import { instanceKey, type GameEvent, type Position } from '../core/types.js';
 import type { CarePackageSchedule } from './brooke.js';
 
 export type CarePackageInstanceState = 'ARMED' | 'STARTED' | 'CARRIER_DETECTED' | 'LAUNCHING' | 'DROPPED' | 'CHEST_DETECTED' | 'LAUNCH_FAILED' | 'ENDED';
+export type CarePackageProgressPhase = 'CHEST_FOUND' | 'PATHFINDING' | 'PATHFIND_DONE' | 'CLICKING' | 'OPENED' | 'GOT' | 'FAIL';
 
 interface Observation { at:number; position:Position }
 interface TrackedInstance {
   timestamp:number; instanceId:string; state:CarePackageInstanceState;
   observations:Observation[]; startedAt?:number; area?:string; carrier?:Position; chest?:Position; endedAt?:number;
+  progressPhase?:CarePackageProgressPhase; clicksRemaining?:number; gotItems?:string[]; failureReason?:string; progressUpdatedAt?:number;
 }
 
 export interface CarePackageCarrierDetection { timestamp:number; instanceId:string; target:Position }
 export interface CarePackageStartDetection { timestamp:number; instanceId:string; startedAt:number; area:string; target?:Position }
 export interface CarePackageTrackingSnapshot {
   timestamp?:number;
-  instances:Array<{instanceId:string;state:CarePackageInstanceState;startedAt?:number;area?:string;target?:Position}>;
+  instances:Array<{instanceId:string;state:CarePackageInstanceState;startedAt?:number;area?:string;target?:Position;
+    progressPhase?:CarePackageProgressPhase;clicksRemaining?:number;gotItems?:string[];failureReason?:string;progressUpdatedAt?:number}>;
 }
 
 export class CarePackageCoordinator {
@@ -25,12 +28,17 @@ export class CarePackageCoordinator {
   trackingSnapshot(now:number):CarePackageTrackingSnapshot {
     this.prune(now);
     const scheduled=this.activeTimestamp(now);
-    const active=[...this.tracked.values()].filter(v =>
-      v.endedAt===undefined && (v.startedAt!==undefined ? now<=v.startedAt+this.activeAfterMs : scheduled!==undefined&&v.timestamp===scheduled));
+    const active=[...this.tracked.values()].filter(v => {
+      const withinLifetime=v.startedAt!==undefined ? now<=v.startedAt+this.activeAfterMs : scheduled!==undefined&&v.timestamp===scheduled;
+      const terminal=v.progressPhase==='GOT'||v.progressPhase==='FAIL';
+      return withinLifetime && (v.endedAt===undefined || terminal);
+    });
     const timestamp=active.find(v=>v.startedAt!==undefined)?.timestamp??scheduled;
     return { timestamp, instances:active
       .filter(v=>timestamp===undefined||v.timestamp===timestamp)
-      .map(v=>({instanceId:v.instanceId,state:v.state,startedAt:v.startedAt,area:v.area,target:v.chest??v.carrier})) };
+      .map(v=>({instanceId:v.instanceId,state:v.state,startedAt:v.startedAt,area:v.area,target:v.chest??v.carrier,
+        progressPhase:v.progressPhase,clicksRemaining:v.clicksRemaining,
+        gotItems:v.gotItems?[...v.gotItems]:undefined,failureReason:v.failureReason,progressUpdatedAt:v.progressUpdatedAt})) };
   }
 
   observeAnnouncement(instanceId:string,text:string,now:number):CarePackageStartDetection|undefined {
@@ -74,6 +82,7 @@ export class CarePackageCoordinator {
     const tracked=this.get(timestamp,instanceId);
     if(tracked.startedAt===undefined||tracked.chest)return;
     tracked.chest={...position}; tracked.state='CHEST_DETECTED';
+    tracked.progressPhase='CHEST_FOUND'; tracked.clicksRemaining=undefined; tracked.gotItems=[]; tracked.failureReason=undefined; tracked.progressUpdatedAt=now;
     return {
       id:`care-package:${timestamp}:${tracked.instanceId}`,
       instanceId:tracked.instanceId,
@@ -82,6 +91,30 @@ export class CarePackageCoordinator {
       expiresAt:tracked.startedAt+this.activeAfterMs,
       metadata:{source:'brookeafk.com',scheduledAt:timestamp,startedAt:tracked.startedAt,area:tracked.area}
     };
+  }
+
+  markProgress(instanceId:string, now:number, phase:CarePackageProgressPhase, detail?:{
+    clicksRemaining?:number; gotItems?:string[]; failureReason?:string;
+  }):void {
+    const timestamp=this.activeTimestampForInstance(instanceId,now);
+    if(timestamp===undefined)return;
+    const tracked=this.get(timestamp,instanceId);
+    if(!tracked.chest)return;
+    tracked.progressPhase=phase;
+    tracked.progressUpdatedAt=now;
+    if(detail?.clicksRemaining!==undefined&&Number.isSafeInteger(detail.clicksRemaining)&&detail.clicksRemaining>=0&&detail.clicksRemaining<=200){
+      tracked.clicksRemaining=detail.clicksRemaining;
+    }
+    if(detail?.gotItems?.length){
+      const existing=new Set(tracked.gotItems??[]);
+      for(const item of detail.gotItems){
+        const clean=item.trim();
+        if(clean&&clean.length<=80)existing.add(clean);
+      }
+      tracked.gotItems=[...existing].slice(0,16);
+    }
+    if(detail?.failureReason!==undefined)tracked.failureReason=detail.failureReason.slice(0,160);
+    if(phase!=='FAIL')tracked.failureReason=undefined;
   }
 
   observeChestDisappeared(instanceId:string, position:Position, now:number):{timestamp:number;instanceId:string;eventId:string}|undefined {
