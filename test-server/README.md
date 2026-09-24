@@ -54,13 +54,24 @@ caretest status
 
 ## Vulcan
 
-Vulcan is not bundled or downloaded. If you have a licensed, compatible Vulcan jar, place it in:
+Vulcan itself is not committed to this repository. For the verified local copy of **Vulcan 2.9.7.22**, upload the jar into your Codespace, then install it with:
 
-```text
-test-server/runtime/plugins/
+```bash
+npm run test-server:install-vulcan -- /path/to/Vulcan.jar
 ```
 
-before `npm run test-server:start`. The server will load it like any other Bukkit/Spigot plugin. Use its normal logs/alerts only as an independent compatibility signal; this harness does not attempt to suppress or bypass anti-cheat checks.
+The installer verifies the expected Vulcan SHA-256, checks `plugin.yml`, then downloads and SHA-verifies the required **PacketEvents 2.14.0** Spigot plugin from its official GitHub release.
+
+This Vulcan 2.9.7.22 jar contains Java 21 bytecode. With Vulcan installed, `test-server:start` therefore uses `TEST_SERVER_JAVA_HOME` or the system Java and requires Java 21+. This does **not** change the Forge 1.8.9 requirement: Forge continues to use `JAVA8_HOME`.
+
+Example:
+
+```bash
+export TEST_SERVER_JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+npm run test-server:start
+```
+
+Use Vulcan's normal alerts/logs only as an independent compatibility signal; this harness does not attempt to suppress or bypass anti-cheat checks.
 
 ## Restore normal BBot server settings
 
