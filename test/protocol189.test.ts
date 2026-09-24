@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { loadConfig } from '../src/config/index.js';
 const require = createRequire(import.meta.url);
 test('offline dependency smoke: pinned 1.8.9 resolves protocol 47 and plugin exports', () => {
@@ -59,4 +60,15 @@ test('Pit death recap requires the whole normalized server line', () => {
   assert.equal(isDeathNotice('DEATH! by someone'), false);
   assert.equal(eligibleServerAnnouncementChannel('chat', 'player-uuid',
     isDeathNotice('DEATH! by [9] SuperRuzgar2341 VIEW RECAP')), false);
+});
+
+
+test('Care Package click press and release are split across client ticks', () => {
+  const source=readFileSync(
+    new URL('../poc/headless-forge-1.8.9/src/main/java/com/bbot/poc/BBotHeadlessPoc.java',import.meta.url),
+    'utf8'
+  );
+  assert.match(source,/if \(carePackageClickPressed\) \{[\s\S]*?releaseCarePackageClick\(\);[\s\S]*?return;/);
+  assert.match(source,/mc\.thePlayer\.swingItem\(\);[\s\S]*?mc\.playerController\.clickBlock\(carePackageTarget, EnumFacing\.UP\)/);
+  assert.doesNotMatch(source,/clickBlock\(carePackageTarget, EnumFacing\.UP\);\s*mc\.playerController\.resetBlockRemoving\(\);/);
 });
