@@ -34,6 +34,8 @@ The server sends the same Care Package announcement format BBot watches, waits o
 ```text
 caretest start [clicks]
 caretest status
+caretest packets [player] [limit]
+caretest packets clear
 caretest knockback [strength]
 caretest autokb <remaining|off> [strength]
 caretest lootdelay <ticks>
@@ -51,6 +53,36 @@ caretest status
 ```
 
 `status` reports **acceptedClicks** from the server plugin. That value is useful beside Dashboard `Clicks Sent`, but it is a local test-server measurement, not a Hypixel/Watchdog signal.
+
+### Packet telemetry
+
+The CareTest plugin also taps the Spigot 1.8.8 Netty pipeline directly. During an active Care Package it records inbound:
+
+- `ARM_ANIMATION`
+- `BLOCK_DIG` including dig action, block position and face
+- `BLOCK_PLACE`
+- `FLYING` / position-look packet classes
+- `WINDOW_CLICK`
+- `CLOSE_WINDOW`
+
+`caretest status` shows the per-player packet counters beside server-accepted Care Package clicks. `caretest packets` dumps the most recent 40 packet records for the only/current player; an explicit player and limit can also be supplied.
+
+```text
+caretest status
+caretest packets
+caretest packets Ruth0102 80
+caretest packets clear
+```
+
+Example trace shape:
+
+```text
+#41 +2137ms ARM_ANIMATION
+#42 +2138ms BLOCK_DIG START_DESTROY_BLOCK @ 8,65,0 face=UP
+#43 +2186ms FLYING PacketPlayInPositionLook
+```
+
+This telemetry is for comparing the packets the server actually receives with BBot's `Clicks Sent` and the harness's `acceptedClicks`. It does not interpret or reproduce Vulcan's detection rules.
 
 ## Vulcan
 
