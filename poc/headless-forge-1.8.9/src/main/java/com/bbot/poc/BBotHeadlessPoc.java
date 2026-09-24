@@ -123,6 +123,7 @@ public final class BBotHeadlessPoc {
     private int carePackageLootEmptyTicks;
     private boolean carePackageLootSawContents;
     private boolean carePackageOpenedReported;
+    private boolean carePackageClickPressed;
     private int carePackageClicksSent;
     private int carePackageLastTelemetryRemaining = Integer.MIN_VALUE;
     private boolean carePackageLastTelemetryLosBlocked;
@@ -564,6 +565,7 @@ public final class BBotHeadlessPoc {
         carePackageLootEmptyTicks = 0;
         carePackageLootSawContents = false;
         carePackageOpenedReported = false;
+        carePackageClickPressed = false;
         carePackageClicksSent = 0;
         carePackageLastTelemetryRemaining = Integer.MIN_VALUE;
         carePackageLastTelemetryLosBlocked = false;
@@ -573,6 +575,7 @@ public final class BBotHeadlessPoc {
     }
 
     private void cancelCarePackageInteraction() {
+        releaseCarePackageClick();
         carePackageRequestId = null;
         carePackageTarget = null;
         carePackageInteractionTicks = 0;
@@ -582,10 +585,21 @@ public final class BBotHeadlessPoc {
         carePackageLootEmptyTicks = 0;
         carePackageLootSawContents = false;
         carePackageOpenedReported = false;
+        carePackageClickPressed = false;
         carePackageClicksSent = 0;
         carePackageLastTelemetryRemaining = Integer.MIN_VALUE;
         carePackageLastTelemetryLosBlocked = false;
         carePackageTelemetryReported = false;
+    }
+
+    private void releaseCarePackageClick() {
+        if (!carePackageClickPressed) {
+            return;
+        }
+        carePackageClickPressed = false;
+        if (mc.playerController != null) {
+            mc.playerController.resetBlockRemoving();
+        }
     }
 
     private void tickCarePackageInteraction() {
@@ -593,9 +607,21 @@ public final class BBotHeadlessPoc {
             return;
         }
         if (mc.thePlayer == null || mc.theWorld == null || mc.playerController == null) {
+            carePackageClickPressed = false;
             finishCarePackageInteraction(false, "WORLD_UNAVAILABLE");
             return;
         }
+
+        // Match the vanilla 1.8.9 mouse lifecycle: clickMouse() starts the block
+        // interaction on the press, while resetBlockRemoving() belongs to the
+        // later release path. Never START and ABORT the same click in one tick.
+        if (carePackageClickPressed) {
+            releaseCarePackageClick();
+            if (!(mc.currentScreen instanceof GuiContainer)) {
+                return;
+            }
+        }
+
         if (mc.currentScreen instanceof GuiContainer) {
             if (!carePackageOpenedReported) {
                 carePackageOpenedReported = true;
@@ -612,7 +638,9 @@ public final class BBotHeadlessPoc {
             finishCarePackageInteraction(false, "OUT_OF_RANGE");
             return;
         }
-        if (++carePackageInteractionTicks > 400) {
+        // Press/release uses two ticks per click. 600 ticks leaves enough room
+        // for 200 unlock presses plus the OPEN click without weakening reach checks.
+        if (++carePackageInteractionTicks > 600) {
             finishCarePackageInteraction(false, "UNLOCK_TIMEOUT");
             return;
         }
@@ -625,12 +653,13 @@ public final class BBotHeadlessPoc {
         faceCarePackageTarget(carePackageTarget);
         boolean losBlockedByPlayer = isCarePackageLineBlockedByPlayer(carePackageTarget);
 
-        // One normal client-side block click per client tick. Count what BBot
-        // actually sends; this does not claim the server accepted the click.
+        // Start one vanilla-style left-click press. The next client tick releases
+        // it via resetBlockRemoving(), instead of emitting START+ABORT together.
         mc.thePlayer.swingItem();
-        mc.playerController.clickBlock(carePackageTarget, EnumFacing.UP);
-        mc.playerController.resetBlockRemoving();
-        carePackageClicksSent++;
+        if (mc.playerController.clickBlock(carePackageTarget, EnumFacing.UP)) {
+            carePackageClickPressed = true;
+            carePackageClicksSent++;
+        }
         reportCarePackageTelemetry(status, losBlockedByPlayer);
     }
 
