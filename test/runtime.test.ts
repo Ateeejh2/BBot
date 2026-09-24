@@ -456,3 +456,32 @@ test('Minecraft access token resolves MCID and UUID without client token', async
   });
   assert.equal(credential.clientToken,undefined);
 });
+
+
+test('Care test mode ignores persisted production server destination', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-care-server-target-'));
+  try {
+    await writeFile(join(dir,'server-connection.json'),JSON.stringify({
+      host:'play.example.com',port:25565,version:'1.8.9',revision:9
+    }));
+    const config=loadConfig({MODE:'live',API_ENABLED:'true',API_ORIGIN:'http://localhost:5173',
+      ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir,SERVER_HOST:'127.0.0.1',SERVER_PORT:'25567',CARE_TEST_SERVER:'true'});
+    const controls=new ControlStore(config,async()=>{});
+    await controls.load();
+    assert.deepEqual(controls.getServer(),{host:'127.0.0.1',port:25567,version:'1.8.9',revision:0});
+    await assert.rejects(
+      controls.saveServer({host:'play.example.com',port:25565,version:'1.8.9'}),
+      /INVALID_TEST_SERVER_TARGET/
+    );
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test('Care test mode rejects a non-local configured target', async () => {
+  const dir=await mkdtemp(join(process.cwd(),'.test-care-server-target-'));
+  try {
+    const config=loadConfig({MODE:'live',API_ENABLED:'true',API_ORIGIN:'http://localhost:5173',
+      ACCOUNTS_FILE:join(dir,'missing.json'),DATA_DIR:dir,SERVER_HOST:'play.example.com',SERVER_PORT:'25565',CARE_TEST_SERVER:'true'});
+    const controls=new ControlStore(config,async()=>{});
+    await assert.rejects(controls.load(),/INVALID_TEST_SERVER_TARGET/);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
