@@ -359,7 +359,7 @@ public final class BBotCareTestPlugin extends JavaPlugin implements Listener {
                         channel.pipeline().addLast(PACKET_HANDLER_NAME, handler);
                     }
                 } catch (Throwable error) {
-                    getLogger().warning("Packet telemetry pipeline setup failed for " + player.getName()
+                    getLogger().warning("Packet telemetry pipeline setup failed for " + playerName
                         + ": " + error.getClass().getSimpleName());
                 }
             }
