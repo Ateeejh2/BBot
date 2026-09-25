@@ -619,7 +619,10 @@ export function createForgeTransport(config: Config, index: number, events: Tran
         const candidate = parseInstance(raw);
         const locrawInstance = parseLocrawPitInstance(raw);
         const eligible = eligibleTransferChannel(channel, null, config.transferMessageChannel, candidate !== undefined);
-        const locrawEligible = eligibleServerAnnouncementChannel(channel, null, locrawInstance !== undefined);
+        // /locraw is strict JSON parsed as The Pit above. Legacy 1.8.9/Bungee
+        // paths can classify the same response differently after a reconnect,
+        // so do not discard an otherwise verified locraw based on chat channel.
+        const locrawEligible = locrawInstance !== undefined;
         const careAnnouncement = parseCarePackageAnnouncement(raw);
         const careEligible = eligibleServerAnnouncementChannel(channel, null, careAnnouncement !== undefined);
         const limboEligible = eligibleServerAnnouncementChannel(channel, null, isLimboNotice(raw));
