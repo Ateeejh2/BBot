@@ -43,6 +43,14 @@ class ForgeLifecycleTransport implements BotTransport {
     this.events.spawn();
   }
 
+  kickNow(reason = 'Test kick'): void {
+    this.events.kicked?.(reason, true);
+  }
+
+  serverDropNow(): void {
+    this.events.serverDisconnected?.();
+  }
+
   chat(command: string): void {
     if(command==='/locraw'){
       this.events.message('{"server":"mega-regression","gametype":"PIT","mode":"PIT","map":"The Pit"}');
@@ -62,7 +70,7 @@ class ForgeLifecycleTransport implements BotTransport {
   close(): void { this.closeCalls++; }
 }
 
-function createForgeManager() {
+function createForgeManager(overrides: Record<string, string> = {}) {
   let now = 1_000;
   let factoryCalls = 0;
   let transport: ForgeLifecycleTransport | undefined;
@@ -74,7 +82,8 @@ function createForgeManager() {
     API_ORIGIN: 'http://localhost:5173',
     SERVER_HOST: 'play.example.test',
     SERVER_PORT: '25565',
-    CONNECT_TIMEOUT_MS: '10000'
+    CONNECT_TIMEOUT_MS: '10000',
+    ...overrides
   });
   const manager = new BotManager(
     config,
@@ -248,6 +257,88 @@ test('Forge reconnect failure returns to DISCONNECTED without destroying the ret
     assert.equal(manager.views()[0]?.state, 'CONNECTING');
     assert.equal(transport.connectCalls, 3);
     assert.equal(fixture.factoryCalls, 1);
+  } finally {
+    manager.stop();
+  }
+});
+
+
+test('Forge kick automatically reconnects the retained client and restarts Pit joining from a fresh session', () => {
+  const fixture = createForgeManager({
+    JOIN_MAX_ATTEMPTS: '1',
+    RECONNECT_BASE_MS: '1000',
+    RECONNECT_MAX_MS: '1000',
+    RECONNECT_JITTER_PERCENT: '0'
+  });
+  const { manager } = fixture;
+  try {
+    manager.startServer('bot-1', 'play.example.test', 25565);
+    const transport = fixture.transport;
+    assert.ok(transport);
+    transport.spawnNow();
+
+    // First normal startup consumes the only configured Pit join attempt.
+    fixture.setNow(6_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state, 'IN_PIT_IDLE');
+    assert.equal(manager.views()[0]?.instanceId, 'mega-regression');
+    assert.equal(transport.connectCalls, 1);
+
+    // A regular kick must keep the Forge worker alive and queue a server reconnect.
+    fixture.setNow(7_000);
+    transport.kickNow('Internal Exception: connection reset');
+    assert.equal(manager.views()[0]?.state, 'DISCONNECTED');
+    assert.equal(manager.views()[0]?.instanceId, undefined);
+    assert.equal(transport.closeCalls, 0);
+    assert.equal(manager.views()[0]?.startQueued, true);
+
+    fixture.setNow(7_999);
+    manager.tick();
+    assert.equal(transport.connectCalls, 1);
+    fixture.setNow(8_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state, 'CONNECTING');
+    assert.equal(transport.connectCalls, 2);
+    assert.equal(fixture.transport, transport, 'kick reconnect must reuse the same Forge client');
+
+    // Reconnect is a clean startup: spawn -> lobby settle -> /play pit.
+    transport.spawnNow();
+    assert.equal(manager.views()[0]?.state, 'LOBBY');
+    fixture.setNow(12_999);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state, 'LOBBY');
+    fixture.setNow(13_000);
+    manager.tick();
+    assert.equal(manager.views()[0]?.state, 'IN_PIT_IDLE');
+    assert.equal(manager.views()[0]?.instanceId, 'mega-regression',
+      'old join attempt budget must not poison the new server session');
+  } finally {
+    manager.stop();
+  }
+});
+
+test('Forge ban stays paused instead of entering the automatic kick reconnect loop', () => {
+  const fixture = createForgeManager({
+    RECONNECT_BASE_MS: '1000',
+    RECONNECT_MAX_MS: '1000',
+    RECONNECT_JITTER_PERCENT: '0'
+  });
+  const { manager } = fixture;
+  try {
+    manager.startServer('bot-1', 'play.example.test', 25565);
+    const transport = fixture.transport;
+    assert.ok(transport);
+    transport.spawnNow();
+
+    fixture.setNow(2_000);
+    transport.kickNow('You are permanently banned from this server!');
+    assert.equal(manager.views()[0]?.state, 'DISCONNECTED');
+    assert.equal(manager.views()[0]?.startQueued, false);
+
+    fixture.setNow(20_000);
+    manager.tick();
+    assert.equal(transport.connectCalls, 1);
+    assert.equal(manager.views()[0]?.moderation?.kind, 'BAN');
   } finally {
     manager.stop();
   }
