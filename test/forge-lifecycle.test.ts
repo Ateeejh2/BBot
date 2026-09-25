@@ -287,6 +287,9 @@ test('Forge kick automatically reconnects the retained client and restarts Pit j
     // A regular kick must keep the Forge worker alive and queue a server reconnect.
     fixture.setNow(7_000);
     transport.kickNow('Internal Exception: connection reset');
+    // Rejoin also covers the real failure mode where the transfer notice is
+    // absent and the fresh session must recover the Pit instance via /locraw.
+    transport.omitTransferNotice = true;
     assert.equal(manager.views()[0]?.state, 'DISCONNECTED');
     assert.equal(manager.views()[0]?.instanceId, undefined);
     assert.equal(transport.closeCalls, 0);
