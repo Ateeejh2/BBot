@@ -106,6 +106,25 @@ export function shouldJumpTowardWaypoint(
   return horizontal <= 1.6 && targetY > state.y + 0.45;
 }
 
+export function updateCollisionWindow(
+  collisionSince: number | undefined,
+  lastCollisionAt: number | undefined,
+  now: number,
+  collidedH: boolean,
+  graceMs = 750
+): { collisionSince: number | undefined; lastCollisionAt: number | undefined } {
+  if (collidedH) {
+    return { collisionSince: collisionSince ?? now, lastCollisionAt: now };
+  }
+  // A normal jump briefly clears collidedHorizontally while the player is
+  // airborne. Keep the collision episode alive through that short gap so a
+  // solid wall cannot reset the detector every jump and cause endless hopping.
+  if (lastCollisionAt !== undefined && now - lastCollisionAt <= graceMs) {
+    return { collisionSince, lastCollisionAt };
+  }
+  return { collisionSince: undefined, lastCollisionAt: undefined };
+}
+
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
   return new Promise<void>((resolve, reject) => {
@@ -772,6 +791,7 @@ export function createForgeTransport(config: Config, index: number, events: Tran
     let bestDistance = Number.POSITIVE_INFINITY;
     let improvedAt = started;
     let collisionSince: number | undefined;
+    let lastCollisionAt: number | undefined;
 
     try {
       while (true) {
@@ -795,13 +815,15 @@ export function createForgeTransport(config: Config, index: number, events: Tran
           improvedAt = Date.now();
         }
 
-        if (state.collidedH) collisionSince ??= Date.now();
-        else collisionSince = undefined;
+        const movementNow = Date.now();
+        ({ collisionSince, lastCollisionAt } = updateCollisionWindow(
+          collisionSince, lastCollisionAt, movementNow, state.collidedH
+        ));
 
-        if (collisionSince !== undefined && Date.now() - collisionSince > 1500) {
+        if (collisionSince !== undefined && movementNow - collisionSince > 1500) {
           throw new Error('Control walk collision');
         }
-        if (Date.now() - improvedAt > 3000) throw new Error('Control walk stuck');
+        if (movementNow - improvedAt > 3000) throw new Error('Control walk stuck');
 
         const yaw = yawToward({ x: state.x, y: state.y, z: state.z }, target);
         const jump = shouldJumpTowardWaypoint(state, target.y, horizontal);
