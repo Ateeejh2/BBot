@@ -32,7 +32,7 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     headers: { Origin: 'http://localhost:5173', ...(init.headers as Record<string,string> ?? {}) } });
   try {
     assert.equal((await fetch(base + '/api/v1/status', { headers: { Origin: 'http://evil.test' } })).status, 403);
-    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; carePackages:{source:string;status:string;events:Array<{timestamp:number}>}; performance:{runtime:{cpuPercent:number;rssMb:number;eventLoopP99Ms:number};pathfinding:{active:number;queued:number;concurrency:number}}; movementDebug:boolean; viewer:unknown };
+    const status = await (await request('/api/v1/status')).json() as { bots: Array<{state:string}>; jobs:unknown[]; carePackages:{source:string;status:string;events:Array<{timestamp:number}>}; performance:{runtime:{cpuPercent:number;rssMb:number;eventLoopP99Ms:number};pathfinding:{active:number;queued:number;concurrency:number}}; movementDebug:boolean };
     assert.equal(status.bots[0]?.state, 'DISCONNECTED');
     assert.deepEqual(status.jobs, []);
     assert.equal(status.carePackages.source,'brookeafk.com');
@@ -43,7 +43,7 @@ test('management API enforces origin, state and input; WS sends safe snapshots',
     assert.equal(status.performance.pathfinding.active,0);
     assert.equal(status.performance.pathfinding.queued,0);
     assert.equal(status.performance.pathfinding.concurrency,1);
-    assert.equal(status.viewer, null);
+    assert.equal(Object.prototype.hasOwnProperty.call(status, 'viewer'), false);
     assert.equal(status.movementDebug,false);
     const debugMode=(enabled:unknown)=>request('/api/v1/settings/movement-debug',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
     assert.equal((await debugMode('yes')).status,400);
