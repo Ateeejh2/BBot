@@ -15,6 +15,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.minecraft.client.Minecraft;
@@ -36,6 +37,7 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.passive.EntityChicken;
 import net.minecraft.init.Blocks;
 import net.minecraft.network.NetworkManager;
+import net.minecraft.network.play.server.S02PacketChat;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.network.play.server.S22PacketMultiBlockChange;
 import net.minecraft.network.play.server.S23PacketBlockChange;
@@ -80,6 +82,7 @@ public final class BBotHeadlessPoc {
     private static final int DEFAULT_TRACE_EVERY_TICKS = 20;
     private static final int DEFAULT_BRIDGE_PORT = 3010;
     private static final int DEFAULT_BRIDGE_STATE_EVERY_TICKS = 2;
+    private static final long DIAG_STALL_THRESHOLD_MS = 150L;
 
     private enum Phase {
         WAITING_FOR_WORLD,
@@ -114,6 +117,9 @@ public final class BBotHeadlessPoc {
     private Object lastDisconnectScreen;
     private LocalBridgeServer bridge;
     private final Set<BlockPos> observedChests = new HashSet<BlockPos>();
+    private final ConcurrentLinkedQueue<Long> inboundPacketArrivals = new ConcurrentLinkedQueue<Long>();
+    private final ConcurrentLinkedQueue<Long> chatPacketArrivals = new ConcurrentLinkedQueue<Long>();
+    private long lastClientTickStartNanos;
     private String carePackageRequestId;
     private BlockPos carePackageTarget;
     private int carePackageInteractionTicks;
@@ -242,11 +248,13 @@ public final class BBotHeadlessPoc {
 
     @SubscribeEvent
     public void onClientConnected(FMLNetworkEvent.ClientConnectedToServerEvent event) {
+        resetNetworkDiagnostics();
         installInboundPositionTrace(event.manager);
     }
 
     @SubscribeEvent
     public void onClientDisconnected(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
+        resetNetworkDiagnostics();
         String reason = null;
         try {
             if (event.manager != null && event.manager.getExitMessage() != null) {
@@ -269,6 +277,19 @@ public final class BBotHeadlessPoc {
 
     @SubscribeEvent
     public void onChatReceived(ClientChatReceivedEvent event) {
+        Long packetArrival = chatPacketArrivals.poll();
+        if (packetArrival != null) {
+            long delayMs = nanosToMillis(System.nanoTime() - packetArrival.longValue());
+            if (delayMs >= DIAG_STALL_THRESHOLD_MS) {
+                LOG.warn(
+                    "[BBotDiag] chat-process-delay={}ms eventType={} pendingChat={}",
+                    delayMs,
+                    event.type,
+                    chatPacketArrivals.size()
+                );
+            }
+        }
+
         if (bridge == null || event.message == null) {
             return;
         }
@@ -298,6 +319,7 @@ public final class BBotHeadlessPoc {
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.START) {
+            traceClientTickDiagnostics();
             // Vanilla 1.8.9 processes mouse input before the player/world update
             // that emits C03 movement packets. Keep Care Package interaction in
             // the same tick phase instead of sending it after movement at END.
@@ -1359,6 +1381,48 @@ public final class BBotHeadlessPoc {
         bridge.emit(state);
     }
 
+    private void resetNetworkDiagnostics() {
+        inboundPacketArrivals.clear();
+        chatPacketArrivals.clear();
+        lastClientTickStartNanos = 0L;
+    }
+
+    private void traceClientTickDiagnostics() {
+        long now = System.nanoTime();
+        long gapMs = lastClientTickStartNanos == 0L
+            ? 0L
+            : nanosToMillis(now - lastClientTickStartNanos);
+        lastClientTickStartNanos = now;
+
+        int inboundCount = 0;
+        long oldestArrival = 0L;
+        Long arrival;
+        while ((arrival = inboundPacketArrivals.poll()) != null) {
+            if (oldestArrival == 0L) {
+                oldestArrival = arrival.longValue();
+            }
+            inboundCount++;
+        }
+
+        long oldestInboundAgeMs = oldestArrival == 0L
+            ? 0L
+            : nanosToMillis(now - oldestArrival);
+
+        if (gapMs >= DIAG_STALL_THRESHOLD_MS || oldestInboundAgeMs >= DIAG_STALL_THRESHOLD_MS) {
+            LOG.warn(
+                "[BBotDiag] client-tick-stall gap={}ms inboundSinceLastTick={} oldestInboundAge={}ms pendingChat={}",
+                gapMs,
+                inboundCount,
+                oldestInboundAgeMs,
+                chatPacketArrivals.size()
+            );
+        }
+    }
+
+    private static long nanosToMillis(long nanos) {
+        return nanos <= 0L ? 0L : nanos / 1000000L;
+    }
+
     private void installInboundPositionTrace(final NetworkManager manager) {
         try {
             final Channel channel = findChannel(manager);
@@ -1375,6 +1439,13 @@ public final class BBotHeadlessPoc {
             channel.pipeline().addBefore("packet_handler", handlerName, new ChannelDuplexHandler() {
                 @Override
                 public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                    long startedNanos = System.nanoTime();
+                    inboundPacketArrivals.offer(Long.valueOf(startedNanos));
+                    if (msg instanceof S02PacketChat) {
+                        chatPacketArrivals.offer(Long.valueOf(startedNanos));
+                    }
+
+                    try {
                     if (msg instanceof S23PacketBlockChange) {
                         S23PacketBlockChange packet = (S23PacketBlockChange) msg;
                         traceBlockChange(packet.getBlockPosition(), packet.getBlockState());
@@ -1406,6 +1477,17 @@ public final class BBotHeadlessPoc {
                     }
 
                     super.channelRead(ctx, msg);
+                    } finally {
+                        long elapsedMs = nanosToMillis(System.nanoTime() - startedNanos);
+                        if (elapsedMs >= DIAG_STALL_THRESHOLD_MS) {
+                            LOG.warn(
+                                "[BBotDiag] netty-channel-read-stall={}ms packet={} thread={}",
+                                elapsedMs,
+                                msg == null ? "null" : msg.getClass().getSimpleName(),
+                                Thread.currentThread().getName()
+                            );
+                        }
+                    }
                 }
             });
 
