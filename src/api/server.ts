@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { BotManager } from '../bot/manager.js';
 import { validEvent, type GameEvent, type Job } from '../core/types.js';
@@ -12,19 +10,6 @@ import { RuntimePerformanceMonitor } from '../runtime/performance.js';
 import { NetworkIdentityMonitor } from '../runtime/network-identity.js';
 import type { CarePackageSchedule } from '../events/brooke.js';
 import type { ForgeWorkerSupervisor } from '../forge/worker-supervisor.js';
-
-function runtimeViewerUrl(config: Config): string | undefined {
-  try {
-    const raw = JSON.parse(readFileSync(join(config.dataDir, 'viewer-public-url.json'), 'utf8')) as { url?: unknown };
-    if (typeof raw.url !== 'string') return undefined;
-    const url = new URL(raw.url);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.port || url.pathname !== '/') return undefined;
-    if (!/^[a-z0-9-]+\.trycloudflare\.com$/i.test(url.hostname)) return undefined;
-    return url.origin;
-  } catch {
-    return undefined;
-  }
-}
 
 function publicJob(job: Job, maxAttempts: number) {
   return { id: job.id, eventType: job.event.type, instanceId: job.event.instanceId, state: job.state, botId: job.botId,
@@ -62,7 +47,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
   const logs: Array<{ id: number; at: number; level: string; message: string; botId?: string; instanceId?: string; kickReason?: string; detail?: string }> = [];
   let sequence = 0;
   const unsubscribe = logger.subscribe((level, message, fields) => {
-    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package event started|care package launch started|care package launch completed|care package launch failed|care package waiting for chest|care package chest detected|care package chest path started|care package chest handoff failed|care package preparation expired|care package knocked out of reach; returning|care package reach restored|care package test started|care package test chest generated|care package test chest path started|care package test failed|care package hologram|care package opened|care package interaction completed|care package interaction failed|care package priority loot|launch pad test started|launch pad test completed|launch pad test failed|viewer start requested|viewer started|viewer start failed|movement debug waiting for position settle|movement debug path started|movement debug path completed|movement debug path failed|control path planning failed|control walk collision|launch pad selected|pit path planned|pit path replan requested|pit navigation prewarm started|pit navigation prewarm completed|pit navigation prewarm failed|server position correction|movement packet after correction|velocity packet after correction|physics tick after correction)$/.test(message)) return;
+    if (!fields.botId || !/^(state changed|bot kicked|instance confirmed after transfer signals|join timed out; no confirmed instance|membership lost; recovering|join attempt budget exhausted; inspect and restart after diagnosis|transport error \(details withheld\)|job returned or failed|care package event started|care package launch started|care package launch completed|care package launch failed|care package waiting for chest|care package chest detected|care package chest path started|care package chest handoff failed|care package preparation expired|care package knocked out of reach; returning|care package reach restored|care package test started|care package test chest generated|care package test chest path started|care package test failed|care package hologram|care package opened|care package interaction completed|care package interaction failed|care package priority loot|launch pad test started|launch pad test completed|launch pad test failed|movement debug waiting for position settle|movement debug path started|movement debug path completed|movement debug path failed|control path planning failed|control walk collision|launch pad selected|pit path planned|pit path replan requested|pit navigation prewarm started|pit navigation prewarm completed|pit navigation prewarm failed|server position correction|movement packet after correction|velocity packet after correction|physics tick after correction)$/.test(message)) return;
     logs.push({ id: ++sequence, at: Date.now(), level: level.toUpperCase(), message,
       botId: fields.botId, instanceId: typeof fields.instance === 'string' ? fields.instance : undefined,
       kickReason: message === 'bot kicked' ? safeKickReason(fields.kickReason) : undefined,
@@ -110,7 +95,6 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
     broadcast();
   });
   const snapshot = () => {
-    const viewerUrl = runtimeViewerUrl(config) ?? config.viewer.publicUrl;
     return { version: 1, transport: config.transport, forgeWorkers: forgeWorkers?.snapshot() ?? [], bots: manager.views(),
       instances: manager.registry.snapshot().map(r => ({ id: r.id, status: r.status, firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
       jobs: manager.scheduler.snapshot().map(job => publicJob(job, manager.scheduler.attemptLimit)),
@@ -118,8 +102,7 @@ export function createManagementApi(manager: BotManager, config: Config, logger:
       networkIdentity: networkIdentity?.snapshot(),
       carePackages: carePackages?.snapshot(),
       carePackageTracking: manager.carePackageTrackingSnapshot(), movementDebug: manager.movementDebugEnabled(),
-      logs: [...logs], chatLogs: manager.chatDebugSnapshot(), serverConnection: controls?.getServer(), accounts: controls?.listAccounts(), viewer: config.viewer.enabled && viewerUrl
-        ? { botId: config.viewer.botId, url: viewerUrl } : null };
+      logs: [...logs], chatLogs: manager.chatDebugSnapshot(), serverConnection: controls?.getServer(), accounts: controls?.listAccounts() };
   };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   let previous = '';
