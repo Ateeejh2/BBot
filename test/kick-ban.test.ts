@@ -33,6 +33,14 @@ function managerFor(config: ReturnType<typeof loadConfig>, capture: (transport: 
   new PathfindingController(1, 1000), new MockTaskHandler(), new Logger('error'));
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for asynchronous persistence');
+    await delay(10);
+  }
+}
+
 test('disconnect classifier only marks explicit ban language as BAN', () => {
   assert.equal(classifyDisconnectReason('Disconnected: duplicate login'), 'KICK');
   assert.equal(classifyDisconnectReason('Internal Exception: connection reset'), 'KICK');
@@ -67,14 +75,13 @@ test('ban reason persists with the account across stop, restart and reassignment
     manager.connectBot('bot-1');
     assert.ok(transport);
     transport.events.kicked?.('You are permanently banned from this server! Reason: test ban', true);
-    await delay(20);
+    assert.equal(manager.views()[0]?.moderation?.kind, 'BAN');
+    assert.equal(manager.views()[0]?.moderation?.persistent, true);
+    await waitUntil(() => controls.listAccounts().find(account => account.id === created.id)?.ban?.kind === 'BAN');
 
     const detected = controls.listAccounts().find(account => account.id === created.id);
     assert.equal(detected?.ban?.kind, 'BAN');
     assert.equal(detected?.ban?.reason, 'You are permanently banned from this server! Reason: test ban');
-    assert.equal(manager.views()[0]?.moderation?.kind, 'BAN');
-    assert.equal(manager.views()[0]?.moderation?.persistent, true);
-
     const stored = JSON.parse(await readFile(join(dir, 'accounts-runtime.json'), 'utf8')) as Array<{id:string;ban?:{kind:string;reason:string;detectedAt:number}}>;
     assert.equal(stored.find(account => account.id === created.id)?.ban?.kind, 'BAN');
 
