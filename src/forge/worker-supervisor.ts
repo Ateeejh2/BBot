@@ -40,13 +40,19 @@ interface WorkerRecord extends ForgeWorkerView {
 
 const LAUNCH_COMMAND = 'launch forge:1.8.9 -offline -lwjgl --jvm "-Djava.awt.headless=true -Xms128m -Xmx512m"\n';
 
-function processTreeSample(rootPid: number): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
+interface ProcessSampleRecord {
+  ppid: number;
+  cpuTicks: number;
+  rssKb: number;
+}
+
+function processTableSample(): Map<number, ProcessSampleRecord> | undefined {
   if (process.platform !== 'linux') return undefined;
 
   let entries: string[];
   try { entries = readdirSync('/proc'); } catch { return undefined; }
 
-  const records = new Map<number, { ppid: number; cpuTicks: number; rssKb: number }>();
+  const records = new Map<number, ProcessSampleRecord>();
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
     try {
@@ -68,7 +74,13 @@ function processTreeSample(rootPid: number): { cpuTicks: number; rssMb: number; 
       // Processes can disappear while /proc is being sampled.
     }
   }
+  return records;
+}
 
+function processTreeSample(
+  rootPid: number,
+  records: Map<number, ProcessSampleRecord>
+): { cpuTicks: number; rssMb: number; processCount: number } | undefined {
   if (!records.has(rootPid)) return undefined;
   const included = new Set<number>([rootPid]);
   let changed = true;
@@ -106,6 +118,7 @@ function linuxClockTicks(): number {
 }
 
 const LINUX_CLOCK_TICKS = linuxClockTicks();
+const RESOURCE_SAMPLE_INTERVAL_MS = 3_000;
 
 function java8Home(config: Config): string | undefined {
   if (config.forge.java8Home && existsSync(join(config.forge.java8Home, 'bin', 'java'))) return config.forge.java8Home;
@@ -144,6 +157,7 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
 
 export class ForgeWorkerSupervisor {
   private workers = new Map<string, WorkerRecord>();
+  private resourceSampleTimer?: NodeJS.Timeout;
 
   constructor(private config: Config, private logger: Logger) {
     // Launch credentials are short-lived copies. A previous backend crash may
@@ -158,48 +172,60 @@ export class ForgeWorkerSupervisor {
         bridgePort: config.forge.bridgeBasePort + i
       });
     }
+    this.resourceSampleTimer = setInterval(() => this.sampleResources(), RESOURCE_SAMPLE_INTERVAL_MS);
+    this.resourceSampleTimer.unref();
   }
 
   snapshot(): ForgeWorkerView[] {
-    const now = Date.now();
     return [...this.workers.values()].map(worker => {
-      const childPid = worker.child?.pid;
-      let resource: Pick<ForgeWorkerView, 'cpuPercent' | 'rssMb' | 'processCount'> = {};
-      if (childPid && worker.phase !== 'STOPPED') {
-        const raw = processTreeSample(childPid);
-        if (raw) {
-          const previous = worker.resourceSample;
-          const elapsedMs = previous ? now - previous.at : 0;
-          let cpuPercent = previous?.cpuPercent ?? 0;
-          let sampleAt = previous?.at ?? now;
-          let sampleTicks = previous?.cpuTicks ?? raw.cpuTicks;
-          if (!previous || (elapsedMs >= 250 && raw.cpuTicks >= previous.cpuTicks)) {
-            if (previous && elapsedMs > 0) {
-              const elapsedSeconds = elapsedMs / 1000;
-              cpuPercent = ((raw.cpuTicks - previous.cpuTicks) / LINUX_CLOCK_TICKS / elapsedSeconds) * 100;
-            }
-            sampleAt = now;
-            sampleTicks = raw.cpuTicks;
-          }
-          const oneDecimal = (value: number) => Math.round(value * 10) / 10;
-          worker.resourceSample = {
-            at: sampleAt,
-            cpuTicks: sampleTicks,
-            cpuPercent: oneDecimal(Math.max(0, cpuPercent)),
-            rssMb: oneDecimal(Math.max(0, raw.rssMb)),
-            processCount: raw.processCount
-          };
-          resource = {
-            cpuPercent: worker.resourceSample.cpuPercent,
-            rssMb: worker.resourceSample.rssMb,
-            processCount: worker.resourceSample.processCount
-          };
-        }
-      }
+      const sample = worker.phase === 'STOPPED' ? undefined : worker.resourceSample;
+      const resource: Pick<ForgeWorkerView, 'cpuPercent' | 'rssMb' | 'processCount'> = sample ? {
+        cpuPercent: sample.cpuPercent,
+        rssMb: sample.rssMb,
+        processCount: sample.processCount
+      } : {};
       const { botId, phase, bridgePort, lastError, launchProgress } = worker;
       return { botId, phase, bridgePort, ...(lastError ? { lastError } : {}),
         ...(launchProgress !== undefined ? { launchProgress } : {}), ...resource };
     });
+  }
+
+  private sampleResources(): void {
+    const active = [...this.workers.values()].filter(
+      worker => worker.phase !== 'STOPPED' && worker.child?.pid
+    );
+    if (!active.length) return;
+
+    const records = processTableSample();
+    if (!records) return;
+    const now = Date.now();
+    const oneDecimal = (value: number) => Math.round(value * 10) / 10;
+
+    for (const worker of active) {
+      const childPid = worker.child?.pid;
+      if (!childPid) continue;
+      const raw = processTreeSample(childPid, records);
+      if (!raw) {
+        worker.resourceSample = undefined;
+        continue;
+      }
+
+      const previous = worker.resourceSample;
+      const elapsedMs = previous ? now - previous.at : 0;
+      let cpuPercent = previous?.cpuPercent ?? 0;
+      if (previous && elapsedMs > 0 && raw.cpuTicks >= previous.cpuTicks) {
+        const elapsedSeconds = elapsedMs / 1000;
+        cpuPercent = ((raw.cpuTicks - previous.cpuTicks) / LINUX_CLOCK_TICKS / elapsedSeconds) * 100;
+      }
+
+      worker.resourceSample = {
+        at: now,
+        cpuTicks: raw.cpuTicks,
+        cpuPercent: oneDecimal(Math.max(0, cpuPercent)),
+        rssMb: oneDecimal(Math.max(0, raw.rssMb)),
+        processCount: raw.processCount
+      };
+    }
   }
 
   isLaunched(botId: string): boolean {
@@ -380,6 +406,10 @@ export class ForgeWorkerSupervisor {
   }
 
   async close(): Promise<void> {
+    if (this.resourceSampleTimer) {
+      clearInterval(this.resourceSampleTimer);
+      this.resourceSampleTimer = undefined;
+    }
     for (const worker of this.workers.values()) {
       if (worker.phase === 'STOPPED') continue;
       try { await this.quit(worker.botId); } catch { await this.forceStop(worker); }
