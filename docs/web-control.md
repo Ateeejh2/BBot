@@ -1,6 +1,6 @@
 # BBot Web control
 
-The Remote Web setup now provisions a 20-slot fleet. Run `npm run setup:web-control` to set `MODE=live`, `BOT_COUNT=20`, `TRANSFER_MESSAGE_CHANNEL=chat`, `API_ENABLED=true`, `API_HOST=127.0.0.1`, and the Codespaces Web origin in the local `.env`. Existing server, viewer, and credential settings are preserved.
+The Remote Web setup now provisions a 20-slot fleet. Run `npm run setup:web-control` to set `MODE=live`, `BOT_COUNT=20`, `TRANSFER_MESSAGE_CHANNEL=chat`, `API_ENABLED=true`, `API_HOST=127.0.0.1`, and the Codespaces Web origin in the local `.env`. Existing server and credential settings are preserved.
 
 A bot slot stays stopped until it has an account assignment and Start is requested. Each assigned bot follows the existing run loop:
 
@@ -62,12 +62,8 @@ git pull
 npm ci
 VITE_BBOT_MODE=remote npm run dev -- --host 0.0.0.0
 
-# Optional Live View tunnel
-cd /workspaces/BBot
-npm run setup:viewer
-npm run viewer:tunnel
 ```
 
 After restart, the Bots page should show 20 slots. Add Microsoft or Session accounts, assign each READY account to a different bot, then either Start individually or use **Start Assigned**. Connection attempts are staggered instead of opening all clients simultaneously. Each bot independently reports MCID, state, instance, position, and last kick reason.
 
-Live View still targets the configured `VIEWER_BOT_ID`. Quick Tunnel URLs are public while the tunnel process is running, so stop the tunnel after testing. The management API remains bound to `127.0.0.1`, validates the browser Origin, and does not expose a generic Minecraft command endpoint.
+The management API remains bound to `127.0.0.1`, validates the browser Origin, and does not expose a generic Minecraft command endpoint.
