@@ -46,18 +46,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (mode === 'live' && distributionEnabled && !lobbyCommand) throw new Error('Distribution requires a verified LOBBY_COMMAND');
   const suspectMs = integer('INSTANCE_SUSPECT_MS', 300000, 1000, 86400000);
   const inactiveMs = integer('INSTANCE_INACTIVE_MS', 1800000, suspectMs + 1, 604800000);
-  const viewerEnabled = bool('VIEWER_ENABLED', false);
   const apiEnabled = bool('API_ENABLED', false);
   const apiHost = env.API_HOST ?? '127.0.0.1';
   if (apiHost !== '127.0.0.1') throw new Error('API_HOST must be 127.0.0.1; use a protected reverse proxy');
   const apiOrigin = env.API_ORIGIN;
   if (apiEnabled && (!apiOrigin || !/^https?:\/\/[^/]+$/.test(apiOrigin) || new URL(apiOrigin).username || new URL(apiOrigin).password)) throw new Error('API_ORIGIN must be a single web origin');
-  const viewerUrl = env.VIEWER_PUBLIC_URL;
-  if (viewerUrl && (!/^https?:\/\/[^/]+\/?$/.test(viewerUrl) || new URL(viewerUrl).username || new URL(viewerUrl).password || new URL(viewerUrl).search || new URL(viewerUrl).hash)) throw new Error('Invalid VIEWER_PUBLIC_URL');
-  const viewerBotId = env.VIEWER_BOT_ID ?? 'bot-1';
-  if (!/^bot-(?:[1-9]|1\d|20)$/.test(viewerBotId)) throw new Error('Invalid VIEWER_BOT_ID');
-  const viewerBotNumber = Number(viewerBotId.slice(4));
-  if (viewerEnabled && viewerBotNumber > count) throw new Error('VIEWER_BOT_ID exceeds BOT_COUNT');
   let accounts: Account[];
   let legacyAccountsPresent = false;
   if (mode === 'mock') accounts = Array.from({ length: count }, (_, i) => ({ label: `bot-${i + 1}`, username: `mock-${i + 1}`, auth: 'offline' }));
@@ -116,14 +109,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     rerollMaxAttempts: integer('REROLL_MAX_ATTEMPTS', 3, 1, 100),
     rerollCooldownMs: integer('REROLL_COOLDOWN_MS', 60000, 1000, 3600000),
     api: { enabled: apiEnabled, host: apiHost, port: integer('API_PORT', 3008, 1024, 65535), origin: apiOrigin },
-    viewer: {
-      enabled: viewerEnabled,
-      publicUrl: viewerUrl,
-      botId: viewerBotId,
-      port: integer('VIEWER_PORT', 3007, 1024, 65535),
-      viewDistance: integer('VIEWER_VIEW_DISTANCE', 4, 2, 12),
-      firstPerson: bool('VIEWER_FIRST_PERSON', true)
-    },
     dataDir: resolve(env.DATA_DIR ?? 'data'), authDir: resolve('.auth'),
     logDir: env.LOG_DIR ? resolve(env.LOG_DIR) : undefined,
     logMaxBytes: integer('LOG_MAX_BYTES', 5_000_000, 1024, 100_000_000),
