@@ -120,6 +120,9 @@ public final class BBotHeadlessPoc {
     private final ConcurrentLinkedQueue<Long> inboundPacketArrivals = new ConcurrentLinkedQueue<Long>();
     private final ConcurrentLinkedQueue<Long> chatPacketArrivals = new ConcurrentLinkedQueue<Long>();
     private long lastClientTickStartNanos;
+    private long diagMaxTickGapMs;
+    private long diagMaxInboundAgeMs;
+    private int diagSummaryTicks;
     private String carePackageRequestId;
     private BlockPos carePackageTarget;
     private int carePackageInteractionTicks;
@@ -162,6 +165,7 @@ public final class BBotHeadlessPoc {
             bridge.start();
         }
 
+        LOG.warn("[BBotDiag] enabled stallThreshold={}ms summaryEvery={}ticks", DIAG_STALL_THRESHOLD_MS, 100);
         LOG.info(
             "[BBotPoC] ready descend={} warmup={} walk={} sprint={} traceEvery={} skipRender={} autoMovementTest={} bridgeEnabled={} bridgePort={}",
             descendTicks,
@@ -1385,6 +1389,9 @@ public final class BBotHeadlessPoc {
         inboundPacketArrivals.clear();
         chatPacketArrivals.clear();
         lastClientTickStartNanos = 0L;
+        diagMaxTickGapMs = 0L;
+        diagMaxInboundAgeMs = 0L;
+        diagSummaryTicks = 0;
     }
 
     private void traceClientTickDiagnostics() {
@@ -1408,6 +1415,10 @@ public final class BBotHeadlessPoc {
             ? 0L
             : nanosToMillis(now - oldestArrival);
 
+        diagMaxTickGapMs = Math.max(diagMaxTickGapMs, gapMs);
+        diagMaxInboundAgeMs = Math.max(diagMaxInboundAgeMs, oldestInboundAgeMs);
+        diagSummaryTicks++;
+
         if (gapMs >= DIAG_STALL_THRESHOLD_MS || oldestInboundAgeMs >= DIAG_STALL_THRESHOLD_MS) {
             LOG.warn(
                 "[BBotDiag] client-tick-stall gap={}ms inboundSinceLastTick={} oldestInboundAge={}ms pendingChat={}",
@@ -1416,6 +1427,18 @@ public final class BBotHeadlessPoc {
                 oldestInboundAgeMs,
                 chatPacketArrivals.size()
             );
+        }
+
+        if (diagSummaryTicks >= 100) {
+            LOG.info(
+                "[BBotDiag] summary maxTickGap={}ms maxInboundAge={}ms pendingChat={}",
+                diagMaxTickGapMs,
+                diagMaxInboundAgeMs,
+                chatPacketArrivals.size()
+            );
+            diagMaxTickGapMs = 0L;
+            diagMaxInboundAgeMs = 0L;
+            diagSummaryTicks = 0;
         }
     }
 
